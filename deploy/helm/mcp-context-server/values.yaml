@@ -3,7 +3,7 @@
 
 # Image configuration
 image:
-  repository: ghcr.io/alex-feel/mcp-context-server
+  repository: ghcr.io/getactionspace/mcp-context-server
   # Defaults to Chart.appVersion if not set
   tag: ""
   pullPolicy: IfNotPresent

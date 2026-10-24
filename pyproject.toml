@@ -35,6 +35,13 @@ mcp-context = "app.server:main"
 mcp-context-server-migrate = "app.cli.migrate:main"
 mcp-context-ingest = "app.cli.ingest.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/GetActionSpace/mcp-context-server"
+Repository = "https://github.com/GetActionSpace/mcp-context-server"
+Documentation = "https://github.com/GetActionSpace/mcp-context-server/tree/main/docs"
+Changelog = "https://github.com/GetActionSpace/mcp-context-server/blob/main/CHANGELOG.md"
+Issues = "https://github.com/GetActionSpace/mcp-context-server/issues"
+
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 

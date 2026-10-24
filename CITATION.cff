@@ -10,9 +10,9 @@ authors:
     orcid: "https://orcid.org/0009-0001-1120-6114"
 version: 2.2.2 # x-release-please-version
 # Elastic-2.0 is not in the CFF 1.2.0 license enum, so the license is conveyed via license-url.
-license-url: "https://github.com/alex-feel/mcp-context-server/blob/main/LICENSE"
-url: "https://github.com/alex-feel/mcp-context-server"
-repository-code: "https://github.com/alex-feel/mcp-context-server"
+license-url: "https://github.com/GetActionSpace/mcp-context-server/blob/main/LICENSE"
+url: "https://github.com/GetActionSpace/mcp-context-server"
+repository-code: "https://github.com/GetActionSpace/mcp-context-server"
 keywords:
   - mcp
   - model-context-protocol
