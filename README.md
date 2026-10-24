@@ -4,7 +4,7 @@
   <img src=".github/images/banner.png" alt="MCP Context Server - MCP-based server providing persistent multimodal context storage for LLM agents" width="100%">
 </p>
 
-[![PyPI](https://img.shields.io/pypi/v/mcp-context-server.svg)](https://pypi.org/project/mcp-context-server/) [![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-blue?logo=anthropic)](https://registry.modelcontextprotocol.io/?q=io.github.alex-feel%2Fmcp-context-server) [![License: Elastic License 2.0](https://img.shields.io/badge/license-Elastic_2.0-blue)](https://github.com/alex-feel/mcp-context-server/blob/main/LICENSE) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/alex-feel/mcp-context-server)
+[![PyPI](https://img.shields.io/pypi/v/mcp-context-server.svg)](https://pypi.org/project/mcp-context-server/) [![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-blue?logo=anthropic)](https://registry.modelcontextprotocol.io/?q=io.github.GetActionSpace%2Fmcp-context-server) [![License: Elastic License 2.0](https://img.shields.io/badge/license-Elastic_2.0-blue)](https://github.com/GetActionSpace/mcp-context-server/blob/main/LICENSE) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/GetActionSpace/mcp-context-server)
 
 A high-performance Model Context Protocol (MCP) server providing persistent multimodal context storage for LLM agents. Built with FastMCP, this server enables seamless context sharing across multiple agents working on the same task through thread-based scoping.
 
@@ -111,10 +111,10 @@ For HTTP transport deployments requiring authentication, see the [Authentication
 
 ## Getting Help
 
-- **Bug reports**: [Report a bug](https://github.com/alex-feel/mcp-context-server/issues/new?template=bug-report.yml)
-- **Feature requests**: [Suggest a feature](https://github.com/alex-feel/mcp-context-server/issues/new?template=feature-request.yml)
-- **Documentation issues**: [Report a docs issue](https://github.com/alex-feel/mcp-context-server/issues/new?template=docs-issue.yml)
-- **Questions**: [Ask a question](https://github.com/alex-feel/mcp-context-server/issues/new?template=question.yml)
+- **Bug reports**: [Report a bug](https://github.com/GetActionSpace/mcp-context-server/issues/new?template=bug-report.yml)
+- **Feature requests**: [Suggest a feature](https://github.com/GetActionSpace/mcp-context-server/issues/new?template=feature-request.yml)
+- **Documentation issues**: [Report a docs issue](https://github.com/GetActionSpace/mcp-context-server/issues/new?template=docs-issue.yml)
+- **Questions**: [Ask a question](https://github.com/GetActionSpace/mcp-context-server/issues/new?template=question.yml)
 
 ## License
 
@@ -126,4 +126,4 @@ See [Commercial Licensing](docs/commercial-licensing.md) for plain-language exam
 
 Releases up to and including v2.2.2 were published under the MIT License and remain available under it; the Elastic License 2.0 applies from v3.0.0 onward.
 
-<!-- mcp-name: io.github.alex-feel/mcp-context-server -->
+<!-- mcp-name: io.github.GetActionSpace/mcp-context-server -->

@@ -6,8 +6,12 @@ request. The exemption must be authenticated by something the pull-request
 submitter cannot control.
 
 Two values were available. ``github.head_ref`` is the branch name, which a
-contributor picks freely on a fork, so it is only safe when paired with an author
-check. ``github.event.head_commit.message`` on the push-to-main event is worse:
+contributor picks freely on a fork, so it is only safe when paired with a check that
+the head branch lives in this repository: only an account with write access can push
+a branch here, and a fork's branch never satisfies it. The pull-request author is
+not that check, because the identity Release Please runs as is never the repository
+owner once an organization owns the repository, and a literal login would tie the
+exemption to one account. ``github.event.head_commit.message`` on the push-to-main event is worse:
 depending on the repository's merge-message settings it embeds the fork branch
 name, the pull-request title, or the squashed commit bodies, so it can be made to
 contain any literal string a match looks for -- there is no way to authenticate the
@@ -89,19 +93,19 @@ def test_no_job_gates_on_the_commit_message(workflow: Path) -> None:
 
 
 @pytest.mark.parametrize('workflow', _WORKFLOW_FILES, ids=lambda p: p.name)
-def test_branch_prefix_skips_are_paired_with_an_author_check(workflow: Path) -> None:
-    """A skip keyed on the branch name must also verify who opened the pull request."""
+def test_branch_prefix_skips_are_paired_with_a_same_repository_check(workflow: Path) -> None:
+    """A skip keyed on the branch name must also require the branch to live in this repository."""
     for condition in _conditions(workflow):
         if 'head_ref' not in condition:
             continue
-        assert 'github.event.pull_request.user.login' in condition, (
+        assert 'github.event.pull_request.head.repo.full_name' in condition, (
             f'{workflow.name} skips on the head branch name alone; a contributor names a '
-            f'fork branch freely, so the exemption must also require the pull-request '
-            f'author to be the trusted release identity'
+            f'fork branch freely, so the exemption must also require the head branch to '
+            f'live in this repository, which only an account with write access can push'
         )
-        assert 'github.repository_owner' in condition, (
-            f'{workflow.name} compares the pull-request author against something other '
-            f'than the repository owner, which is the identity Release Please runs as'
+        assert 'github.repository' in condition, (
+            f'{workflow.name} compares the head repository against something other than '
+            f'this repository, which is the only one the release bot pushes its branch to'
         )
 
 
@@ -122,7 +126,7 @@ def test_every_condition_arrives_whole_and_separate(tmp_path: Path) -> None:
 
     Covers the shapes a line-oriented reader mis-handles, each of which silently
     empties or truncates a condition and so lets an unguarded branch-prefix skip pass
-    the author-check assertion above: a multi-line plain scalar, a value starting on
+    the same-repository assertion above: a multi-line plain scalar, a value starting on
     the line after the key, a block header followed by a comment, and a multi-line
     double-quoted scalar. It also pins the separation between an unwrapped condition
     and a neighbouring job's wrapped one, which a scan terminating at the next ``}}``
@@ -152,7 +156,7 @@ def test_every_condition_arrives_whole_and_separate(tmp_path: Path) -> None:
         '    steps:\n'
         '      - run: echo d\n'
         '  wrapped:\n'
-        '    if: ${{ github.event.pull_request.user.login == github.repository_owner }}\n'
+        '    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}\n'
         '    steps:\n'
         '      - run: echo e\n',
         encoding='utf-8',
@@ -163,8 +167,8 @@ def test_every_condition_arrives_whole_and_separate(tmp_path: Path) -> None:
     assert len(conditions) == 5
     for condition in conditions[:4]:
         assert 'head_ref' in condition, condition
-        assert 'github.repository_owner' not in condition, condition
-    assert 'github.repository_owner' in conditions[4]
+        assert 'head.repo.full_name' not in condition, condition
+    assert 'head.repo.full_name' in conditions[4]
     assert 'head_ref' not in conditions[4]
 
 

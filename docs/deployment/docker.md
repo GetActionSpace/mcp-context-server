@@ -179,7 +179,7 @@ curl http://localhost:8000/health
 
 ### Mixed Provider Deployments (Ollama Embeddings + OpenAI Summary)
 
-Mixed provider configurations use Ollama for local embedding generation and OpenAI for cloud-based summary generation. These configurations pull the pre-built `ghcr.io/alex-feel/mcp-context-server:latest-ollama-openai` image from GHCR. To build from local source code instead, use the `.local` variants (e.g., `docker-compose.sqlite.ollama-openai.local.yml`). All configurations **require** an `.env` file with your OpenAI API key.
+Mixed provider configurations use Ollama for local embedding generation and OpenAI for cloud-based summary generation. These configurations pull the pre-built `ghcr.io/getactionspace/mcp-context-server:latest-ollama-openai` image from GHCR. To build from local source code instead, use the `.local` variants (e.g., `docker-compose.sqlite.ollama-openai.local.yml`). All configurations **require** an `.env` file with your OpenAI API key.
 
 #### SQLite + Ollama Embeddings + OpenAI Summary
 
@@ -239,7 +239,7 @@ curl http://localhost:8000/health
 
 ### When to Build from Source
 
-Two GHCR-published images are available: `ghcr.io/alex-feel/mcp-context-server:latest` (Ollama embeddings + Ollama summary) and `ghcr.io/alex-feel/mcp-context-server:latest-ollama-openai` (Ollama embeddings + OpenAI summary).
+Two GHCR-published images are available: `ghcr.io/getactionspace/mcp-context-server:latest` (Ollama embeddings + Ollama summary) and `ghcr.io/getactionspace/mcp-context-server:latest-ollama-openai` (Ollama embeddings + OpenAI summary). Until October 2026 the images were published at `ghcr.io/alex-feel/mcp-context-server`; that path keeps the tags published before the move and receives no new ones, so a deployment that pulls it stays on the last release published there.
 
 Build from source when:
 
@@ -248,13 +248,13 @@ Build from source when:
 
 ### Image Source Categories
 
-| Category                         | Files                        | `image:`                                                    | `pull_policy` | `build:` block                                  |
-|----------------------------------|------------------------------|-------------------------------------------------------------|---------------|-------------------------------------------------|
-| GHCR pull                        | `*.ollama.yml`               | `ghcr.io/alex-feel/mcp-context-server:latest`               | `always`      | None                                            |
-| GHCR pull (variant)              | `*.ollama-openai.yml`        | `ghcr.io/alex-feel/mcp-context-server:latest-ollama-openai` | `always`      | None                                            |
-| Local build (GHCR equivalent)    | `*.ollama.local.yml`         | `mcp-context-server`                                        | `build`       | Yes (no custom args)                            |
-| Local build (variant equivalent) | `*.ollama-openai.local.yml`  | `mcp-context-server`                                        | `build`       | Yes (with SUMMARY_EXTRA=summary-openai)         |
-| Local build (provider-specific)  | `*.openai.yml`               | `mcp-context-server`                                        | `build`       | Yes (with EMBEDDING_EXTRA / SUMMARY_EXTRA args) |
+| Category                         | Files                       | `image:`                                                         | `pull_policy` | `build:` block                                  |
+|----------------------------------|-----------------------------|------------------------------------------------------------------|---------------|-------------------------------------------------|
+| GHCR pull                        | `*.ollama.yml`              | `ghcr.io/getactionspace/mcp-context-server:latest`               | `always`      | None                                            |
+| GHCR pull (variant)              | `*.ollama-openai.yml`       | `ghcr.io/getactionspace/mcp-context-server:latest-ollama-openai` | `always`      | None                                            |
+| Local build (GHCR equivalent)    | `*.ollama.local.yml`        | `mcp-context-server`                                             | `build`       | Yes (no custom args)                            |
+| Local build (variant equivalent) | `*.ollama-openai.local.yml` | `mcp-context-server`                                             | `build`       | Yes (with SUMMARY_EXTRA=summary-openai)         |
+| Local build (provider-specific)  | `*.openai.yml`              | `mcp-context-server`                                             | `build`       | Yes (with EMBEDDING_EXTRA / SUMMARY_EXTRA args) |
 
 ## Client Connection
 

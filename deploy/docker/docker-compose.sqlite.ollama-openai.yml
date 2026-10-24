@@ -10,7 +10,7 @@ name: context-server
 
 services:
   mcp-context-server:
-    image: ghcr.io/alex-feel/mcp-context-server:latest-ollama-openai
+    image: ghcr.io/getactionspace/mcp-context-server:latest-ollama-openai
     pull_policy: always
     ports:
       - "8000:8000"

@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.alex-feel/mcp-context-server",
+  "name": "io.github.GetActionSpace/mcp-context-server",
   "description": "MCP server providing persistent multimodal context storage for LLM agents.",
   "repository": {
-    "url": "https://github.com/alex-feel/mcp-context-server",
+    "url": "https://github.com/GetActionSpace/mcp-context-server",
     "source": "github"
   },
   "version": "2.2.2",
@@ -1275,7 +1275,7 @@
     },
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/alex-feel/mcp-context-server:2.2.2",
+      "identifier": "ghcr.io/getactionspace/mcp-context-server:2.2.2",
       "runtimeHint": "docker",
       "transport": {
         "type": "streamable-http",

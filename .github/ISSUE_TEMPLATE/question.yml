@@ -7,9 +7,9 @@ body:
       value: |
         Before asking, you may find your answer in the existing documentation:
 
-        - [README](https://github.com/alex-feel/mcp-context-server#readme) -- Overview and quick start
-        - [Documentation](https://github.com/alex-feel/mcp-context-server/tree/main/docs) -- Detailed guides
-        - [Environment Variables](https://github.com/alex-feel/mcp-context-server/blob/main/docs/environment-variables.md) -- Configuration reference
+        - [README](https://github.com/GetActionSpace/mcp-context-server#readme) -- Overview and quick start
+        - [Documentation](https://github.com/GetActionSpace/mcp-context-server/tree/main/docs) -- Detailed guides
+        - [Environment Variables](https://github.com/GetActionSpace/mcp-context-server/blob/main/docs/environment-variables.md) -- Configuration reference
 
   - type: textarea
     id: question

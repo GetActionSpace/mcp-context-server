@@ -52,35 +52,35 @@ helm install mcp ./deploy/helm/mcp-context-server \
 
 ### Key Values
 
-| Parameter                           | Description                                                      | Default                                |
-|-------------------------------------|------------------------------------------------------------------|----------------------------------------|
-| `image.repository`                  | Image repository                                                 | `ghcr.io/alex-feel/mcp-context-server` |
-| `image.tag`                         | Image tag                                                        | `Chart.appVersion`                     |
-| `replicaCount`                      | Number of replicas                                               | `1`                                    |
-| `env.FASTMCP_STATELESS_HTTP`        | Stateless HTTP mode (enabled by default)                         | `"true"`                               |
-| `env.FASTMCP_ENABLE_RICH_LOGGING`   | Rich log formatting (disable for containers)                     | `"false"`                              |
-| `service.type`                      | Kubernetes service type                                          | `ClusterIP`                            |
-| `service.port`                      | Service port                                                     | `8000`                                 |
-| `storage.backend`                   | Storage backend (sqlite/postgresql)                              | `sqlite`                               |
-| `storage.postgresql.migration.user` | Role that owns the tables and runs migrations                    | `""` (request user)                    |
-| `storage.postgresql.rls.enabled`    | PostgreSQL row-level security (`ENABLE_POSTGRESQL_RLS`)          | `false`                                |
-| `storage.postgresql.rls.policyRole` | NOLOGIN role the policies name                                   | `""` (`mcp_context_request`)           |
-| `auth.provider`                     | HTTP authentication (`none`, `simple_token` or `jwt`)            | `""` (`none`)                          |
-| `auth.jwt.anonymousPublicKey`       | Anonymous verifier key, used beside `auth.jwt.jwksUri`           | `""` (no anonymous verifier)           |
-| `auth.jwt.anonymousAlgorithm`       | Signing algorithm of the anonymous verifier                      | `""` (`RS256`)                         |
-| `accessControl.publishRole`         | Role required to publish entries as `public`                     | `""` (any owner may publish)           |
-| `accessControl.anonymousPrincipal`  | Read-only jwt subject every write tool refuses                   | `""` (no principal is read-only)       |
-| `search.fts.enabled`                | Full-text search tool (`true`=auto-register, `false`=off)        | `true`                                 |
-| `search.semantic.enabled`           | Semantic search + embedding subsystem (`true`=auto, `false`=off) | `false`                                |
-| `search.hybrid.enabled`             | Hybrid search tool (`true`=auto-register, `false`=off)           | `true`                                 |
-| `search.chunking.enabled`           | Enable text chunking for embeddings                              | `true`                                 |
-| `search.chunking.size`              | Chunk size in characters                                         | `1500`                                 |
-| `search.reranking.enabled`          | Enable cross-encoder reranking                                   | `true`                                 |
-| `search.reranking.model`            | Reranking model name                                             | `ms-marco-MiniLM-L-12-v2`              |
-| `search.summary.enabled`            | Enable LLM-based summary generation (opt-in; needs a provider)   | `false`                                |
-| `search.summary.provider`           | Summary provider (ollama/openai/anthropic)                       | `"ollama"`                             |
-| `search.summary.model`              | Summary generation model                                         | `"qwen3:0.6b"`                         |
-| `ollama.enabled`                    | Enable Ollama sidecar                                            | `false`                                |
+| Parameter                           | Description                                                      | Default                                     |
+|-------------------------------------|------------------------------------------------------------------|---------------------------------------------|
+| `image.repository`                  | Image repository                                                 | `ghcr.io/getactionspace/mcp-context-server` |
+| `image.tag`                         | Image tag                                                        | `Chart.appVersion`                          |
+| `replicaCount`                      | Number of replicas                                               | `1`                                         |
+| `env.FASTMCP_STATELESS_HTTP`        | Stateless HTTP mode (enabled by default)                         | `"true"`                                    |
+| `env.FASTMCP_ENABLE_RICH_LOGGING`   | Rich log formatting (disable for containers)                     | `"false"`                                   |
+| `service.type`                      | Kubernetes service type                                          | `ClusterIP`                                 |
+| `service.port`                      | Service port                                                     | `8000`                                      |
+| `storage.backend`                   | Storage backend (sqlite/postgresql)                              | `sqlite`                                    |
+| `storage.postgresql.migration.user` | Role that owns the tables and runs migrations                    | `""` (request user)                         |
+| `storage.postgresql.rls.enabled`    | PostgreSQL row-level security (`ENABLE_POSTGRESQL_RLS`)          | `false`                                     |
+| `storage.postgresql.rls.policyRole` | NOLOGIN role the policies name                                   | `""` (`mcp_context_request`)                |
+| `auth.provider`                     | HTTP authentication (`none`, `simple_token` or `jwt`)            | `""` (`none`)                               |
+| `auth.jwt.anonymousPublicKey`       | Anonymous verifier key, used beside `auth.jwt.jwksUri`           | `""` (no anonymous verifier)                |
+| `auth.jwt.anonymousAlgorithm`       | Signing algorithm of the anonymous verifier                      | `""` (`RS256`)                              |
+| `accessControl.publishRole`         | Role required to publish entries as `public`                     | `""` (any owner may publish)                |
+| `accessControl.anonymousPrincipal`  | Read-only jwt subject every write tool refuses                   | `""` (no principal is read-only)            |
+| `search.fts.enabled`                | Full-text search tool (`true`=auto-register, `false`=off)        | `true`                                      |
+| `search.semantic.enabled`           | Semantic search + embedding subsystem (`true`=auto, `false`=off) | `false`                                     |
+| `search.hybrid.enabled`             | Hybrid search tool (`true`=auto-register, `false`=off)           | `true`                                      |
+| `search.chunking.enabled`           | Enable text chunking for embeddings                              | `true`                                      |
+| `search.chunking.size`              | Chunk size in characters                                         | `1500`                                      |
+| `search.reranking.enabled`          | Enable cross-encoder reranking                                   | `true`                                      |
+| `search.reranking.model`            | Reranking model name                                             | `ms-marco-MiniLM-L-12-v2`                   |
+| `search.summary.enabled`            | Enable LLM-based summary generation (opt-in; needs a provider)   | `false`                                     |
+| `search.summary.provider`           | Summary provider (ollama/openai/anthropic)                       | `"ollama"`                                  |
+| `search.summary.model`              | Summary generation model                                         | `"qwen3:0.6b"`                              |
+| `ollama.enabled`                    | Enable Ollama sidecar                                            | `false`                                     |
 
 ### Storage Configuration
 
@@ -271,5 +271,5 @@ kubectl delete pvc -l app.kubernetes.io/instance=mcp
 
 ## Resources
 
-- [MCP Context Server Documentation](https://github.com/alex-feel/mcp-context-server)
+- [MCP Context Server Documentation](https://github.com/GetActionSpace/mcp-context-server)
 - [Helm Documentation](https://helm.sh/docs/)

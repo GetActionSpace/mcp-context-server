@@ -11,11 +11,11 @@ keywords:
   - fastmcp
   - sqlite
   - postgresql
-home: https://github.com/alex-feel/mcp-context-server
+home: https://github.com/GetActionSpace/mcp-context-server
 annotations:
   artifacthub.io/license: Elastic-2.0
 sources:
-  - https://github.com/alex-feel/mcp-context-server
+  - https://github.com/GetActionSpace/mcp-context-server
 maintainers:
-  - name: alex-feel
-    url: https://github.com/alex-feel
+  - name: ActionSpace
+    url: https://github.com/GetActionSpace

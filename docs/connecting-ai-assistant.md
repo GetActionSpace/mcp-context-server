@@ -25,13 +25,13 @@ Run the command for your operating system. Each command does the same thing: ins
 ### Windows
 
 ```powershell
-powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/alex-feel/mcp-context-server/refs/heads/main/agents/claude-code/environment-docker-ollama.yaml'; `$env:CLAUDE_CODE_TOOLBOX_SKIP_INSTALL='1'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/refs/heads/main/agents/claude-code/environment-docker-ollama.yaml'; `$env:CLAUDE_CODE_TOOLBOX_SKIP_INSTALL='1'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 ```
 
 ### macOS
 
 ```bash
-CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/alex-feel/mcp-context-server/refs/heads/main/agents/claude-code/environment-docker-ollama.yaml' \
+CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/refs/heads/main/agents/claude-code/environment-docker-ollama.yaml' \
 CLAUDE_CODE_TOOLBOX_SKIP_INSTALL=1 \
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh)"
 ```
@@ -39,7 +39,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-to
 ### Linux
 
 ```bash
-CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/alex-feel/mcp-context-server/refs/heads/main/agents/claude-code/environment-docker-ollama.yaml' \
+CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/refs/heads/main/agents/claude-code/environment-docker-ollama.yaml' \
 CLAUDE_CODE_TOOLBOX_SKIP_INSTALL=1 \
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh)"
 ```
@@ -103,13 +103,13 @@ Replace `sk-your-key-here` with your actual OpenAI API key.
 #### Windows
 
 ```powershell
-powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/alex-feel/mcp-context-server/refs/heads/main/agents/claude-code/environment-docker-ollama-openai.yaml'; `$env:CLAUDE_CODE_TOOLBOX_SKIP_INSTALL='1'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/refs/heads/main/agents/claude-code/environment-docker-ollama-openai.yaml'; `$env:CLAUDE_CODE_TOOLBOX_SKIP_INSTALL='1'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 ```
 
 #### macOS
 
 ```bash
-CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/alex-feel/mcp-context-server/refs/heads/main/agents/claude-code/environment-docker-ollama-openai.yaml' \
+CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/refs/heads/main/agents/claude-code/environment-docker-ollama-openai.yaml' \
 CLAUDE_CODE_TOOLBOX_SKIP_INSTALL=1 \
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh)"
 ```
@@ -117,7 +117,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-to
 #### Linux
 
 ```bash
-CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/alex-feel/mcp-context-server/refs/heads/main/agents/claude-code/environment-docker-ollama-openai.yaml' \
+CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/refs/heads/main/agents/claude-code/environment-docker-ollama-openai.yaml' \
 CLAUDE_CODE_TOOLBOX_SKIP_INSTALL=1 \
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh)"
 ```

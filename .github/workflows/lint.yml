@@ -15,11 +15,11 @@ permissions:
 jobs:
   pre-commit:
     name: Run Pre-Commit Checks
-    # Skip only the release bot's own version-bump PR, and only when the PR was
-    # opened by the repository owner. Release Please runs with a user PAT, so its
-    # PRs are authored by the owner account; if that token is ever replaced with a
-    # GitHub App or a different account, this comparison stops matching and full CI
-    # simply runs on the bump PR (fail-closed).
+    # Skip only the release bot's own version-bump PR: a head branch named
+    # release-please--branches--* that lives in this repository. Only an account
+    # with write access can push a branch here, so the branch authenticates the
+    # release bot's token or a maintainer, and a fork cannot satisfy the check; a
+    # bump PR opened from anywhere else simply gets full CI (fail-closed).
     #
     # There is deliberately NO equivalent skip on the push-to-main event. The only
     # value available there is the commit message, which a contributor controls
@@ -29,7 +29,7 @@ jobs:
     # merge commit is cheap and closes that hole outright.
     if: >-
       ${{
-        ! (startsWith(github.head_ref, 'release-please--branches--') && github.event.pull_request.user.login == github.repository_owner)
+        ! (startsWith(github.head_ref, 'release-please--branches--') && github.event.pull_request.head.repo.full_name == github.repository)
       }}
     runs-on: ubuntu-latest
 
@@ -63,11 +63,11 @@ jobs:
 
   mcp:
     name: MCP Checks
-    # Skip only the release bot's own version-bump PR, and only when the PR was
-    # opened by the repository owner. Release Please runs with a user PAT, so its
-    # PRs are authored by the owner account; if that token is ever replaced with a
-    # GitHub App or a different account, this comparison stops matching and full CI
-    # simply runs on the bump PR (fail-closed).
+    # Skip only the release bot's own version-bump PR: a head branch named
+    # release-please--branches--* that lives in this repository. Only an account
+    # with write access can push a branch here, so the branch authenticates the
+    # release bot's token or a maintainer, and a fork cannot satisfy the check; a
+    # bump PR opened from anywhere else simply gets full CI (fail-closed).
     #
     # There is deliberately NO equivalent skip on the push-to-main event. The only
     # value available there is the commit message, which a contributor controls
@@ -77,11 +77,11 @@ jobs:
     # merge commit is cheap and closes that hole outright.
     if: >-
       ${{
-        ! (startsWith(github.head_ref, 'release-please--branches--') && github.event.pull_request.user.login == github.repository_owner)
+        ! (startsWith(github.head_ref, 'release-please--branches--') && github.event.pull_request.head.repo.full_name == github.repository)
       }}
     runs-on: ubuntu-latest
     env:
-      SERVER_NAME: io.github.alex-feel/mcp-context-server
+      SERVER_NAME: io.github.GetActionSpace/mcp-context-server
 
     steps:
       - name: Checkout code
@@ -115,11 +115,11 @@ jobs:
 
   security:
     name: Security Scan
-    # Skip only the release bot's own version-bump PR, and only when the PR was
-    # opened by the repository owner. Release Please runs with a user PAT, so its
-    # PRs are authored by the owner account; if that token is ever replaced with a
-    # GitHub App or a different account, this comparison stops matching and full CI
-    # simply runs on the bump PR (fail-closed).
+    # Skip only the release bot's own version-bump PR: a head branch named
+    # release-please--branches--* that lives in this repository. Only an account
+    # with write access can push a branch here, so the branch authenticates the
+    # release bot's token or a maintainer, and a fork cannot satisfy the check; a
+    # bump PR opened from anywhere else simply gets full CI (fail-closed).
     #
     # There is deliberately NO equivalent skip on the push-to-main event. The only
     # value available there is the commit message, which a contributor controls
@@ -129,7 +129,7 @@ jobs:
     # merge commit is cheap and closes that hole outright.
     if: >-
       ${{
-        ! (startsWith(github.head_ref, 'release-please--branches--') && github.event.pull_request.user.login == github.repository_owner)
+        ! (startsWith(github.head_ref, 'release-please--branches--') && github.event.pull_request.head.repo.full_name == github.repository)
       }}
     runs-on: ubuntu-latest
 

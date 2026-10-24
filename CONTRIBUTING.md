@@ -20,7 +20,7 @@ We welcome contributions! Please follow these guidelines:
 
 ```bash
 # 1. Clone and setup
-git clone https://github.com/alex-feel/mcp-context-server.git
+git clone https://github.com/GetActionSpace/mcp-context-server.git
 cd mcp-context-server
 uv sync --all-extras --all-groups
 
@@ -197,17 +197,17 @@ Releases are automated using [Release Please](https://github.com/googleapis/rele
 
 On release, three jobs run from `.github/workflows/publish.yml`:
 
-| Job                       | Depends On        | Output                                                                                             |
-|---------------------------|-------------------|----------------------------------------------------------------------------------------------------|
-| `publish-to-pypi`         | `build`           | Package on [PyPI](https://pypi.org/project/mcp-context-server/)                                    |
-| `publish-docker-image`    | `build`           | Image on [GHCR](https://github.com/alex-feel/mcp-context-server/pkgs/container/mcp-context-server) |
-| `publish-to-mcp-registry` | `publish-to-pypi` | Entry in [MCP Registry](https://registry.modelcontextprotocol.io/)                                 |
+| Job                       | Depends On        | Output                                                                                                  |
+|---------------------------|-------------------|---------------------------------------------------------------------------------------------------------|
+| `publish-to-pypi`         | `build`           | Package on [PyPI](https://pypi.org/project/mcp-context-server/)                                         |
+| `publish-docker-image`    | `build`           | Image on [GHCR](https://github.com/GetActionSpace/mcp-context-server/pkgs/container/mcp-context-server) |
+| `publish-to-mcp-registry` | `publish-to-pypi` | Entry in [MCP Registry](https://registry.modelcontextprotocol.io/)                                      |
 
 PyPI and Docker publishing run in parallel. MCP Registry waits for PyPI.
 
 ### Docker Image Details
 
-**Registry:** `ghcr.io/alex-feel/mcp-context-server`
+**Registry:** `ghcr.io/getactionspace/mcp-context-server`
 
 **Platforms:** `linux/amd64`, `linux/arm64`
 
@@ -270,6 +270,6 @@ If a new version was successfully published to PyPI but failed to publish to MCP
 
 ## Need Help?
 
-- Check existing [GitHub Issues](https://github.com/alex-feel/mcp-context-server/issues)
+- Check existing [GitHub Issues](https://github.com/GetActionSpace/mcp-context-server/issues)
 - Read the [README.md](README.md) for usage documentation
 - Create a new issue with detailed information if needed
