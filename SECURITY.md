@@ -14,7 +14,7 @@
 We take security seriously. If you discover a security vulnerability, please follow these steps:
 
 1. **DO NOT** open a public issue
-2. Send details via [GitHub Security Advisories](https://github.com/alex-feel/mcp-context-server/security/advisories/new)
+2. Send details via [GitHub Security Advisories](https://github.com/GetActionSpace/mcp-context-server/security/advisories/new)
 3. Include:
    - Description of the vulnerability
    - Steps to reproduce

@@ -11,19 +11,11 @@ This guide covers deploying the MCP Context Server using the official Helm chart
 
 ## Installation
 
-### Add Repository (Future)
-
-```bash
-# Once published to a Helm repository
-helm repo add mcp-context https://alex-feel.github.io/mcp-context-server
-helm repo update
-```
-
 ### Install from Local Chart
 
 ```bash
 # Clone the repository
-git clone https://github.com/alex-feel/mcp-context-server.git
+git clone https://github.com/GetActionSpace/mcp-context-server.git
 cd mcp-context-server
 
 # Install with default values (SQLite)
@@ -111,7 +103,7 @@ helm install mcp ./deploy/helm/mcp-context-server \
 
 ```yaml
 image:
-  repository: ghcr.io/alex-feel/mcp-context-server
+  repository: ghcr.io/getactionspace/mcp-context-server
   tag: ""  # Defaults to Chart.appVersion
   pullPolicy: IfNotPresent
 
@@ -215,7 +207,7 @@ With `storage.postgresql.rls.enabled: true`, PostgreSQL enforces the access mode
 
    ```bash
    kubectl run mcp-disable-rls --rm -it --restart=Never \
-     --image=ghcr.io/alex-feel/mcp-context-server:<tag> \
+     --image=ghcr.io/getactionspace/mcp-context-server:<tag> \
      --command -- mcp-context-server-migrate --disable-rls \
      --source-url 'postgresql://postgres:<password>@<host>:5432/mcp_context'
    ```

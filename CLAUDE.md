@@ -332,7 +332,7 @@ Multi-stage Dockerfile (uv, non-root UID 10001, `/health` endpoint). Configs in 
 - `{providers}`: embedding+summary combo — single name when both share a provider (`ollama`, `openai`), hyphenated `<embedding>-<summary>` when they differ (`ollama-openai`).
 - `.local` (optional): present ONLY for combinations with a published GHCR image, marking the file that builds that config locally instead of pulling from the registry.
 
-**Image sources**: `*.ollama.yml`/`*.ollama-openai.yml` pull the prebuilt GHCR image (`ghcr.io/alex-feel/mcp-context-server:latest` / `:latest-ollama-openai`, `pull_policy: always`); `*.local.yml` and provider-specific `*.openai.yml` build locally (`image: mcp-context-server`, `pull_policy: build`, with `EMBEDDING_EXTRA`/`SUMMARY_EXTRA` build args, e.g. `SUMMARY_EXTRA=summary-openai`).
+**Image sources**: `*.ollama.yml`/`*.ollama-openai.yml` pull the prebuilt GHCR image (`ghcr.io/getactionspace/mcp-context-server:latest` / `:latest-ollama-openai`, `pull_policy: always`); `*.local.yml` and provider-specific `*.openai.yml` build locally (`image: mcp-context-server`, `pull_policy: build`, with `EMBEDDING_EXTRA`/`SUMMARY_EXTRA` build args, e.g. `SUMMARY_EXTRA=summary-openai`).
 
 **Extensibility rule:** if a GHCR image is published for a combo, create both `*.{providers}.yml` (pull) and `*.{providers}.local.yml` (local build); otherwise create only `*.{providers}.yml` (local build, no `.local` variant).
 
