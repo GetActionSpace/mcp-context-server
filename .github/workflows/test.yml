@@ -12,7 +12,7 @@ permissions:
 jobs:
   test:
     name: Test
-    if: ${{ ! (startsWith(github.head_ref, 'release-please--branches--') && github.event.pull_request.user.login == github.repository_owner) }}
+    if: ${{ ! (startsWith(github.head_ref, 'release-please--branches--') && github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
 
     steps:
@@ -100,7 +100,7 @@ jobs:
     name: Test Summary
     runs-on: ubuntu-latest
     needs: [test]
-    if: ${{ always() && ! (startsWith(github.head_ref, 'release-please--branches--') && github.event.pull_request.user.login == github.repository_owner) }}
+    if: ${{ always() && ! (startsWith(github.head_ref, 'release-please--branches--') && github.event.pull_request.head.repo.full_name == github.repository) }}
 
     steps:
       - name: Summary

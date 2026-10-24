@@ -13,7 +13,7 @@ jobs:
     name: Build Application
     runs-on: ubuntu-latest
     env:
-      SERVER_NAME: io.github.alex-feel/mcp-context-server
+      SERVER_NAME: io.github.GetActionSpace/mcp-context-server
       PACKAGE_NAME: mcp-context-server
     outputs:
       dist-path: ${{ steps.build.outputs.dist-path }}
@@ -126,7 +126,7 @@ jobs:
       id-token: write
       packages: read
     env:
-      SERVER_NAME: io.github.alex-feel/mcp-context-server
+      SERVER_NAME: io.github.GetActionSpace/mcp-context-server
       PACKAGE_NAME: mcp-context-server
 
     steps:
@@ -325,8 +325,8 @@ jobs:
       id-token: write
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: alex-feel/mcp-context-server
-      SERVER_NAME: io.github.alex-feel/mcp-context-server
+      IMAGE_NAME: getactionspace/mcp-context-server
+      SERVER_NAME: io.github.GetActionSpace/mcp-context-server
 
     steps:
       - name: Checkout code
@@ -366,8 +366,8 @@ jobs:
             io.modelcontextprotocol.server.name=${{ env.SERVER_NAME }}
             org.opencontainers.image.description=MCP server providing persistent multimodal context storage for LLM agents. Ollama embeddings and summary provider.
             org.opencontainers.image.licenses=Elastic-2.0
-            org.opencontainers.image.vendor=alex-feel
-            org.opencontainers.image.documentation=https://github.com/alex-feel/mcp-context-server#readme
+            org.opencontainers.image.vendor=ActionSpace
+            org.opencontainers.image.documentation=https://github.com/GetActionSpace/mcp-context-server#readme
             org.opencontainers.image.base.name=docker.io/library/python:3.12-slim-bookworm
         env:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
@@ -405,7 +405,7 @@ jobs:
       id-token: write
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: alex-feel/mcp-context-server
+      IMAGE_NAME: getactionspace/mcp-context-server
 
     steps:
       - name: Checkout code
@@ -446,8 +446,8 @@ jobs:
           labels: |
             org.opencontainers.image.description=MCP server providing persistent multimodal context storage for LLM agents. Ollama embeddings + OpenAI summary provider.
             org.opencontainers.image.licenses=Elastic-2.0
-            org.opencontainers.image.vendor=alex-feel
-            org.opencontainers.image.documentation=https://github.com/alex-feel/mcp-context-server#readme
+            org.opencontainers.image.vendor=ActionSpace
+            org.opencontainers.image.documentation=https://github.com/GetActionSpace/mcp-context-server#readme
             org.opencontainers.image.base.name=docker.io/library/python:3.12-slim-bookworm
         env:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
