@@ -223,7 +223,7 @@ class BatchPosition:
 
     @property
     def batch_label(self) -> str:
-        """For example ``'batch 3 of 40'``."""
+        """For example ``'batch 3 of 41'``."""
         return f'batch {self.batch_number} of {self.batch_count}'
 
     @property

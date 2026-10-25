@@ -827,8 +827,8 @@ Each batch holds one of the `EMBEDDING_MAX_CONCURRENT` slots and releases it bet
 When a batch fails or runs out of time, nothing is saved (see [Embedding-First Transactional Integrity](#embedding-first-transactional-integrity)) and the error names the batch and the progress made:
 
 ```text
-Embedding generation failed: <provider message> (batch 3 of 40, chunks 9-15 of 280; 8 chunks embedded in 12.3 s)
-Embedding generation exceeded total timeout (1341s) on batch 3 of 40 (chunks 9-15 of 280; 8 chunks embedded in 12.3 s). This may indicate the embedding provider is overloaded or unreachable.
+Embedding generation failed: <provider message> (batch 3 of 41, chunks 9-15 of 280; 8 chunks embedded in 12.3 s)
+Embedding generation exceeded total timeout (1341s) on batch 3 of 41 (chunks 9-15 of 280; 8 chunks embedded in 12.3 s). This may indicate the embedding provider is overloaded or unreachable.
 ```
 
 In `auto` mode the batch count is projected from the size of the failing batch. The server logs the start of each document's embedding (text length, chunk count, batch mode) and its completion (chunks, batches, elapsed time) at INFO, and every batch at DEBUG.
