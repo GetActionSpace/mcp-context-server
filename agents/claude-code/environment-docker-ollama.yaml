@@ -11,7 +11,7 @@ name: MCP Context Server Integration (Ollama Models Only)
 
 description: |
   For more information, see:
-  https://github.com/alex-feel/mcp-context-server/blob/main/docs/connecting-ai-assistant.md#one-command-setup
+  https://github.com/GetActionSpace/mcp-context-server/blob/main/docs/connecting-ai-assistant.md#one-command-setup
 
 # Additional files to download (utility modules loaded by other hooks at runtime,
 # plus uv sidecar lockfiles for the hooks below that declare PEP 723 dependencies:
@@ -20,19 +20,19 @@ description: |
 # hook launch, which avoids transient uv cache-write failures on Windows and makes
 # hook startup deterministic and faster)
 files-to-download:
-  - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/hook_config_loader.py
+  - source: https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/hooks/hook_config_loader.py
     dest: ~/.claude/hooks/
-  - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/hook_json_output.py
+  - source: https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/hooks/hook_json_output.py
     dest: ~/.claude/hooks/
-  - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/user_prompt_context_saver.py.lock
+  - source: https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/hooks/user_prompt_context_saver.py.lock
     dest: ~/.claude/hooks/user_prompt_context_saver.py.lock
-  - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/worktree_context.py.lock
+  - source: https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/hooks/worktree_context.py.lock
     dest: ~/.claude/hooks/worktree_context.py.lock
-  - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/context_awareness_guidance.py.lock
+  - source: https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/hooks/context_awareness_guidance.py.lock
     dest: ~/.claude/hooks/context_awareness_guidance.py.lock
-  - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/subagent_context_protocol_injection.py.lock
+  - source: https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/hooks/subagent_context_protocol_injection.py.lock
     dest: ~/.claude/hooks/subagent_context_protocol_injection.py.lock
-  - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/deploy/docker/docker-compose.postgresql.ollama.yml
+  - source: https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/deploy/docker/docker-compose.postgresql.ollama.yml
     dest: ~/.mcp/docker-compose.postgresql.ollama.yml
 
 # Start the stack after the compose file has been downloaded.
@@ -64,28 +64,28 @@ os-env-variables:
 # Skills for context management
 skills:
   - name: context-metadata-schema
-    base: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/common/skills/context-metadata-schema
+    base: https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/common/skills/context-metadata-schema
     files:
       - SKILL.md
 
   - name: context-retrieval-protocol
-    base: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/common/skills/context-retrieval-protocol
+    base: https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/common/skills/context-retrieval-protocol
     files:
       - SKILL.md
 
   - name: context-preservation-protocol
-    base: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/common/skills/context-preservation-protocol
+    base: https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/common/skills/context-preservation-protocol
     files:
       - SKILL.md
 
   - name: issue-tracking-protocol
-    base: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/common/skills/issue-tracking-protocol
+    base: https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/common/skills/issue-tracking-protocol
     files:
       - SKILL.md
 
 # Rules for context server usage guidance
 rules:
-  - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/rules/context-server-integration.md
+  - https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/rules/context-server-integration.md
 
 # MCP server configuration
 mcp-servers:
@@ -98,23 +98,23 @@ mcp-servers:
 hooks:
   files:
     # Context persistence hooks and configs
-    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/user_prompt_context_saver.py
-    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/configs/user_prompt_context_saver_config.yaml
+    - https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/hooks/user_prompt_context_saver.py
+    - https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/hooks/configs/user_prompt_context_saver_config.yaml
 
     # Project identity
-    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/worktree_context.py
+    - https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/hooks/worktree_context.py
 
     # Session context hooks
-    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/thread_id_context.py
-    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/timezone_date_context.py
+    - https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/hooks/thread_id_context.py
+    - https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/hooks/timezone_date_context.py
 
     # Context lifecycle hooks and configs
-    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/context_awareness_guidance.py
-    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/configs/context_awareness_guidance_config.yaml
+    - https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/hooks/context_awareness_guidance.py
+    - https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/hooks/configs/context_awareness_guidance_config.yaml
 
     # Subagent context protocol injection and its config - SubagentStart store/retrieve protocol
-    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/subagent_context_protocol_injection.py
-    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/configs/subagent_context_protocol_injection_config.yaml
+    - https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/hooks/subagent_context_protocol_injection.py
+    - https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/hooks/configs/subagent_context_protocol_injection_config.yaml
 
   events:
     # SessionStart context hooks (ORDER MATTERS: worktree BEFORE thread_id)
@@ -249,6 +249,6 @@ post-install-notes: |
     docker compose -f ~/.mcp/docker-compose.postgresql.ollama.yml down
 
   Update (re-download compose file + pull newer images + restart):
-    Just re-run the same script from https://github.com/alex-feel/mcp-context-server/blob/main/docs/connecting-ai-assistant.md
+    Just re-run the same script from https://github.com/GetActionSpace/mcp-context-server/blob/main/docs/connecting-ai-assistant.md
 
   Windows PowerShell: replace ~ with $HOME in the commands above.

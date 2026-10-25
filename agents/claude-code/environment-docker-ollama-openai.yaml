@@ -13,17 +13,17 @@ description: |
   IMPORTANT: Make sure you have created a .env file in the ~/.mcp/ directory and added your OpenAI API key before proceeding
 
   For more information, see:
-  https://github.com/alex-feel/mcp-context-server/blob/main/docs/connecting-ai-assistant.md#ollama--openai-summary-variant
+  https://github.com/GetActionSpace/mcp-context-server/blob/main/docs/connecting-ai-assistant.md#ollama--openai-summary-variant
 
-inherit: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/environment-docker-ollama.yaml
+inherit: https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/environment-docker-ollama.yaml
 
 # Additional files to download (utility modules loaded by other hooks at runtime)
 files-to-download:
-  - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/hook_config_loader.py
+  - source: https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/hooks/hook_config_loader.py
     dest: ~/.claude/hooks/
-  - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/hook_json_output.py
+  - source: https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/agents/claude-code/hooks/hook_json_output.py
     dest: ~/.claude/hooks/
-  - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/deploy/docker/docker-compose.postgresql.ollama-openai.yml
+  - source: https://raw.githubusercontent.com/GetActionSpace/mcp-context-server/main/deploy/docker/docker-compose.postgresql.ollama-openai.yml
     dest: ~/.mcp/docker-compose.postgresql.ollama-openai.yml
 
 # Start the stack after the compose file has been downloaded.
@@ -46,6 +46,6 @@ post-install-notes: |
     docker compose -f ~/.mcp/docker-compose.postgresql.ollama-openai.yml down
 
   Update (re-download compose file + pull newer images + restart):
-    Just re-run the same script from https://github.com/alex-feel/mcp-context-server/blob/main/docs/connecting-ai-assistant.md
+    Just re-run the same script from https://github.com/GetActionSpace/mcp-context-server/blob/main/docs/connecting-ai-assistant.md
 
   Windows PowerShell: replace ~ with $HOME in the commands above.
