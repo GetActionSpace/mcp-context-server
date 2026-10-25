@@ -1,8 +1,9 @@
 """Real-server checks for ``store_context``.
 
 Text and multimodal stores, rejection of empty text, an image at the size
-limit, the generation-first store path, and automatic ``multimodal``
-content-type detection.
+limit, the generation-first store path, automatic ``multimodal``
+content-type detection, and a document long enough for several embedding
+batches.
 """
 
 import base64
@@ -346,3 +347,76 @@ class StoreMixin(HarnessCore):
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
+
+    async def test_store_context_long_document_in_batches(self) -> bool:
+        """Store a Markdown document long enough for several embedding batches.
+
+        Runs when the server registered ``semantic_search_context``: the document
+        splits into twelve chunks at the default chunk size, so the store
+        embeds it in more than one batch, and semantic search must then find it.
+
+        Returns:
+            bool: True if test passed or was skipped because semantic search is not registered.
+        """
+        test_name = 'Store Context Long Document In Batches'
+        if 'semantic_search_context' not in self.registered_tools:
+            return self._record(test_name, [], 'Skipped (semantic_search_context not registered)')
+        try:
+            thread_id = f'{self.test_thread_id}_embedding_batches'
+            text = _long_markdown_document()
+            stored, error = await self._outcome(
+                'store_context', {'thread_id': thread_id, 'source': 'agent', 'text': text},
+            )
+            if stored is None or not stored.get('success'):
+                return self._record(test_name, [f'store_context failed: {error or stored}'], '')
+            context_id = stored['context_id']
+
+            found, error = await self._outcome(
+                'semantic_search_context',
+                {'query': 'anemones and sea stars in rocky coastal tide pools', 'thread_id': thread_id, 'limit': 5},
+            )
+            problems: list[str] = []
+            if found is None:
+                problems.append(f'semantic_search_context failed: {error}')
+            elif context_id not in [row.get('id') for row in found.get('results', [])]:
+                problems.append(f'semantic search did not return {context_id}: {found}')
+            return self._record(
+                test_name, problems, f'stored {len(text)} characters as {context_id} and found it by semantic search',
+            )
+        except Exception as e:
+            return self._record(test_name, [f'Exception: {e}'], '')
+
+
+_DOCUMENT_TOPICS: tuple[tuple[str, str], ...] = (
+    ('Tide Pools', 'tide pools along a rocky coast shelter anemones, sea stars and hermit crabs'),
+    ('Sourdough Baking', 'a sourdough starter of flour and water ferments for days before it leavens bread'),
+    ('Glacier Movement', 'glaciers creep downhill under their own weight and carve valleys out of bedrock'),
+    ('Beekeeping', 'a beekeeper inspects the hive frames for brood, honey stores and a laying queen'),
+    ('Orbital Mechanics', 'a satellite in low orbit circles the planet every ninety minutes at high speed'),
+    ('Violin Making', 'a luthier carves spruce and maple plates and varnishes the finished violin'),
+    ('Desert Ecology', 'desert plants store water in thick stems and open their pores only at night'),
+    ('Railway Signaling', 'block signals keep trains apart by allowing one train per section of track'),
+    ('Coffee Roasting', 'roasting turns green coffee beans brown as sugars caramelize in the drum'),
+    ('Volcanic Islands', 'volcanic islands rise where magma breaks through the ocean floor and cools'),
+    ('Typesetting', 'a typesetter arranges metal letters in a composing stick line by line'),
+    ('Wetland Birds', 'herons and egrets wade through shallow wetlands hunting fish and frogs'),
+)
+
+
+def _long_markdown_document() -> str:
+    """Build a Markdown document that splits into twelve chunks at the default chunk size, one per section.
+
+    Returns:
+        The document text.
+    """
+    sections = []
+    for title, fact in _DOCUMENT_TOPICS:
+        sentences = [
+            f'In this section on {title.lower()}, the main observation is that {fact}.',
+            f'Field notes repeat it: {fact}, and the notes record when and where it was seen.',
+            f'Readers new to {title.lower()} often ask why {fact}; the answer takes a whole season of study.',
+            f'Over many years the same pattern holds, since {fact} wherever the conditions allow.',
+        ]
+        paragraph = ' '.join(sentences * 2)
+        sections.append(f'## {title}\n\n{paragraph}')
+    return '# Field Guide\n\n' + '\n\n'.join(sections) + '\n'

@@ -2,6 +2,7 @@
 
 import logging
 import os
+from typing import Annotated
 from typing import Literal
 from typing import Self
 
@@ -80,8 +81,9 @@ class EmbeddingSettings(CommonSettings):
         default=240.0,
         alias='EMBEDDING_TIMEOUT_S',
         gt=0,
-        le=300,
-        description='Timeout in seconds for embedding generation API calls',
+        le=3600,
+        description='Timeout in seconds for one attempt of one embedding request: one batch of '
+                    'chunks on the store/update path, one query on search',
     )
     retry_max_attempts: int = Field(
         default=5,
@@ -104,9 +106,27 @@ class EmbeddingSettings(CommonSettings):
         alias='EMBEDDING_MAX_CONCURRENT',
         ge=1,
         le=20,
-        description='Maximum concurrent embedding generation operations. '
+        description='Maximum concurrent embedding requests on the store/update path. '
+                    'A chunked document holds one slot per batch and releases it between batches. '
                     'Limits parallel Ollama/provider requests to prevent overload. '
                     'Default 3 balances throughput vs resource contention.',
+    )
+
+    # Document batching: a chunked document is embedded in batches, one provider
+    # request per batch, so the timeout and retries apply per batch.
+    batch_size: Literal['auto'] | Annotated[int, Field(ge=1, le=512)] = Field(
+        default='auto',
+        alias='EMBEDDING_BATCH_SIZE',
+        description="Chunks per embedding request when a document is embedded. 'auto' (default) "
+                    'sizes each batch to take about EMBEDDING_BATCH_TARGET_S from the measured '
+                    'seconds per chunk, between 1 and 64 chunks; an integer from 1 to 512 fixes the size.',
+    )
+    batch_target_s: float = Field(
+        default=5.0,
+        alias='EMBEDDING_BATCH_TARGET_S',
+        gt=0,
+        le=3600,
+        description="Wall time in seconds one embedding batch should take when EMBEDDING_BATCH_SIZE is 'auto'",
     )
 
     # Ollama-specific context and truncation settings
@@ -192,6 +212,23 @@ class EmbeddingSettings(CommonSettings):
         le=128,
         description='Number of texts per API call (default: 7)',
     )
+
+    @field_validator('batch_size', mode='before')
+    @classmethod
+    def _coerce_batch_size(cls, value: object) -> object:
+        """Turn a digit string into an int and any casing of 'auto' into 'auto'.
+
+        Returns:
+            The int or 'auto' for those inputs, otherwise the value unchanged for
+            field validation to reject.
+        """
+        if isinstance(value, str):
+            text = value.strip()
+            if text.lower() == 'auto':
+                return 'auto'
+            if text.isdigit():
+                return int(text)
+        return value
 
     @field_validator('dim')
     @classmethod

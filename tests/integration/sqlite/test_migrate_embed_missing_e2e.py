@@ -54,7 +54,7 @@ class _FakeEmbeddingProvider:
     """Deterministic stub embedding provider returning unit float32 vectors.
 
     Mirrors the :class:`app.embeddings.base.EmbeddingProvider` protocol so
-    the live ``_generate_embeddings_for_text`` pipeline accepts it.
+    the live ``generate_embeddings_with_timeout`` pipeline accepts it.
     """
 
     def __init__(self, dim: int = DIM) -> None:

@@ -239,6 +239,7 @@ class MCPServerIntegrationTest(
             ('Batch Store Summary Field', self.test_batch_store_summary_field),
             # Generation-First Pattern Tests
             ('Store Context Generation First', self.test_store_context_generation_first_return_exceptions),
+            ('Store Context Long Document In Batches', self.test_store_context_long_document_in_batches),
             ('Batch Store Generation First', self.test_batch_store_generation_first_return_exceptions),
             # Middleware JSON String Deserializer Tests
             ('Middleware Deserializes Stringified Tags', self.test_middleware_deserializes_stringified_tags),

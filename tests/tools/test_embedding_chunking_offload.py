@@ -1,6 +1,6 @@
 """The store/update embedding leg offloads a splitting entry's chunking off the loop.
 
-``_generate_embeddings_for_text`` calls ``ChunkingService.split_text`` ->
+``generate_embeddings_with_timeout`` calls ``ChunkingService.split_text`` ->
 ``RecursiveCharacterTextSplitter.create_documents``, which is pure CPU over
 UNBOUNDED stored entry text and runs on the embedding leg of ``run_generation``
 (the store/update/batch write path). The recursive split costs roughly a
@@ -24,7 +24,7 @@ import pytest
 
 import app.tools._generation as generation_module
 from app.services.chunking_service import TextChunk
-from app.tools._generation import _generate_embeddings_for_text
+from app.tools._generation import generate_embeddings_with_timeout
 
 
 class _FakeEmbeddingProvider:
@@ -60,7 +60,7 @@ async def test_splitting_entry_chunking_offloaded() -> None:
         patch.object(generation_module, 'get_embedding_provider', lambda: _FakeEmbeddingProvider()),
         patch.object(generation_module, 'get_chunking_service', lambda: spy),
     ):
-        result = await _generate_embeddings_for_text(big)
+        result = await generate_embeddings_with_timeout(big)
     assert spy.on_main is False  # chunking ran on a worker thread, not the event loop
     assert result is not None
     assert len(result) == 1
@@ -81,7 +81,7 @@ async def test_plain_text_below_the_old_size_threshold_is_still_offloaded() -> N
         patch.object(generation_module, 'get_embedding_provider', lambda: _FakeEmbeddingProvider()),
         patch.object(generation_module, 'get_chunking_service', lambda: spy),
     ):
-        await _generate_embeddings_for_text(text)
+        await generate_embeddings_with_timeout(text)
     assert spy.on_main is False
 
 
@@ -92,5 +92,5 @@ async def test_small_entry_chunking_inline() -> None:
         patch.object(generation_module, 'get_embedding_provider', lambda: _FakeEmbeddingProvider()),
         patch.object(generation_module, 'get_chunking_service', lambda: spy),
     ):
-        await _generate_embeddings_for_text('short text body')
+        await generate_embeddings_with_timeout('short text body')
     assert spy.on_main is True  # split_text short-circuits below chunk_size; no thread hop

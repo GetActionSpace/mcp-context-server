@@ -1,7 +1,8 @@
 """Tests for app/settings/embedding.py.
 
 Covers the EMBEDDING_QUERY_INSTRUCTION field, the Ollama and Voyage truncation
-settings on EmbeddingSettings, and ChunkingSettings.
+settings, the timeout bound and batch settings on EmbeddingSettings, and
+ChunkingSettings.
 """
 
 import pytest
@@ -119,6 +120,66 @@ class TestVoyageTruncationSettings:
         with env_vars(VOYAGE_TRUNCATION='false'):
             settings = AppSettings()
             assert settings.embedding.voyage_truncation is False
+
+
+class TestEmbeddingBatchSettings:
+    """Test EMBEDDING_TIMEOUT_S bounds and the EMBEDDING_BATCH_* settings."""
+
+    def test_defaults(self) -> None:
+        """Batch sizing defaults to auto with a five-second target; the timeout stays 240 s."""
+        from app.settings.embedding import EmbeddingSettings
+
+        with env_vars(EMBEDDING_BATCH_SIZE=None, EMBEDDING_BATCH_TARGET_S=None, EMBEDDING_TIMEOUT_S=None):
+            settings = EmbeddingSettings()
+        assert settings.batch_size == 'auto'
+        assert settings.batch_target_s == 5.0
+        assert settings.timeout_s == 240.0
+
+    @pytest.mark.parametrize(
+        ('raw', 'expected'),
+        [('8', 8), ('1', 1), ('512', 512), (' 16 ', 16), ('auto', 'auto'), ('AUTO', 'auto'), (' Auto ', 'auto')],
+    )
+    def test_batch_size_accepts_auto_and_integers(self, raw: str, expected: int | str) -> None:
+        """A digit string becomes an integer and any casing of auto becomes 'auto'."""
+        from app.settings.embedding import EmbeddingSettings
+
+        with env_var('EMBEDDING_BATCH_SIZE', raw):
+            settings = EmbeddingSettings()
+        assert settings.batch_size == expected
+
+    @pytest.mark.parametrize('raw', ['0', '513', '-1', 'x', '2.5', ''])
+    def test_batch_size_rejects_other_values(self, raw: str) -> None:
+        """Values outside 1..512 and words other than auto are configuration errors."""
+        from app.settings.embedding import EmbeddingSettings
+
+        with env_var('EMBEDDING_BATCH_SIZE', raw), pytest.raises(ValidationError):
+            EmbeddingSettings()
+
+    @pytest.mark.parametrize(('raw', 'expected'), [('0.5', 0.5), ('3600', 3600.0)])
+    def test_batch_target_accepts_its_range(self, raw: str, expected: float) -> None:
+        """The batch target accepts any positive value up to an hour."""
+        from app.settings.embedding import EmbeddingSettings
+
+        with env_var('EMBEDDING_BATCH_TARGET_S', raw):
+            settings = EmbeddingSettings()
+        assert settings.batch_target_s == expected
+
+    @pytest.mark.parametrize('raw', ['0', '-1', '3600.5'])
+    def test_batch_target_rejects_values_outside_its_range(self, raw: str) -> None:
+        """A zero, negative or over-an-hour target is a configuration error."""
+        from app.settings.embedding import EmbeddingSettings
+
+        with env_var('EMBEDDING_BATCH_TARGET_S', raw), pytest.raises(ValidationError):
+            EmbeddingSettings()
+
+    def test_timeout_accepts_up_to_an_hour(self) -> None:
+        """EMBEDDING_TIMEOUT_S accepts 3600 and refuses anything above it."""
+        from app.settings.embedding import EmbeddingSettings
+
+        with env_var('EMBEDDING_TIMEOUT_S', '3600'):
+            assert EmbeddingSettings().timeout_s == 3600.0
+        with env_var('EMBEDDING_TIMEOUT_S', '3600.5'), pytest.raises(ValidationError):
+            EmbeddingSettings()
 
 
 class TestChunkingSettings:

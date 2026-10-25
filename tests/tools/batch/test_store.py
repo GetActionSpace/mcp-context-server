@@ -91,7 +91,7 @@ class TestBatchStoreResponseParity:
             patch('app.tools._generation.get_embedding_provider') as mock_shared_emb_provider_fn,
             patch('app.tools.batch.store.get_summary_provider', return_value=None),
             patch(
-                'app.tools._generation._generate_embeddings_for_text',
+                'app.tools.batch.store.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,
                 return_value=mock_chunk_embeddings,
             ),

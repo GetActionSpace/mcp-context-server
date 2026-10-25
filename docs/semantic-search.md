@@ -467,7 +467,7 @@ Text chunking splits long context entries into smaller chunks for embedding gene
 ### How It Works
 
 1. **Text Splitting**: Long text is split using RecursiveCharacterTextSplitter with separators: `['\n\n', '\n', '. ', ' ', '']`
-2. **Embedding Generation**: Each chunk is embedded independently
+2. **Embedding Generation**: Each chunk is embedded independently; the chunks reach the provider in batches (see [Batched Document Embedding](#batched-document-embedding))
 3. **Storage**: Multiple embeddings stored per context entry (1:N relationship)
 4. **Search Deduplication**: Results are deduplicated by context_id using the configured aggregation method
 
@@ -616,11 +616,13 @@ Recommendation: Reduce CHUNK_SIZE to ~76800 chars (80% of context window).
 
 All providers support these settings:
 
-| Variable                       | Default | Description                |
-|--------------------------------|---------|----------------------------|
-| `EMBEDDING_TIMEOUT_S`          | `240.0` | API timeout in seconds     |
-| `EMBEDDING_RETRY_MAX_ATTEMPTS` | `5`     | Max retry attempts         |
-| `EMBEDDING_RETRY_BASE_DELAY_S` | `1.0`   | Base delay between retries |
+| Variable                       | Default | Description                                                                                               |
+|--------------------------------|---------|-----------------------------------------------------------------------------------------------------------|
+| `EMBEDDING_TIMEOUT_S`          | `240.0` | Timeout in seconds for one attempt of one request (one batch of a document's chunks, or one search query) |
+| `EMBEDDING_RETRY_MAX_ATTEMPTS` | `5`     | Max retry attempts                                                                                        |
+| `EMBEDDING_RETRY_BASE_DELAY_S` | `1.0`   | Base delay between retries                                                                                |
+| `EMBEDDING_BATCH_SIZE`         | `auto`  | Chunks per batch: `auto` (sized to `EMBEDDING_BATCH_TARGET_S`) or a fixed 1-512                           |
+| `EMBEDDING_BATCH_TARGET_S`     | `5.0`   | Wall time in seconds one batch should take in `auto` mode                                                 |
 
 ### Full Configuration Example
 
@@ -805,11 +807,31 @@ When registered (by default, whenever an embedding provider is available), the `
 
 Embeddings are generated automatically:
 
-- **On `store_context`**: Embeddings generated in background
+- **On `store_context`**: Embeddings generated before the entry is written
 - **On `store_context_batch`**: Embeddings generated for each entry
 - **On `update_context`**: Embeddings regenerated when text changes
 - **On `update_context_batch`**: Embeddings regenerated for entries with text changes
 - **On `delete_context`**: Embeddings cascade deleted
+
+### Batched Document Embedding
+
+The server embeds a chunked document in batches, one provider request per batch, instead of sending every chunk in one request. The retry policy and the timeouts apply to each batch:
+
+- `EMBEDDING_TIMEOUT_S` bounds one attempt of one batch, and `EMBEDDING_RETRY_MAX_ATTEMPTS` retries re-send only the batch that failed, never the chunks already embedded.
+- The total timeout derived from those settings (every attempt plus the backoff between them, with a 10% margin) also applies to each batch. A document's size sets how many batches it takes, not how long any single request may run, so a large document needs no larger timeout.
+
+`EMBEDDING_BATCH_SIZE` chooses the batch size. With the default `auto`, the first batch carries 4 chunks; after each batch the server folds the measured seconds per chunk into an exponentially weighted estimate and sizes the next batch to take about `EMBEDDING_BATCH_TARGET_S` (default 5 seconds), between 1 and 64 chunks. The estimate comes from the provider's observed speed, queueing at the provider included, so it needs no setting tied to the CPU, GPU, or hosted service behind the provider, and it carries over from one document to the next. An integer from 1 to 512 fixes the size instead.
+
+Each batch holds one of the `EMBEDDING_MAX_CONCURRENT` slots and releases it between batches, and waiting callers receive slots in arrival order. When every slot is taken, a store or update that arrives gets the next slot a finishing batch frees, instead of waiting for the rest of a running document.
+
+When a batch fails or runs out of time, nothing is saved (see [Embedding-First Transactional Integrity](#embedding-first-transactional-integrity)) and the error names the batch and the progress made:
+
+```text
+Embedding generation failed: <provider message> (batch 3 of 40, chunks 9-15 of 280; 8 chunks embedded in 12.3 s)
+Embedding generation exceeded total timeout (1341s) on batch 3 of 40 (chunks 9-15 of 280; 8 chunks embedded in 12.3 s). This may indicate the embedding provider is overloaded or unreachable.
+```
+
+In `auto` mode the batch count is projected from the size of the failing batch. The server logs the start of each document's embedding (text length, chunk count, batch mode) and its completion (chunks, batches, elapsed time) at INFO, and every batch at DEBUG.
 
 ## Embedding-First Transactional Integrity
 
@@ -824,6 +846,7 @@ This ensures data consistency: you never have context entries without their corr
 **Key Implications:**
 - Embedding failures prevent data storage (not graceful degradation)
 - Network issues with embedding provider will cause store_context to fail
+- A batch that still fails after its retries fails the whole store; the batches already embedded are discarded with it
 - Consider retry logic in client code for transient embedding failures
 
 ### Example Use Cases
@@ -1025,10 +1048,12 @@ VOYAGE_BATCH_SIZE=20  # Higher for throughput, lower for latency
 
 ### Timeouts
 
-Increase timeout for slow connections:
+`EMBEDDING_TIMEOUT_S` bounds one attempt of one request, a single batch of chunks, so a larger document needs no larger value. Raise it when single requests are slow, for example a provider behind a slow connection:
 ```bash
-EMBEDDING_TIMEOUT_S=300
+EMBEDDING_TIMEOUT_S=600
 ```
+
+To keep each request short instead, lower `EMBEDDING_BATCH_TARGET_S` or set a small fixed `EMBEDDING_BATCH_SIZE`.
 
 ## Additional Resources
 
