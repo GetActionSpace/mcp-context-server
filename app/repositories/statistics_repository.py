@@ -23,6 +23,7 @@ from app.access_scope import Scope
 from app.access_scope import build_access_predicate
 from app.access_scope import build_readable_parent_predicate
 from app.backends.base import StorageBackend
+from app.discovery_types import GenerationStatsDict
 from app.discovery_types import ThreadInfoDict
 from app.ids import normalize_id
 from app.repositories._collation import byte_ordered_text
@@ -65,7 +66,7 @@ class _Row(Protocol):
     def __getitem__(self, key: str, /) -> object: ...
 
 
-def _generation_counts(rows: Iterable[_Row]) -> dict[str, int]:
+def _generation_counts(rows: Iterable[_Row]) -> GenerationStatsDict:
     """Fold job counts by status into the entries whose generation is pending and failed.
 
     A running job's outputs are still outstanding, so it counts as pending.
@@ -76,9 +77,12 @@ def _generation_counts(rows: Iterable[_Row]) -> dict[str, int]:
     Returns:
         ``pending`` and ``failed``, each zero when no job has that state.
     """
-    counts = {'pending': 0, 'failed': 0}
+    counts: GenerationStatsDict = {'pending': 0, 'failed': 0}
     for row in rows:
-        counts['failed' if row['status'] == 'failed' else 'pending'] += int(str(row['count']))
+        if row['status'] == 'failed':
+            counts['failed'] += int(str(row['count']))
+        else:
+            counts['pending'] += int(str(row['count']))
     return counts
 
 

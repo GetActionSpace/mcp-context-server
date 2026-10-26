@@ -37,6 +37,7 @@ from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
 from app.backends.postgresql_backend.session_profiles import UnboundProfile
 from app.compression.provenance import insert_compression_metadata
 from app.compression.types import CompressionMetadata
+from app.discovery_types import GenerationStatsDict
 from app.migrations.compression import apply_compression_migration
 from app.settings import get_settings
 from app.startup import set_backend
@@ -155,7 +156,7 @@ async def test_get_statistics_returns_typed_dict_shape(
     required_keys = {
         'total_entries', 'by_source', 'by_content_type', 'total_images',
         'unique_tags', 'total_threads', 'avg_entries_per_thread',
-        'most_active_threads', 'top_tags', 'backend',
+        'most_active_threads', 'top_tags', 'backend', 'generation',
     }
     for key in required_keys:
         assert key in stats, f'missing required top-level key: {key}'
@@ -219,6 +220,36 @@ async def test_embeddings_size_reported_when_generation_or_compression_enabled(
     assert 'embeddings_size_estimated' in stats
     assert isinstance(stats['embeddings_size_estimated'], bool)
     assert 'database_size_mb' in stats
+
+
+@pytest.mark.asyncio
+async def test_every_top_level_key_is_declared(
+    fresh_backend: StorageBackend,
+) -> None:
+    """Every top-level key get_statistics emits is declared on StatisticsResponseDict.
+
+    FastMCP derives the tool's advertised outputSchema from the TypedDict, and a
+    client reading the tool through that schema drops any key the schema does not
+    declare, so an emitted block the declaration misses never reaches those clients.
+    """
+    del fresh_backend  # Implicit via set_backend
+    stats = cast(dict[str, Any], await discovery_module.get_statistics())
+    declared = set(cast(Any, _get_statistics_response_dict()).__annotations__)
+
+    assert sorted(set(stats) - declared) == []
+
+
+@pytest.mark.asyncio
+async def test_generation_block_counts_pending_and_failed_entries(
+    fresh_backend: StorageBackend,
+) -> None:
+    """The generation block holds exactly the pending and failed counts, both zero without jobs."""
+    del fresh_backend  # Implicit via set_backend
+    stats = await discovery_module.get_statistics()
+
+    assert stats['generation'] == {'pending': 0, 'failed': 0}
+    assert GenerationStatsDict.__required_keys__ == frozenset({'pending', 'failed'})
+    assert GenerationStatsDict.__optional_keys__ == frozenset()
 
 
 def _declared_connection_metric_keys() -> set[str]:
