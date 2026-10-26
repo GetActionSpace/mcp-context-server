@@ -67,6 +67,22 @@ class TimedProvider:
         return [[0.0] for _ in texts]
 
 
+class HangingProvider:
+    """Embedding provider whose request never answers.
+
+    ``called`` is set when a request arrives, so a test can act while it hangs.
+    """
+
+    def __init__(self) -> None:
+        self.called = asyncio.Event()
+        self._never = asyncio.Event()
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.called.set()
+        await self._never.wait()
+        return [[0.0] for _ in texts]
+
+
 def _texts(count: int) -> list[str]:
     return [f't{i}' for i in range(count)]
 
@@ -429,6 +445,44 @@ class TestEmbedInBatches:
         await asyncio.gather(long_document, short_document)
 
         assert order == ['a0', 'b0', 'a2', 'a4']
+
+    @pytest.mark.asyncio
+    async def test_a_failed_batch_releases_its_slot(self) -> None:
+        class FailingProvider:
+            async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+                raise RuntimeError(f'model not loaded for {len(texts)} texts')
+
+        semaphore = asyncio.Semaphore(1)
+        with pytest.raises(EmbeddingBatchError):
+            await embed_in_batches(
+                FailingProvider(), _texts(2), sizer=FixedBatchSizer(2), semaphore=semaphore, batch_timeout_s=10.0,
+            )
+
+        assert not semaphore.locked()
+
+    @pytest.mark.asyncio
+    async def test_a_timed_out_batch_releases_its_slot(self) -> None:
+        semaphore = asyncio.Semaphore(1)
+        with pytest.raises(EmbeddingBatchTimeoutError):
+            await embed_in_batches(
+                HangingProvider(), _texts(2), sizer=FixedBatchSizer(2), semaphore=semaphore, batch_timeout_s=0.01,
+            )
+
+        assert not semaphore.locked()
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_batch_releases_its_slot(self) -> None:
+        provider = HangingProvider()
+        semaphore = asyncio.Semaphore(1)
+        task = asyncio.create_task(
+            embed_in_batches(provider, _texts(2), sizer=FixedBatchSizer(2), semaphore=semaphore, batch_timeout_s=10.0),
+        )
+        await provider.called.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert not semaphore.locked()
 
     @pytest.mark.asyncio
     async def test_the_sizer_learns_request_time_not_queue_time(self) -> None:
