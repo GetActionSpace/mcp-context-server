@@ -550,7 +550,7 @@ See the [Using with Supabase section in the Database Backends Guide](../database
 
 ### Enabling row-level security
 
-With [row-level security](../database-backends.md#row-level-security-postgresql), PostgreSQL enforces the access model in addition to the server. It needs requests to connect as a login role that does not own the tables, while the role that owns them keeps running the migrations.
+With [row-level security](../database-backends.md#row-level-security-postgresql), PostgreSQL enforces the access model in addition to the server. It needs requests to connect as a login role that does not own the tables, while the role that owns them keeps running the migrations and, while an embedding or summary provider is active, the writes of the generation worker on a connection the server keeps open (see [Deferred Generation Jobs](../database-backends.md#deferred-generation-jobs)).
 
 **Bundled PostgreSQL files** (`docker-compose.postgresql.*.yml`): the app connects as the sidecar's bootstrap role, which owns the tables, and row-level security stays off. To enable it on a running deployment:
 
@@ -562,7 +562,7 @@ With [row-level security](../database-backends.md#row-level-security-postgresql)
      -c "CREATE ROLE mcp_context_request NOLOGIN; CREATE ROLE mcp_app LOGIN PASSWORD 'choose-a-password' NOSUPERUSER NOBYPASSRLS; GRANT mcp_context_request TO mcp_app;"
    ```
 
-2. Create `deploy/docker/docker-compose.override.yml`, which points the app's requests at the login role and keeps the bootstrap role for migrations:
+2. Create `deploy/docker/docker-compose.override.yml`, which points the app's requests at the login role and keeps the bootstrap role for migrations and the generation worker:
 
    ```yaml
    services:
@@ -782,6 +782,7 @@ grep OPENAI_API_KEY deploy/docker/.env
 **Causes:**
 - Summary model not pulled into the Ollama container
 - `ENABLE_SUMMARY_GENERATION` set to `false`
+- The entry was stored or updated with `defer_generation=true`, and its `generation_status` is still `pending`, or `failed` after its last attempt
 
 **Solutions:**
 ```bash
@@ -795,7 +796,7 @@ docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama oll
 docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml logs mcp-context-server | grep -i summary
 ```
 
-**Note:** Summaries are generated before the database transaction during `store_context` and `update_context` operations (in parallel with embedding generation). The summary is available immediately in the response and in subsequent search results.
+**Note:** A store or update made without `defer_generation` generates the summary before its database transaction, in parallel with the embeddings, so the entry carries it as soon as the call returns. A write made with `defer_generation=true` returns first, and the generation worker adds the summary afterwards; the entry's `generation_status` turns `ready` once it has. A `failed` entry is retried at the next server start or by `mcp-context-server-migrate --embed-missing`, and the server log names its error at ERROR level.
 
 ### Issue 9: Mixed Provider (Ollama Embeddings + OpenAI Summary) Infinite Restart
 
@@ -1227,7 +1228,7 @@ If your container shows "Running" but the server is not responding:
 3. **Use named volumes** for data persistence (already configured)
 4. **Configure resource limits** for container memory/CPU
 5. **Set up monitoring** using the `/health` endpoint
-6. **Use reverse proxy** (nginx, traefik) for TLS termination, with a request body limit above the server's own 4 MiB and read and send timeouts long enough for batch calls with generation on; for nginx, `client_max_body_size 5m; proxy_read_timeout 3600s; proxy_send_timeout 3600s;` covers `mcp-context-ingest` at its defaults (see [Limits](../knowledge-base.md#limits))
+6. **Use reverse proxy** (nginx, traefik) for TLS termination, with a request body limit above the server's own 4 MiB and read and send timeouts long enough for batch calls that generate before they return; for nginx, `client_max_body_size 5m; proxy_read_timeout 3600s; proxy_send_timeout 3600s;` covers `mcp-context-ingest` at its defaults (see [Limits](../knowledge-base.md#limits))
 7. **Secure OpenAI API key** - never commit `.env` files to version control
 8. **Set restart policies** with limited retry count to prevent infinite loops
 

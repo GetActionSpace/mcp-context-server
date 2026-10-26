@@ -502,7 +502,7 @@
           "name": "GENERATION_JOB_MAX_ATTEMPTS"
         },
         {
-          "description": "Maximum concurrent embedding requests on the store/update path; a chunked document holds one slot per batch and releases it between batches (default: 3, range: 1-20)",
+          "description": "Maximum concurrent document embedding requests per process, shared by synchronous stores and updates and by deferred generation jobs; a chunked document holds one slot per batch and releases it between batches, and while an embedding provider is active the generation worker also runs at most this many jobs at once (default: 3, range: 1-20)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1788,7 +1788,7 @@
           "name": "GENERATION_JOB_MAX_ATTEMPTS"
         },
         {
-          "description": "Maximum concurrent embedding requests on the store/update path; a chunked document holds one slot per batch and releases it between batches (default: 3, range: 1-20)",
+          "description": "Maximum concurrent document embedding requests per process, shared by synchronous stores and updates and by deferred generation jobs; a chunked document holds one slot per batch and releases it between batches, and while an embedding provider is active the generation worker also runs at most this many jobs at once (default: 3, range: 1-20)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,

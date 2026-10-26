@@ -5,10 +5,10 @@ server's generation worker generates the entry's embeddings, summary and index-t
 summaries later. ``--embed-missing`` and ``--re-embed`` complete the outstanding jobs in their
 own process before their own pass, so a database whose server is stopped still receives every
 deferred output: the failed jobs return to the queue, then the oldest claimable job is claimed
-under a lease, as a worker claims it, and run once through the executor the worker runs, until
-no job is claimable. A job a running server holds stays with that server, a job whose attempt
-fails waits out its backoff or stays failed after its last attempt, and the entry of every job
-that remains is left out of the CLI's own pass.
+under a lease, as a worker claims it, and run through the executor the worker runs, until no
+job is claimable. A job a running server holds stays with that server, a job whose attempt
+fails is claimable again once its backoff ends or stays failed after its last attempt, and the
+entry of every job that remains is left out of the CLI's own pass.
 
 Every statement runs as the maintenance identity on the CLI's table-owner connection. A
 database prepared by a release without deferred generation has no ``generation_jobs`` table
@@ -61,7 +61,7 @@ class JobCounts:
 
 @dataclass(frozen=True, slots=True)
 class DrainReport:
-    """What a drain did.
+    """What a drain did, counted per attempt: a job the drain attempts again counts once per attempt.
 
     Attributes:
         reset: Failed jobs returned to the queue before the drain claimed any.
@@ -137,11 +137,13 @@ async def count_generation_jobs(backend: StorageBackend) -> JobCounts:
 
 
 async def drain_generation_jobs(repos: 'RepositoryContainer', *, max_attempts: int) -> DrainReport:
-    """Return the failed jobs to the queue, then run every claimable job once, oldest first.
+    """Return the failed jobs to the queue, then run the claimable jobs, oldest first, until none is claimable.
 
     Each job is claimed under a lease, so a server running at the same time never runs the
-    same job, and a job the server holds is never claimed here. The drain ends once no job is
-    claimable: a job whose attempt failed waits out its backoff, so no job runs twice.
+    same job, and a job the server holds is never claimed here. A job whose attempt failed is
+    claimable again once its backoff ends, so the drain attempts it again when that happens
+    before the drain runs out of claimable jobs, and never after its last attempt failed; the
+    drain never waits for a backoff to end.
 
     Args:
         repos: Repository container over the CLI's backend.
