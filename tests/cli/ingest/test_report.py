@@ -27,6 +27,7 @@ ZERO_COUNTS = {
     'foreign': 0,
     'failed': 0,
     'withheld': 0,
+    'generation_pending': 0,
 }
 
 
@@ -75,6 +76,17 @@ class TestCounts:
 
         assert report.counts == {**ZERO_COUNTS, 'foreign': 5, 'withheld': 4}
         assert report.outcomes == []
+
+    def test_pending_generation_is_counted_without_changing_the_exit_code(self) -> None:
+        """Written entries whose generation the server left pending are a run-level count, never a problem."""
+        report = _report()
+        report.add(DocumentOutcome(source_id='a.md', outcome='created', context_id=CONTEXT_ID, error=None))
+
+        report.count('generation_pending', 1)
+        report.count('generation_pending', 2)
+
+        assert report.counts == {**ZERO_COUNTS, 'created': 1, 'generation_pending': 3}
+        assert report.exit_code == EXIT_CONVERGED
 
     @pytest.mark.parametrize('outcome', ['failed', 'kept'])
     def test_a_failed_or_kept_document_makes_the_run_partial(self, outcome: Literal['failed', 'kept']) -> None:
@@ -148,11 +160,22 @@ class TestSummary:
 
         assert render_summary(report) == (
             'Sync of kb:handbook with http://localhost:8000/mcp\n'
-            'created 1, updated 0, deleted 0, unchanged 0, kept 1, foreign 0, failed 1, withheld 2\n'
+            'created 1, updated 0, deleted 0, unchanged 0, kept 1, foreign 0, failed 1, withheld 2, generation pending 0\n'
             'failed: b.md: Context entry b not found\n'
             'kept: c.md: the file cannot be read\n'
             'exit 1: completed with problems: some documents were not synchronized'
         )
+
+    def test_summary_names_the_pending_generation(self) -> None:
+        """The count of written entries whose generation is pending reads as words in the summary."""
+        report = _report()
+        report.add(DocumentOutcome(source_id='a.md', outcome='created', context_id=CONTEXT_ID, error=None))
+        report.count('generation_pending', 1)
+
+        assert render_summary(report).splitlines()[1:] == [
+            'created 1, updated 0, deleted 0, unchanged 0, kept 0, foreign 0, failed 0, withheld 0, generation pending 1',
+            'exit 0: completed',
+        ]
 
     def test_summary_of_a_dry_run(self) -> None:
         """A dry run says it planned and wrote nothing, in its first line and in its exit line."""
@@ -161,7 +184,7 @@ class TestSummary:
 
         assert render_summary(report) == (
             'Dry run of kb:handbook with http://localhost:8000/mcp: nothing was written\n'
-            'created 1, updated 0, deleted 0, unchanged 0, kept 0, foreign 0, failed 0, withheld 0\n'
+            'created 1, updated 0, deleted 0, unchanged 0, kept 0, foreign 0, failed 0, withheld 0, generation pending 0\n'
             'exit 0: planned; nothing was written'
         )
 

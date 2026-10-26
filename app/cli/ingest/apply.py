@@ -14,6 +14,11 @@ exactly one batch and every result is matched to its entry by index, so the orde
 in which the server works through the entries of a batch never matters. Plans and
 deletes go over the run's first session, one call at a time.
 
+A run that defers generation asks the server to store every create and update at
+once and generate its embeddings and summaries in the background; the report counts
+the written entries the server answered as pending. The final plan compares what the
+write committed, so a run converges while generation is still pending.
+
 A run keeps no state of its own. Every run derives its plan from what the server
 stores, so a rerun converges after any failure, and a call whose answer never
 came is never sent again within the run: the next run's plan sees whatever it
@@ -108,6 +113,7 @@ class RunConfig:
         tags: Tags applied to every document.
         metadata: Metadata applied to every document.
         visibility: The visibility sent with every create and update.
+        defer_generation: Whether every create and update asks the server to defer generation.
         token_file: The file the bearer token is read from before every request.
         token_env: The environment variable the bearer token is read from once.
         dry_run: Whether the run only plans.
@@ -128,6 +134,7 @@ class RunConfig:
     tags: tuple[str, ...] = ()
     metadata: Mapping[str, object] = field(default_factory=dict[str, object])
     visibility: Visibility = 'private'
+    defer_generation: bool = False
     token_file: Path | None = None
     token_env: str | None = None
     dry_run: bool = False
@@ -181,7 +188,7 @@ async def run_sync(config: RunConfig, *, connect: Connect = connect_client) -> R
         if prepared is not None:
             async with AsyncExitStack() as stack:
                 session = await stack.enter_async_context(connect(config, auth))
-                await session.preflight()
+                await session.preflight(defer_generation=config.defer_generation)
                 sessions = RunSessions(session, open_session=lambda: connect(config, session_auth(auth)), stack=stack)
                 await _Run(sessions=sessions, config=config, report=report, prepared=prepared, synced_at=synced_at).run()
     except* IngestExitError as ended:
@@ -228,6 +235,7 @@ def _prepare(config: RunConfig, report: RunReport) -> _Prepared | None:
         static_metadata=config.metadata,
         tags=config.tags,
         visibility=config.visibility,
+        defer_generation=config.defer_generation,
         max_request_bytes=config.max_request_bytes,
     )
     _record_unusable(corpus, report)
@@ -261,6 +269,19 @@ def _record_unusable(corpus: Corpus, report: RunReport) -> None:
         report.fail(f'file left out of the manifest: {failure.source_id}: {failure.reason}', exit_code=EXIT_PARTIAL)
     for directory in corpus.directory_failures:
         report.fail(f'directory not listed: {directory.relative_path}: {directory.reason}', exit_code=EXIT_PARTIAL)
+
+
+@dataclass(frozen=True)
+class _BatchOutcome:
+    """What one batch call did.
+
+    Attributes:
+        outcomes: One outcome per entry of the batch, in the batch's order.
+        pending: How many of the written entries the server reported with their generation pending.
+    """
+
+    outcomes: list[DocumentOutcome]
+    pending: int
 
 
 @dataclass
@@ -417,11 +438,11 @@ class _Run:
         """Send entries through a batch tool in packed, non-atomic batches, up to ``--concurrency`` at once.
 
         The batches start in order, each on a session of its own while it is in flight,
-        and their outcomes are recorded in batch order when the leg ends, so the report
-        reads as a sequential run's however the batches finish. A generating server can
-        take minutes per batch, so every batch that finishes prints a line with the
-        documents applied so far, its position, its failed entries, the batches done
-        and the seconds since the leg began.
+        and their outcomes and pending entries are recorded in batch order when the leg
+        ends, so the report reads as a sequential run's however the batches finish. A
+        generating server can take minutes per batch, so every batch that finishes prints
+        a line with the documents applied so far, its position, its failed entries, the
+        batches done and the seconds since the leg began.
 
         Returns:
             How many entries the server applied.
@@ -429,16 +450,16 @@ class _Run:
         started = time.monotonic()
         batches = pack(entries, batch_size=self.config.batch_size, max_request_bytes=self.config.max_request_bytes)
         offsets = list(itertools.accumulate((len(batch) for batch in batches), initial=0))
-        settled: dict[int, list[DocumentOutcome]] = {}
+        settled: dict[int, _BatchOutcome] = {}
         applied = 0
 
         async def send(session: SyncSession, position: int) -> None:
             nonlocal applied
             batch = batches[position]
             batch_sources = source_ids[offsets[position]:offsets[position + 1]]
-            outcomes = await self._send_batch(tool, key, batch, batch_sources, session=session, outcome=outcome)
-            settled[position] = outcomes
-            done = sum(item.outcome == outcome for item in outcomes)
+            result = await self._send_batch(tool, key, batch, batch_sources, session=session, outcome=outcome)
+            settled[position] = result
+            done = sum(item.outcome == outcome for item in result.outcomes)
             applied += done
             _say(
                 f'{outcome} {applied} of {len(entries)} documents (batch {position + 1} of {len(batches)}, '
@@ -451,8 +472,9 @@ class _Run:
             await send_over(sessions, count=len(batches), send=send)
         finally:
             for position in sorted(settled):
-                for item in settled[position]:
+                for item in settled[position].outcomes:
                     self.report.add(item)
+                self.report.count('generation_pending', settled[position].pending)
         return applied
 
     @staticmethod
@@ -464,24 +486,26 @@ class _Run:
         *,
         session: SyncSession,
         outcome: Literal['created', 'updated'],
-    ) -> list[DocumentOutcome]:
+    ) -> _BatchOutcome:
         """Send one batch over a session and return its entries' outcomes in the batch's order.
 
         The server's per-entry results are matched to the entries by their index, so the
         order in which the server lists them never matters.
 
         Returns:
-            One outcome per entry of the batch.
+            One outcome per entry of the batch, and how many of the written entries the
+            server reported with their generation pending.
 
         Raises:
             IngestExitError: The server answered with something that is not the tool's response.
         """
         result = await session.call_tool(tool, {key: batch, 'atomic': False})
         if isinstance(result, ToolFailure):
-            return [
+            failed = [
                 DocumentOutcome(source_id=source_id, outcome='failed', context_id=None, error=result.message)
                 for source_id in batch_sources
             ]
+            return _BatchOutcome(outcomes=failed, pending=0)
         adapter = _STORE_RESPONSE if key == 'entries' else _UPDATE_RESPONSE
         try:
             response = adapter.validate_python(result)
@@ -489,6 +513,7 @@ class _Run:
             raise IngestExitError(EXIT_CONFIG, _unexpected(tool, error)) from error
         results = {item['index']: item for item in response['results']}
         outcomes: list[DocumentOutcome] = []
+        pending = 0
         for index, source_id in enumerate(batch_sources):
             item = results.get(index)
             if item is None:
@@ -502,7 +527,9 @@ class _Run:
                 context_id=item['context_id'],
                 error=None if applied else item['error'],
             ))
-        return outcomes
+            if applied and item['generation_status'] == 'pending':
+                pending += 1
+        return _BatchOutcome(outcomes=outcomes, pending=pending)
 
     async def _delete(self) -> None:
         """Plan every range again and delete its planned deletes until none remain, unless deletes are withheld."""

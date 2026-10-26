@@ -40,6 +40,7 @@ class RunSettings(TypedDict, total=False):
     tags: tuple[str, ...]
     metadata: Mapping[str, object]
     visibility: Visibility
+    defer_generation: bool
     token_file: Path
     token_env: str
     dry_run: bool

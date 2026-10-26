@@ -4,6 +4,9 @@ The fake answers the tools a sync calls the way the server does for the caller's
 principal: it plans with the server's own diff over the managed entries the
 caller can read, stores every batch entry as a fresh entry owned by the caller,
 replaces the fields an update names and deletes only the caller's own entries.
+Each write answers the entry's generation state the way a generating server does:
+a write that defers generation of new text leaves the entry pending, a write that
+generates leaves it ready, and a write without text keeps the state it found.
 It records every call with the number of calls in flight when it arrived, and a
 test can make a call fail or end the run, make one entry fail, keep an entry from
 being deleted, hold calls so they finish in a chosen order, or answer a batch's
@@ -58,6 +61,7 @@ class Stored:
     tags: list[str]
     visibility: str
     owner: str = CALLER
+    generation: str = 'ready'
 
     @property
     def block(self) -> Json | None:
@@ -79,7 +83,7 @@ class Call:
 
     Attributes:
         tool: The tool it called, or ``preflight``.
-        arguments: The tool arguments.
+        arguments: The tool arguments, or the preflight's.
         in_flight: The calls in flight when it arrived, itself included.
         session: The session it came over, numbered from 1 in the order the server opened them.
     """
@@ -188,9 +192,10 @@ class FakeServer:
                 grouped.setdefault(entry.source_id, []).append(entry)
         return grouped
 
-    async def preflight(self, *, session: int) -> None:
+    async def preflight(self, *, defer_generation: bool, session: int) -> None:
         """Pass the preflight unless a test made it end the run."""
-        self.calls.append(Call(tool='preflight', arguments={}, in_flight=self._in_flight + 1, session=session))
+        arguments: Json = {'defer_generation': defer_generation}
+        self.calls.append(Call(tool='preflight', arguments=arguments, in_flight=self._in_flight + 1, session=session))
         if self.preflight_exit is not None:
             raise self.preflight_exit
 
@@ -304,8 +309,11 @@ class FakeServer:
                 visibility=cast('str', entry['visibility']),
                 tags=cast('list[str]', entry['tags']),
             )
+            stored = self.entries[context_id]
+            stored.generation = 'pending' if entry.get('defer_generation') is True else 'ready'
             results.append({
-                'index': index, 'success': True, 'context_id': context_id, 'error': None, 'generation_status': 'ready',
+                'index': index, 'success': True, 'context_id': context_id, 'error': None,
+                'generation_status': stored.generation,
             })
         return _batch_response(results, 'Stored', reverse=self.reverse_results)
 
@@ -327,6 +335,7 @@ class FakeServer:
                 continue
             if 'text' in update:
                 entry.text = cast('str', update['text'])
+                entry.generation = 'pending' if update.get('defer_generation') is True else 'ready'
             if 'metadata' in update:
                 entry.metadata = copy.deepcopy(cast('Json', update['metadata']))
             if 'tags' in update:
@@ -336,7 +345,7 @@ class FakeServer:
             fields = [name for name in ('text', 'metadata', 'tags', 'visibility') if name in update]
             results.append({
                 'index': index, 'context_id': context_id, 'success': True, 'updated_fields': fields, 'error': None,
-                'generation_status': 'ready',
+                'generation_status': entry.generation,
             })
         return _batch_response(results, 'Updated', reverse=self.reverse_results)
 
@@ -365,9 +374,9 @@ class FakeSession:
     number: int
     busy: bool = False
 
-    async def preflight(self) -> None:
+    async def preflight(self, *, defer_generation: bool = False) -> None:
         """Run the preflight on the server."""
-        await self.server.preflight(session=self.number)
+        await self.server.preflight(defer_generation=defer_generation, session=self.number)
 
     async def call_tool(self, name: str, arguments: Json) -> Json | ToolFailure:
         """Pass a call to the server; a second call while one is running fails the test."""

@@ -24,8 +24,8 @@ from app.cli.ingest.client import ToolFailure
 class SyncSession(Protocol):
     """The MCP session a run calls the server through."""
 
-    async def preflight(self) -> None:
-        """Check that the server offers what a sync needs."""
+    async def preflight(self, *, defer_generation: bool = False) -> None:
+        """Check that the server offers what a sync needs, deferring generation when the run defers it."""
         ...
 
     async def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object] | ToolFailure:

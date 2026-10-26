@@ -80,6 +80,8 @@ class Document:
         metadata: The metadata the client controls, without the ingest block.
         tags: The normalized tags sent with every create and update.
         visibility: The visibility sent with every create and update.
+        defer_generation: Whether every create and update asks the server to store the
+            entry at once and generate its embeddings and summaries in the background.
         text_digest: The digest the server records for the stored text.
         meta_digest: The digest of the metadata, the tags and the visibility.
     """
@@ -89,6 +91,7 @@ class Document:
     metadata: dict[str, object]
     tags: list[str]
     visibility: Visibility
+    defer_generation: bool
     text_digest: str
     meta_digest: str
 
@@ -114,6 +117,7 @@ class Document:
         """Return the ``store_context_batch`` entry that stores the document as a new entry.
 
         Deduplication is off, so the store always inserts one entry owned by the caller.
+        A deferring document's entry also asks the server to defer generation.
 
         Args:
             thread_id: The corpus thread.
@@ -122,7 +126,7 @@ class Document:
         Returns:
             A new batch entry.
         """
-        return {
+        entry: dict[str, object] = {
             'thread_id': thread_id,
             'source': ENTRY_SOURCE,
             'text': self.text,
@@ -131,13 +135,17 @@ class Document:
             'visibility': self.visibility,
             'deduplicate': False,
         }
+        if self.defer_generation:
+            entry['defer_generation'] = True
+        return entry
 
     def update_entry(self, *, context_id: str, thread_id: str, synced_at: str, change: SyncChange) -> dict[str, object]:
         """Return the ``update_context_batch`` entry that brings a stored entry up to the document.
 
         The metadata is always replaced in full, never patched, so the stored block
         and the digest it carries always describe the whole object; the text is sent
-        only when it changed.
+        only when it changed. A deferring document's entry also asks the server to
+        defer generation, which the server applies only to an update that sends text.
 
         Args:
             context_id: The stored entry to update.
@@ -154,6 +162,8 @@ class Document:
         entry['metadata'] = self.entry_metadata(thread_id=thread_id, synced_at=synced_at)
         entry['tags'] = list(self.tags)
         entry['visibility'] = self.visibility
+        if self.defer_generation:
+            entry['defer_generation'] = True
         return entry
 
 
@@ -276,6 +286,7 @@ def build_corpus(
     static_metadata: Mapping[str, object],
     tags: Sequence[str],
     visibility: Visibility,
+    defer_generation: bool,
     max_request_bytes: int,
 ) -> Corpus:
     """Walk a source directory and turn every selected file into a document or a failure.
@@ -289,6 +300,7 @@ def build_corpus(
             the one derived from the file.
         tags: Tags applied to every document.
         visibility: The visibility sent with every create and update.
+        defer_generation: Whether every create and update asks the server to defer generation.
         max_request_bytes: The request budget; a document whose batch entry alone
             exceeds it is kept instead of sent.
 
@@ -317,6 +329,7 @@ def build_corpus(
             metadata=metadata,
             tags=list(normalized_tags),
             visibility=visibility,
+            defer_generation=defer_generation,
             text_digest=text_digest(text),
             meta_digest=meta_digest(metadata, normalized_tags, visibility),
         )

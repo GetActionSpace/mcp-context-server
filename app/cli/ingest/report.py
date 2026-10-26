@@ -19,9 +19,13 @@ from app.cli.ingest.client import EXIT_TRANSIENT
 from app.cli.ingest.client import strip_userinfo
 
 type Outcome = Literal['created', 'updated', 'deleted', 'unchanged', 'kept', 'failed']
-type CountKey = Literal['created', 'updated', 'deleted', 'unchanged', 'kept', 'foreign', 'failed', 'withheld']
+type CountKey = Literal[
+    'created', 'updated', 'deleted', 'unchanged', 'kept', 'foreign', 'failed', 'withheld', 'generation_pending',
+]
 
-COUNT_KEYS: tuple[CountKey, ...] = ('created', 'updated', 'deleted', 'unchanged', 'kept', 'foreign', 'failed', 'withheld')
+COUNT_KEYS: tuple[CountKey, ...] = (
+    'created', 'updated', 'deleted', 'unchanged', 'kept', 'foreign', 'failed', 'withheld', 'generation_pending',
+)
 # A configuration error outranks a transient failure, which outranks a partial run.
 _SEVERITY = {EXIT_CONVERGED: 0, EXIT_PARTIAL: 1, EXIT_TRANSIENT: 2, EXIT_CONFIG: 3}
 _MEANINGS = {
@@ -79,8 +83,9 @@ class RunReport:
         dry_run: Whether the run only planned.
         outcomes: One outcome per document, in the order the run settled them.
         errors: Run-level problems, such as an excluded file or a directory that could not be listed.
-        counts: The number of documents per outcome, the foreign members and the withheld deletes;
-            a dry run's ``deleted`` also counts the planned deletes its plans did not list.
+        counts: The number of documents per outcome, the foreign members, the withheld deletes
+            and the written entries the server reported with their generation pending; a dry
+            run's ``deleted`` also counts the planned deletes its plans did not list.
         exit_code: The command's exit code, the most severe one any problem called for.
     """
 
@@ -102,13 +107,15 @@ class RunReport:
         if outcome.outcome in _PARTIAL_OUTCOMES:
             self.escalate(EXIT_PARTIAL)
 
-    def count(self, key: Literal['deleted', 'foreign', 'withheld'], amount: int) -> None:
+    def count(self, key: Literal['deleted', 'foreign', 'withheld', 'generation_pending'], amount: int) -> None:
         """Add to a count no document outcome stands for.
 
         Args:
             key: ``foreign`` for members another principal owns, ``withheld`` for deletes
-                the run did not execute, or ``deleted`` for the planned deletes a dry run
-                counts beyond the ones the plan listed.
+                the run did not execute, ``deleted`` for the planned deletes a dry run
+                counts beyond the ones the plan listed, or ``generation_pending`` for
+                written entries whose embeddings and summaries the server generates after
+                the write; a pending entry is no problem of the run.
             amount: How many to add.
         """
         self.counts[key] += amount
@@ -146,7 +153,7 @@ def render_summary(report: RunReport) -> str:
         lines = [f'Dry run of {report.thread_id} with {report.server}: nothing was written']
     else:
         lines = [f'Sync of {report.thread_id} with {report.server}']
-    lines.append(', '.join(f'{key} {report.counts[key]}' for key in COUNT_KEYS))
+    lines.append(', '.join(f'{key.replace("_", " ")} {report.counts[key]}' for key in COUNT_KEYS))
     lines.extend(
         f'{outcome.outcome}: {outcome.source_id}: {outcome.error}' for outcome in report.outcomes if outcome.error is not None
     )

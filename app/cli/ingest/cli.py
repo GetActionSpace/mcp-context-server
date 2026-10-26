@@ -94,6 +94,13 @@ def build_parser() -> argparse.ArgumentParser:
         '--visibility', choices=('private', 'public'), default='private',
         help='the visibility sent with every create and update (default private)',
     )
+    parser.add_argument(
+        '--defer-generation', action='store_true',
+        help=(
+            'ask the server to store every create and update at once and generate its embeddings and summaries '
+            'in the background; the summary counts the entries the server reports pending'
+        ),
+    )
     tokens = parser.add_mutually_exclusive_group()
     tokens.add_argument(
         '--token-file', metavar='PATH', type=Path,
@@ -150,6 +157,7 @@ def parse_config(argv: list[str] | None = None) -> RunConfig:
         tags=tuple(args.tag),
         metadata=args.metadata_json if args.metadata_json is not None else {},
         visibility=args.visibility,
+        defer_generation=args.defer_generation,
         token_file=args.token_file,
         token_env=args.token_env,
         dry_run=args.dry_run,

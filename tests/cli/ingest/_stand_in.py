@@ -52,12 +52,33 @@ REFUSED_PLAN = 'manifest item 1 repeats source_id a.md'
 type Responder = Callable[[httpx2.Request], Awaitable[httpx2.Response]]
 
 
-def context_server(*, sync: bool = True, batch: bool = True, deduplicate: bool = True) -> FastMCP:
-    """Return a stand-in context server offering the tools a sync checks and calls."""
+def context_server(
+    *, sync: bool = True, batch: bool = True, deduplicate: bool = True, defer_generation: bool = True,
+) -> FastMCP:
+    """Return a stand-in context server offering the tools a sync checks and calls.
+
+    Returns:
+        The server. Without ``deduplicate`` its store_context merges and cannot defer
+        generation either; without ``defer_generation`` it inserts without merging but
+        always generates at once.
+    """
     server = FastMCP('context-server')
 
-    def store_context(thread_id: str, source: str, text: str, deduplicate: bool = True) -> dict[str, object]:
+    def store_context(
+        thread_id: str, source: str, text: str, deduplicate: bool = True, defer_generation: bool = False,
+    ) -> dict[str, object]:
         """Store one entry."""
+        return {
+            'context_id': CONTEXT_ID,
+            'thread_id': thread_id,
+            'source': source,
+            'length': len(text),
+            'deduplicate': deduplicate,
+            'generation_status': 'pending' if defer_generation else 'ready',
+        }
+
+    def store_context_generating(thread_id: str, source: str, text: str, deduplicate: bool = True) -> dict[str, object]:
+        """Store one entry, generating its embeddings and summary before it returns."""
         return {
             'context_id': CONTEXT_ID,
             'thread_id': thread_id,
@@ -88,7 +109,12 @@ def context_server(*, sync: bool = True, batch: bool = True, deduplicate: bool =
             raise ToolError(REFUSED_PLAN)
         return {**PLAN_RESULT, 'thread_id': thread_id, 'creates': list(range(len(manifest)))}
 
-    server.tool(store_context if deduplicate else store_context_merging, name='store_context')
+    if not deduplicate:
+        server.tool(store_context_merging, name='store_context')
+    elif not defer_generation:
+        server.tool(store_context_generating, name='store_context')
+    else:
+        server.tool(store_context)
     if batch:
         server.tool(store_context_batch)
         server.tool(update_context_batch)

@@ -1,7 +1,8 @@
 """The mcp-context-ingest command end to end against live PostgreSQL servers (over HTTP).
 
 Runs the scenarios of :mod:`tests.integration._ingest_cli` against real HTTP servers with
-generation off, on the pgvector container of the ``pg_test_url`` fixture
+generation off, except the deferred-generation scenario's server, which generates
+embeddings through a stub endpoint the test process serves, on the pgvector container of the ``pg_test_url`` fixture
 (``@requires_docker_postgres``, skipped cleanly without Docker). Every test runs twice on
 a fresh ``pg_rls_db`` database: once served by the superuser with row-level security off,
 so the application's own conditions alone decide what each request reaches, and once
@@ -14,6 +15,7 @@ SQLite in ``tests/integration/sqlite/test_ingest_cli.py``.
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 from fastmcp.server.auth.providers.jwt import RSAKeyPair
@@ -22,15 +24,20 @@ from tests.integration._http_jwt import build_env
 from tests.integration._http_jwt import build_jwt_env
 from tests.integration._http_jwt import free_port
 from tests.integration._http_jwt import running_http_server
+from tests.integration._ingest_cli import STUB_EMBEDDING_DIM
 from tests.integration._ingest_cli import SYNC_DISABLED
+from tests.integration._ingest_cli import generation_env
 from tests.integration._ingest_cli import requires_denying_modes
 from tests.integration._ingest_cli import verify_corpus_above_the_request_limit
 from tests.integration._ingest_cli import verify_corpus_lifecycle
+from tests.integration._ingest_cli import verify_deferred_generation
 from tests.integration._ingest_cli import verify_principals_manage_their_own_copy
 from tests.integration._ingest_cli import verify_sync_disabled_server
 from tests.integration._ingest_cli import verify_token_rotation
 from tests.integration._ingest_cli import verify_unlistable_directory
 from tests.integration._ingest_cli import verify_unusable_files_are_kept
+from tests.integration._ollama_stub import OllamaStub
+from tests.integration._ollama_stub import serve_ollama_embeddings
 from tests.integration.postgresql._rls_catalog import assert_served_with_row_level_security
 from tests.integration.postgresql.conftest import RLS_CREDENTIALS
 from tests.integration.postgresql.conftest import RlsUrls
@@ -124,6 +131,30 @@ def sync_disabled_server(served: ServedDatabase) -> Iterator[str]:
         yield base_url
 
 
+class GeneratingServer(NamedTuple):
+    """A server that generates embeddings, and the stub endpoint it embeds through."""
+
+    base_url: str
+    embedder: OllamaStub
+
+
+@pytest.fixture
+def generating_server(served: ServedDatabase) -> Iterator[GeneratingServer]:
+    """Run a server that requires no authentication and generates embeddings through a stub endpoint.
+
+    Yields:
+        The server origin URL and the stub.
+    """
+    with serve_ollama_embeddings(STUB_EMBEDDING_DIM) as embedder:
+        env = {
+            **build_env(backend='postgresql', database=served.database, port=free_port(), auth=False),
+            **served.environment,
+            **generation_env(embedder.url),
+        }
+        with running_http_server(env) as base_url:
+            yield GeneratingServer(base_url, embedder)
+
+
 @pytest.mark.asyncio
 async def test_corpus_lifecycle(open_server: str, served: ServedDatabase, tmp_path: Path) -> None:
     """Bootstrap, rerun, dry run, edit, removal, tag change, duplicate and emptying converge as planned."""
@@ -142,6 +173,15 @@ async def test_unusable_files_keep_their_stored_entries(open_server: str, served
 async def test_corpus_above_the_request_limit_converges(open_server: str, served: ServedDatabase, tmp_path: Path) -> None:
     """A corpus larger than one HTTP request converges through packed creates and packed updates."""
     await verify_corpus_above_the_request_limit(open_server, tmp_path)
+    await served.confirm()
+
+
+@pytest.mark.asyncio
+async def test_deferred_generation_converges_before_the_worker_generates(
+    generating_server: GeneratingServer, served: ServedDatabase, tmp_path: Path,
+) -> None:
+    """A deferring run exits 0 with its entries pending, and the server's worker then generates them."""
+    await verify_deferred_generation(generating_server.base_url, generating_server.embedder, tmp_path)
     await served.confirm()
 
 
