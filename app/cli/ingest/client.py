@@ -462,7 +462,7 @@ class IngestClient:
             if self.recorder.last_status is None:
                 return IngestExitError(EXIT_TRANSIENT, f'{what} failed before the server answered: {error.message}')
             # The server answers a call with its SSE headers before the tool runs, so a
-            # restart or a proxy cutting the response afterwards closes an accepted call
+            # restart or a proxy cutting the response afterward closes an accepted call
             # whose result never arrives; the server may or may not have applied it.
             if error.code == CONNECTION_CLOSED:
                 return IngestExitError(

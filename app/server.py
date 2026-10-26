@@ -121,7 +121,7 @@ async def _start_postgresql() -> StorageBackend:
     policies could not hold is refused before any DDL. The schema is prepared on a
     short-lived maintenance backend logged in with the migration credentials; when the two
     backends act as different roles, the preparation grants the request role what it needs
-    and the request backend is checked afterwards. With row-level security on, request
+    and the request backend is checked afterward. With row-level security on, request
     and migration credentials that act as one role are refused.
 
     Returns:

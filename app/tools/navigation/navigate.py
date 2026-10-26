@@ -59,7 +59,7 @@ def _outline_to_dict(node: OutlineNode, stored_nodes: StoredNodeSummaries) -> Ou
     for the SAME section -- spans derive from the text rather than the slug,
     and node rows are replaced on every text change, so an exact-span match
     against the same revision is deterministic. The caller overrides the
-    root node's summary with the entry summary afterwards.
+    root node's summary with the entry summary afterward.
 
     Returns:
         The node as an OutlineNodeDict, children converted recursively.

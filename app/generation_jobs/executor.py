@@ -136,7 +136,7 @@ async def _generate(
 
     Returns:
         The embeddings, the summary and the node rows; None when the claim was lost first,
-        in which case the generation was cancelled. A failed embedding or summary leg
+        in which case the generation was canceled. A failed embedding or summary leg
         raises its error.
     """
     generation = asyncio.create_task(
@@ -241,7 +241,7 @@ async def run_job(
 ) -> JobOutcome:
     """Generate and store the outputs a claimed job's entry lacks.
 
-    A job whose entry is gone is deleted. Cancelling the run cancels the generation and
+    A job whose entry is gone is deleted. Canceling the run cancels the generation and
     records nothing; the claim stays for the caller to release or for its lease to end.
 
     Args:

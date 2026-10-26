@@ -551,7 +551,7 @@ def _grants_clauses(schema: str) -> tuple[tuple[str, str], ...]:
     The policies call the helpers directly rather than through their scalar subqueries, and
     the planner inlines every call, so a policy evaluated once per grant row calls no
     function. The insert check also pins the recorded grantor to the bound principal; with
-    no update policy, no request can change a grantor afterwards.
+    no update policy, no request can change a grantor afterward.
 
     Returns:
         The SELECT, INSERT and DELETE commands with their clauses.
