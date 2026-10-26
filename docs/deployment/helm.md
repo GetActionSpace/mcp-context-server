@@ -167,7 +167,7 @@ storage:
 
 ### Row-Level Security
 
-With `storage.postgresql.rls.enabled: true`, PostgreSQL enforces the access model through row-level security in addition to the server (see [Row-level security (PostgreSQL)](../database-backends.md#row-level-security-postgresql)). Requests then connect as `storage.postgresql.user`, a login role that is a member of the policy role and is neither superuser nor `BYPASSRLS`, while `storage.postgresql.migration.user` owns the tables and runs the migrations inside the server pod at startup; the chart adds no hook Job. Rendering fails when `rls.enabled` is set with `storage.backend` other than `postgresql`, or without `migration.user`, mirroring the checks the server applies at startup. Each migration value renders only when it is set.
+With `storage.postgresql.rls.enabled: true`, PostgreSQL enforces the access model through row-level security in addition to the server (see [Row-level security (PostgreSQL)](../database-backends.md#row-level-security-postgresql)). Requests then connect as `storage.postgresql.user`, a login role that is a member of the policy role and is neither superuser nor `BYPASSRLS`, while `storage.postgresql.migration.user` owns the tables and runs the migrations inside the server pod at startup and, while an embedding or summary provider is active, the writes of the generation worker for the pod's lifetime (see [Deferred Generation Jobs](../database-backends.md#deferred-generation-jobs)); the chart adds no hook Job. Rendering fails when `rls.enabled` is set with `storage.backend` other than `postgresql`, or without `migration.user`, mirroring the checks the server applies at startup. Each migration value renders only when it is set.
 
 **Enabling:**
 
@@ -520,7 +520,7 @@ ingress:
         - mcp.example.com
 ```
 
-The three `nginx.ingress.kubernetes.io` annotations raise ingress-nginx's defaults of a 1 MiB request body and 60-second timeouts: the server accepts request bodies up to 4 MiB, and a batch call with generation on, such as one `mcp-context-ingest` sends, can run far longer than a minute, so the timeouts should be at least the client's `--call-timeout` (see [Limits](../knowledge-base.md#limits)).
+The three `nginx.ingress.kubernetes.io` annotations raise ingress-nginx's defaults of a 1 MiB request body and 60-second timeouts: the server accepts request bodies up to 4 MiB, and a batch call that generates before it returns, such as one `mcp-context-ingest` sends without `--defer-generation`, can run far longer than a minute, so the timeouts should be at least the client's `--call-timeout` (see [Limits](../knowledge-base.md#limits)).
 
 Install with:
 
