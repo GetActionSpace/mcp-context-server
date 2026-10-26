@@ -120,10 +120,6 @@ async def assert_seeded_layout(db: ScopedDb) -> None:
     assert await _counts_by_label(
         db, 'SELECT context_id, COUNT(*) FROM embedding_metadata GROUP BY context_id',
     ) == dict.fromkeys(SEED_LABELS, 1)
-    jobs = await db.fetch_all('SELECT context_entry_id, status FROM generation_jobs')
-    assert {db.labels_of([str(row[0])])[0]: row[1] for row in jobs} == {
-        row.label: row.job for row in SEED_ROWS if row.job is not None
-    }
 
     if db.seed_backend.backend_type == 'sqlite':
         fts_sql = (

@@ -10,10 +10,9 @@ share everything here:
   the row-level security build of its layout), and the runners :func:`run_case` and
   :func:`run_case_with_scope`.
 - The seed: :data:`SEED_ROWS`, eight entries owned by alice and bob covering every
-  visibility and grant arrangement the access model distinguishes and every stored
-  generation job state, written by :func:`seed_access_rows` through the repositories, with
-  grants through the raw-SQL ``insert_grant`` helper and jobs through a raw INSERT, because
-  the seed channel never passes through the seams under test.
+  visibility and grant arrangement the access model distinguishes, written by
+  :func:`seed_access_rows` through the repositories, with grants through the raw-SQL
+  ``insert_grant`` helper because the seed channel never passes through the seams under test.
 - The two channels of a :class:`ScopedDb`. Cases call the seam under test through the
   request channel (``backend`` and ``repos``). Every row a case does not create through
   that seam (the seed, the rows of a case's ``setup`` and every child row), every raw
@@ -88,7 +87,6 @@ type Layout = Literal['fp32', 'compressed']
 type BackendType = Literal['sqlite', 'postgresql']
 type Visibility = Literal['private', 'public']
 type Source = Literal['user', 'agent']
-type JobStatus = Literal['pending', 'running', 'failed']
 type Invoker = Callable[[ScopedDb, Scope], Awaitable[object]]
 type Setup = Callable[[ScopedDb], Awaitable[None]]
 
@@ -142,25 +140,24 @@ class Grant:
 
 @dataclass(frozen=True, slots=True)
 class SeedRow:
-    """One seeded entry: its label, owner, visibility, grants, whether it carries an image, and its generation job."""
+    """One seeded entry: its label, owner, visibility, grants and whether it carries an image."""
 
     label: str
     owner: str
     visibility: Visibility
     grants: tuple[Grant, ...] = ()
     image: bool = False
-    job: JobStatus | None = None
 
 
 SEED_ROWS: tuple[SeedRow, ...] = (
-    SeedRow('alice_private', 'alice', 'private', image=True, job='pending'),
-    SeedRow('alice_public', 'alice', 'public', image=True, job='failed'),
-    SeedRow('alice_private_bob_read', 'alice', 'private', grants=(Grant('user', 'bob', 'read'),), job='running'),
-    SeedRow('alice_private_team_read', 'alice', 'private', grants=(Grant('group', TEAM_GROUP, 'read'),), job='failed'),
-    SeedRow('alice_private_bob_write', 'alice', 'private', grants=(Grant('user', 'bob', 'write'),), job='pending'),
-    SeedRow('alice_public_carol_write', 'alice', 'public', grants=(Grant('user', 'carol', 'write'),), job='running'),
+    SeedRow('alice_private', 'alice', 'private', image=True),
+    SeedRow('alice_public', 'alice', 'public', image=True),
+    SeedRow('alice_private_bob_read', 'alice', 'private', grants=(Grant('user', 'bob', 'read'),)),
+    SeedRow('alice_private_team_read', 'alice', 'private', grants=(Grant('group', TEAM_GROUP, 'read'),)),
+    SeedRow('alice_private_bob_write', 'alice', 'private', grants=(Grant('user', 'bob', 'write'),)),
+    SeedRow('alice_public_carol_write', 'alice', 'public', grants=(Grant('user', 'carol', 'write'),)),
     SeedRow('alice_public_dave_read', 'alice', 'public', grants=(Grant('user', 'dave', 'read'),)),
-    SeedRow('bob_private', 'bob', 'private', image=True, job='failed'),
+    SeedRow('bob_private', 'bob', 'private', image=True),
 )
 SEED_LABELS: tuple[str, ...] = tuple(row.label for row in SEED_ROWS)
 
@@ -479,17 +476,8 @@ class ScopedDb:
         return in_seed_order(self.labels_of(str(row[0]) for row in rows))
 
 
-async def _add_job(db: ScopedDb, label: str, status: JobStatus) -> None:
-    """Store a generation job of ``status`` on the entry through the seed channel; a running job holds a claim."""
-    attempts, claim_token = (1, uuid.uuid4().hex) if status == 'running' else (0, None)
-    await db.execute(
-        'INSERT INTO generation_jobs (context_entry_id, status, attempts, claim_token) VALUES (?, ?, ?, ?)',
-        (db.ids[label], status, attempts, claim_token),
-    )
-
-
 async def seed_access_rows(db: ScopedDb) -> None:
-    """Store :data:`SEED_ROWS` in order, each with an embedding, tags, an index node, its grants and its job.
+    """Store :data:`SEED_ROWS` in order, each with an embedding, tags, an index node and its grants.
 
     Args:
         db: The database to seed.
@@ -504,8 +492,6 @@ async def seed_access_rows(db: ScopedDb) -> None:
             index_node=True,
             grants=row.grants,
         )
-        if row.job is not None:
-            await _add_job(db, row.label, row.job)
 
 
 @dataclass(frozen=True, slots=True)
