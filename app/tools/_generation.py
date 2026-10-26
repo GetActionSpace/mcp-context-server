@@ -143,8 +143,8 @@ _batch_sizer: BatchSizer | None = None
 def _get_batch_sizer() -> BatchSizer:
     """Return the process-wide embedding batch sizer, building it on first use.
 
-    One sizer serves every document, so the auto sizer's seconds-per-chunk
-    estimate carries from one document to the next.
+    One sizer serves every document, so the auto sizer's seconds-per-character
+    rate carries from one document to the next.
 
     Returns:
         The sizer ``EMBEDDING_BATCH_SIZE`` selects.

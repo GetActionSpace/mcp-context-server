@@ -12,8 +12,9 @@ current batch instead of after its whole run.
 
 Batch sizes come from a ``BatchSizer``. ``AdaptiveBatchSizer`` (``EMBEDDING_BATCH_SIZE``
 ``auto``) sizes each batch to take about ``EMBEDDING_BATCH_TARGET_S`` from the seconds
-per chunk measured so far, which needs no knowledge of the hardware or service
-behind the provider; ``FixedBatchSizer`` uses the configured integer size.
+per character of chunk text measured so far and the lengths of the chunks the batch
+would carry, which needs no knowledge of the hardware or service behind the
+provider; ``FixedBatchSizer`` uses the configured integer size.
 """
 
 import asyncio
@@ -33,7 +34,8 @@ logger = logging.getLogger(__name__)
 AUTO_FIRST_BATCH = 4
 # Largest auto-sized batch.
 AUTO_MAX_BATCH = 64
-# Weight of the newest measurement in the seconds-per-chunk estimate.
+# How fast older measurements fade: each measured batch scales the running sums of
+# seconds and characters by ``1 - AUTO_SMOOTHING`` before adding its own.
 AUTO_SMOOTHING = 0.5
 
 
@@ -60,22 +62,23 @@ class BatchSizer(Protocol):
         """The sizing mode for logs: ``'auto'`` or the fixed size."""
         ...
 
-    def next_size(self, remaining: int) -> int:
+    def next_size(self, remaining_lengths: Sequence[int]) -> int:
         """Return the size of the next batch.
 
         Args:
-            remaining: Chunks of the document not yet embedded (at least 1).
+            remaining_lengths: Character counts of the document's chunks not yet
+                embedded, in document order (at least one).
 
         Returns:
-            A size from 1 to ``remaining``.
+            A size from 1 to ``len(remaining_lengths)``.
         """
         ...
 
-    def observe(self, chunks: int, elapsed_s: float) -> None:
+    def observe(self, chars: int, elapsed_s: float) -> None:
         """Record how long a batch took.
 
         Args:
-            chunks: Chunks in the batch.
+            chars: Characters in the batch's chunks.
             elapsed_s: Wall time of the provider request in seconds.
         """
         ...
@@ -84,12 +87,16 @@ class BatchSizer(Protocol):
 class AdaptiveBatchSizer:
     """Sizes each batch to take about a target wall time.
 
-    Keeps an exponentially weighted estimate of the seconds one chunk takes and
-    sizes the next batch as ``round(target_s / seconds_per_chunk)``, clamped to
-    ``1..AUTO_MAX_BATCH``. Before the first measurement a batch is
-    ``AUTO_FIRST_BATCH`` chunks. The estimate is shared by every document embedded
-    through the same sizer, so it follows the provider's current speed, queueing
-    at the provider included.
+    Learns the seconds one character of chunk text takes: every measured batch adds
+    its seconds and its characters to two running sums, after scaling both by
+    ``1 - AUTO_SMOOTHING``, and the rate is their ratio. The next batch takes the
+    document's next chunks in order while their predicted time (the rate times
+    their characters) stays within ``target_s``: at least one chunk and at most
+    ``AUTO_MAX_BATCH``. Before the first measurement a batch is ``AUTO_FIRST_BATCH``
+    chunks. Counting characters rather than chunks keeps a short text, such as a
+    one-line message embedded as one chunk, from making full-size chunks look
+    cheap. The rate is shared by every document embedded through the same sizer, so
+    it follows the provider's current speed, queueing at the provider included.
     """
 
     def __init__(self, target_s: float) -> None:
@@ -99,7 +106,8 @@ class AdaptiveBatchSizer:
             target_s: Wall time one batch should take, in seconds.
         """
         self._target_s = target_s
-        self._seconds_per_chunk: float | None = None
+        self._seconds = 0.0
+        self._chars = 0.0
 
     @property
     def mode(self) -> str:
@@ -107,42 +115,50 @@ class AdaptiveBatchSizer:
         return 'auto'
 
     @property
-    def seconds_per_chunk(self) -> float | None:
-        """The current estimate, or None before the first measurement."""
-        return self._seconds_per_chunk
+    def seconds_per_char(self) -> float | None:
+        """The current rate, or None before the first measurement."""
+        if self._chars == 0:
+            return None
+        return self._seconds / self._chars
 
-    def next_size(self, remaining: int) -> int:
+    def next_size(self, remaining_lengths: Sequence[int]) -> int:
         """Return the size of the next batch.
 
         Args:
-            remaining: Chunks of the document not yet embedded (at least 1).
+            remaining_lengths: Character counts of the document's chunks not yet
+                embedded, in document order (at least one).
 
         Returns:
-            The target-sized batch, clamped to ``1..AUTO_MAX_BATCH`` and ``remaining``.
+            As many of the next chunks as fit the target at the current rate, from
+            1 to ``AUTO_MAX_BATCH``, or ``AUTO_FIRST_BATCH`` before the first
+            measurement; never more than ``len(remaining_lengths)``.
         """
-        if self._seconds_per_chunk is None:
-            size = AUTO_FIRST_BATCH
-        else:
-            size = round(min(self._target_s / self._seconds_per_chunk, AUTO_MAX_BATCH))
-        return max(1, min(size, remaining))
+        rate = self.seconds_per_char
+        if rate is None:
+            return min(AUTO_FIRST_BATCH, len(remaining_lengths))
+        limit = min(AUTO_MAX_BATCH, len(remaining_lengths))
+        size = 1
+        chars = remaining_lengths[0]
+        while size < limit and rate * (chars + remaining_lengths[size]) <= self._target_s:
+            chars += remaining_lengths[size]
+            size += 1
+        return size
 
-    def observe(self, chunks: int, elapsed_s: float) -> None:
-        """Fold a batch's seconds per chunk into the estimate.
+    def observe(self, chars: int, elapsed_s: float) -> None:
+        """Fold a batch's seconds and characters into the rate.
 
         A measurement that is not a positive, finite time carries no rate and is
         ignored.
 
         Args:
-            chunks: Chunks in the batch.
+            chars: Characters in the batch's chunks.
             elapsed_s: Wall time of the provider request in seconds.
         """
-        if chunks < 1 or not math.isfinite(elapsed_s) or elapsed_s <= 0:
+        if not math.isfinite(elapsed_s) or elapsed_s <= 0:
             return
-        sample = elapsed_s / chunks
-        if self._seconds_per_chunk is None:
-            self._seconds_per_chunk = sample
-        else:
-            self._seconds_per_chunk += AUTO_SMOOTHING * (sample - self._seconds_per_chunk)
+        keep = 1 - AUTO_SMOOTHING
+        self._seconds = self._seconds * keep + elapsed_s
+        self._chars = self._chars * keep + chars
 
 
 class FixedBatchSizer:
@@ -161,25 +177,26 @@ class FixedBatchSizer:
         """Return the size as text."""
         return str(self._size)
 
-    def next_size(self, remaining: int) -> int:
-        """Return the configured size, or ``remaining`` when fewer chunks are left.
+    def next_size(self, remaining_lengths: Sequence[int]) -> int:
+        """Return the configured size, or the remaining chunk count when fewer are left.
 
         Args:
-            remaining: Chunks of the document not yet embedded (at least 1).
+            remaining_lengths: Character counts of the document's chunks not yet
+                embedded, in document order (at least one).
 
         Returns:
             The batch size.
         """
-        return min(self._size, remaining)
+        return min(self._size, len(remaining_lengths))
 
-    def observe(self, chunks: int, elapsed_s: float) -> None:
+    def observe(self, chars: int, elapsed_s: float) -> None:
         """Ignore the measurement; the size is fixed.
 
         Args:
-            chunks: Chunks in the batch.
+            chars: Characters in the batch's chunks.
             elapsed_s: Wall time of the provider request in seconds.
         """
-        _ = (chunks, elapsed_s)
+        _ = (chars, elapsed_s)
 
 
 def create_batch_sizer(settings: EmbeddingSettings) -> BatchSizer:
@@ -282,9 +299,10 @@ async def embed_in_batches(
 ) -> list[list[float]]:
     """Embed ``texts`` in batches, one ``embed_documents`` request per batch.
 
-    For each batch the loop acquires ``semaphore``, awaits the provider under
-    ``batch_timeout_s``, releases the semaphore, and feeds the request's wall time
-    to ``sizer``.
+    For each batch the loop asks ``sizer`` for a size from the lengths of the chunks
+    not yet embedded, acquires ``semaphore``, awaits the provider under
+    ``batch_timeout_s``, releases the semaphore, and feeds the batch's characters and
+    the request's wall time to ``sizer``.
 
     Args:
         provider: The embedding provider.
@@ -302,6 +320,7 @@ async def embed_in_batches(
         EmbeddingBatchError: If the provider fails a batch.
     """
     total = len(texts)
+    lengths = [len(text) for text in texts]
     vectors: list[list[float]] = []
     started = clock()
     # The time the latest batch's vectors arrived. A failure reports its progress up
@@ -310,7 +329,7 @@ async def embed_in_batches(
     embedded = 0
     batch_number = 0
     while embedded < total:
-        size = sizer.next_size(total - embedded)
+        size = sizer.next_size(lengths[embedded:])
         batch_number += 1
         batch = list(texts[embedded:embedded + size])
         async with semaphore:
@@ -327,7 +346,7 @@ async def embed_in_batches(
                 raise EmbeddingBatchError(position, exc) from exc
             progress_at = clock()
             elapsed_s = progress_at - batch_started
-        sizer.observe(size, elapsed_s)
+        sizer.observe(sum(lengths[embedded:embedded + size]), elapsed_s)
         vectors.extend(batch_vectors)
         logger.debug(
             'Embedded batch %d: chunks %d-%d of %d in %.2f s',

@@ -119,7 +119,8 @@ class EmbeddingSettings(CommonSettings):
         alias='EMBEDDING_BATCH_SIZE',
         description="Chunks per embedding request when a document is embedded. 'auto' (default) "
                     'sizes each batch to take about EMBEDDING_BATCH_TARGET_S from the measured '
-                    'seconds per chunk, between 1 and 64 chunks; an integer from 1 to 512 fixes the size.',
+                    'seconds per character of chunk text and the lengths of its chunks, between 1 and 64 '
+                    'chunks; an integer from 1 to 512 fixes the size.',
     )
     batch_target_s: float = Field(
         default=5.0,

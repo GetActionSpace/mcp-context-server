@@ -1,6 +1,7 @@
 """Tests for app.embeddings.batching: batch sizers and the batched embed loop."""
 
 import asyncio
+from collections.abc import Callable
 from typing import override
 from unittest.mock import patch
 
@@ -47,64 +48,106 @@ class RecordingProvider:
         return [[float(text[1:])] for text in texts]
 
 
+class TimedProvider:
+    """Embedding provider whose request time is the sum of its texts' costs.
+
+    ``seconds_for`` gives each text's cost; every request advances ``clock`` by the
+    batch's total and records the batch's size and that time.
+    """
+
+    def __init__(self, clock: FakeClock, seconds_for: Callable[[str], float]) -> None:
+        self.requests: list[tuple[int, float]] = []
+        self._clock = clock
+        self._seconds_for = seconds_for
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        seconds = sum(self._seconds_for(text) for text in texts)
+        self._clock.now += seconds
+        self.requests.append((len(texts), seconds))
+        return [[0.0] for _ in texts]
+
+
 def _texts(count: int) -> list[str]:
     return [f't{i}' for i in range(count)]
+
+
+def _lengths(count: int, length: int = 1500) -> list[int]:
+    return [length] * count
 
 
 class TestAdaptiveBatchSizer:
     """The auto sizer aims each batch at the target wall time."""
 
     def test_first_batch_is_four_chunks(self) -> None:
-        assert AdaptiveBatchSizer(target_s=5.0).next_size(100) == 4
+        assert AdaptiveBatchSizer(target_s=5.0).next_size(_lengths(100)) == 4
 
     def test_first_batch_never_exceeds_remaining(self) -> None:
-        assert AdaptiveBatchSizer(target_s=5.0).next_size(3) == 3
+        assert AdaptiveBatchSizer(target_s=5.0).next_size(_lengths(3)) == 3
 
-    def test_sizes_from_observed_seconds_per_chunk(self) -> None:
+    def test_sizes_from_the_observed_seconds_per_character(self) -> None:
         sizer = AdaptiveBatchSizer(target_s=5.0)
-        sizer.observe(4, 2.0)
-        assert sizer.next_size(100) == 10
+        sizer.observe(6000, 1.8)
+        # 0.0003 s per character: a 1500-character chunk takes 0.45 s, and 11 of them 4.95 s.
+        assert sizer.seconds_per_char == pytest.approx(0.0003)
+        assert sizer.next_size(_lengths(100)) == 11
 
-    def test_estimate_is_exponentially_weighted(self) -> None:
+    def test_a_batch_takes_chunks_while_their_characters_fit_the_target(self) -> None:
         sizer = AdaptiveBatchSizer(target_s=5.0)
-        sizer.observe(4, 2.0)
-        sizer.observe(10, 10.0)
-        # 0.5 s/chunk, then a 1.0 s/chunk batch: the estimate moves halfway, to 0.75.
-        assert sizer.seconds_per_chunk == pytest.approx(0.75)
-        assert sizer.next_size(100) == 7
+        sizer.observe(1000, 1.0)
+        # 1.5 + 1.5 + 1.5 + 0.4 s fit the 5 s target; the next 1.5 s chunk does not.
+        assert sizer.next_size([1500, 1500, 1500, 400, 1500, 100]) == 4
+        assert sizer.next_size(_lengths(100, length=100)) == 50
+
+    def test_older_measurements_fade(self) -> None:
+        sizer = AdaptiveBatchSizer(target_s=5.0)
+        sizer.observe(4000, 2.0)
+        sizer.observe(2000, 4.0)
+        # The first batch's sums are halved before the second's are added:
+        # (1.0 + 4.0) s over (2000 + 2000) characters.
+        assert sizer.seconds_per_char == pytest.approx(0.00125)
+        assert sizer.next_size(_lengths(100, length=900)) == 4
+
+    def test_a_short_text_does_not_make_full_chunks_look_cheap(self) -> None:
+        sizer = AdaptiveBatchSizer(target_s=5.0)
+        sizer.observe(7 * 1500, 4.9)
+        assert sizer.next_size(_lengths(100)) == 7
+        # A one-line message takes 0.1 s for 8 characters; its request time adds to
+        # the rate rather than halving it, so the next batch does not grow.
+        sizer.observe(8, 0.1)
+        assert sizer.next_size(_lengths(100)) == 6
 
     def test_converges_on_a_steady_provider(self) -> None:
         sizer = AdaptiveBatchSizer(target_s=5.0)
-        sizer.observe(4, 0.4)
+        sizer.observe(6000, 0.3)
         for _ in range(12):
-            size = sizer.next_size(1000)
-            sizer.observe(size, size * 1.0)
-        assert sizer.next_size(1000) == 5
+            size = sizer.next_size(_lengths(1000))
+            sizer.observe(size * 1500, size * 0.9)
+        assert sizer.next_size(_lengths(1000)) == 5
 
     def test_ceiling_is_sixty_four(self) -> None:
         sizer = AdaptiveBatchSizer(target_s=5.0)
-        sizer.observe(4, 0.004)
-        assert sizer.next_size(1000) == 64
+        sizer.observe(6000, 0.004)
+        assert sizer.next_size(_lengths(1000)) == 64
 
     def test_floor_is_one(self) -> None:
         sizer = AdaptiveBatchSizer(target_s=5.0)
-        sizer.observe(1, 60.0)
-        assert sizer.next_size(1000) == 1
+        sizer.observe(1500, 60.0)
+        assert sizer.next_size(_lengths(1000)) == 1
 
     def test_never_exceeds_remaining_after_observation(self) -> None:
         sizer = AdaptiveBatchSizer(target_s=5.0)
-        sizer.observe(4, 2.0)
-        assert sizer.next_size(3) == 3
+        sizer.observe(6000, 1.8)
+        assert sizer.next_size(_lengths(3)) == 3
 
     @pytest.mark.parametrize('elapsed_s', [0.0, -1.0])
     def test_non_positive_elapsed_time_is_ignored(self, elapsed_s: float) -> None:
         sizer = AdaptiveBatchSizer(target_s=5.0)
-        sizer.observe(4, elapsed_s)
-        assert sizer.seconds_per_chunk is None
-        assert sizer.next_size(100) == 4
-        sizer.observe(4, 2.0)
-        sizer.observe(4, elapsed_s)
-        assert sizer.seconds_per_chunk == pytest.approx(0.5)
+        sizer.observe(6000, elapsed_s)
+        assert sizer.seconds_per_char is None
+        assert sizer.next_size(_lengths(100)) == 4
+        sizer.observe(6000, 1.8)
+        sizer.observe(6000, elapsed_s)
+        assert sizer.seconds_per_char == pytest.approx(0.0003)
 
     def test_mode_is_auto(self) -> None:
         assert AdaptiveBatchSizer(target_s=5.0).mode == 'auto'
@@ -114,15 +157,15 @@ class TestFixedBatchSizer:
     """The integer setting fixes the batch size."""
 
     def test_returns_the_configured_size(self) -> None:
-        assert FixedBatchSizer(8).next_size(100) == 8
+        assert FixedBatchSizer(8).next_size(_lengths(100)) == 8
 
     def test_never_exceeds_remaining(self) -> None:
-        assert FixedBatchSizer(8).next_size(5) == 5
+        assert FixedBatchSizer(8).next_size(_lengths(5)) == 5
 
     def test_observations_do_not_change_the_size(self) -> None:
         sizer = FixedBatchSizer(8)
-        sizer.observe(8, 100.0)
-        assert sizer.next_size(100) == 8
+        sizer.observe(8 * 1500, 100.0)
+        assert sizer.next_size(_lengths(100)) == 8
 
     def test_mode_is_the_size(self) -> None:
         assert FixedBatchSizer(8).mode == '8'
@@ -136,13 +179,14 @@ class TestCreateBatchSizer:
             EmbeddingSettings.model_validate({'EMBEDDING_BATCH_SIZE': 'auto', 'EMBEDDING_BATCH_TARGET_S': 2.0}),
         )
         assert isinstance(sizer, AdaptiveBatchSizer)
-        sizer.observe(4, 2.0)
-        assert sizer.next_size(100) == 4
+        # 0.45 s per 1500-character chunk: four fit the 2 s target (eleven would fit 5 s).
+        sizer.observe(6000, 1.8)
+        assert sizer.next_size(_lengths(100)) == 4
 
     def test_integer_builds_a_fixed_sizer(self) -> None:
         sizer = create_batch_sizer(EmbeddingSettings.model_validate({'EMBEDDING_BATCH_SIZE': '16'}))
         assert isinstance(sizer, FixedBatchSizer)
-        assert sizer.next_size(100) == 16
+        assert sizer.next_size(_lengths(100)) == 16
 
 
 class TestEmbedInBatches:
@@ -160,16 +204,41 @@ class TestEmbedInBatches:
     @pytest.mark.asyncio
     async def test_adaptive_sizes_follow_the_measured_speed(self) -> None:
         clock = FakeClock()
-        provider = RecordingProvider(clock, seconds_per_chunk=0.5)
+        provider = RecordingProvider(clock, seconds_per_chunk=0.45)
         await embed_in_batches(
             provider,
-            _texts(30),
+            [f't{i:03d}' for i in range(30)],
             sizer=AdaptiveBatchSizer(target_s=5.0),
             semaphore=asyncio.Semaphore(1),
             batch_timeout_s=10.0,
             clock=clock,
         )
-        assert [len(batch) for batch in provider.batches] == [4, 10, 10, 6]
+        # 0.45 s per 4-character chunk: eleven chunks (4.95 s) fit the 5 s target.
+        assert [len(batch) for batch in provider.batches] == [4, 11, 11, 4]
+
+    @pytest.mark.asyncio
+    async def test_a_short_text_does_not_oversize_the_next_documents_batches(self) -> None:
+        clock = FakeClock()
+        sizer = AdaptiveBatchSizer(target_s=5.0)
+        # A one-line message is one 8-character chunk answered in 0.1 s; a full
+        # 1500-character chunk of a large document costs 0.7 s.
+        provider = TimedProvider(clock, lambda text: 0.1 if len(text) == 8 else 0.7)
+        await embed_in_batches(
+            provider, ['continue'], sizer=sizer, semaphore=asyncio.Semaphore(1), batch_timeout_s=10.0, clock=clock,
+        )
+        provider.requests.clear()
+
+        await embed_in_batches(
+            provider, ['x' * 1500] * 280, sizer=sizer, semaphore=asyncio.Semaphore(1), batch_timeout_s=10.0, clock=clock,
+        )
+
+        sizes = [size for size, _ in provider.requests]
+        assert sum(sizes) == 280
+        assert max(seconds for _, seconds in provider.requests) <= 5.0
+        # After the first measured full-size chunks every batch carries the 7 chunks
+        # (4.9 s) that fit the target.
+        assert sizes[:2] == [1, 6]
+        assert set(sizes[2:-1]) == {7}
 
     @pytest.mark.asyncio
     async def test_a_retried_batch_resends_only_itself(self) -> None:
@@ -368,8 +437,8 @@ class TestEmbedInBatches:
 
         class RecordingSizer(FixedBatchSizer):
             @override
-            def observe(self, chunks: int, elapsed_s: float) -> None:
-                observed.append((chunks, elapsed_s))
+            def observe(self, chars: int, elapsed_s: float) -> None:
+                observed.append((chars, elapsed_s))
 
         semaphore = asyncio.Semaphore(1)
         await semaphore.acquire()
@@ -388,7 +457,8 @@ class TestEmbedInBatches:
         semaphore.release()
         await task
 
-        assert observed == [(2, 2.0)]
+        # The batch's characters ('t0' and 't1') and its request time, without the wait.
+        assert observed == [(4, 2.0)]
 
     @pytest.mark.asyncio
     async def test_batches_and_completion_are_logged(self, caplog: pytest.LogCaptureFixture) -> None:

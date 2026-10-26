@@ -502,7 +502,7 @@
           "name": "EMBEDDING_MAX_CONCURRENT"
         },
         {
-          "description": "Chunks per embedding request when a chunked document is embedded: 'auto' (default) sizes each batch to take about EMBEDDING_BATCH_TARGET_S from the measured seconds per chunk (1 to 64 chunks); an integer from 1 to 512 fixes the size",
+          "description": "Chunks per embedding request when a chunked document is embedded: 'auto' (default) sizes each batch to take about EMBEDDING_BATCH_TARGET_S from the measured seconds per character of chunk text and the lengths of its chunks (1 to 64 chunks); an integer from 1 to 512 fixes the size",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -1781,7 +1781,7 @@
           "name": "EMBEDDING_MAX_CONCURRENT"
         },
         {
-          "description": "Chunks per embedding request when a chunked document is embedded: 'auto' (default) sizes each batch to take about EMBEDDING_BATCH_TARGET_S from the measured seconds per chunk (1 to 64 chunks); an integer from 1 to 512 fixes the size",
+          "description": "Chunks per embedding request when a chunked document is embedded: 'auto' (default) sizes each batch to take about EMBEDDING_BATCH_TARGET_S from the measured seconds per character of chunk text and the lengths of its chunks (1 to 64 chunks); an integer from 1 to 512 fixes the size",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
