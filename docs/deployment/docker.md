@@ -796,7 +796,7 @@ docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama oll
 docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml logs mcp-context-server | grep -i summary
 ```
 
-**Note:** A store or update made without `defer_generation` generates the summary before its database transaction, in parallel with the embeddings, so the entry carries it as soon as the call returns. A write made with `defer_generation=true` returns first, and the generation worker adds the summary afterwards; the entry's `generation_status` turns `ready` once it has. A `failed` entry is retried at the next server start or by `mcp-context-server-migrate --embed-missing`, and the server log names its error at ERROR level.
+**Note:** A store or update made without `defer_generation` generates the summary before its database transaction, in parallel with the embeddings, so the entry carries it as soon as the call returns. A write made with `defer_generation=true` returns first, and the generation worker adds the summary afterward; the entry's `generation_status` turns `ready` once it has. A `failed` entry is retried at the next server start or by `mcp-context-server-migrate --embed-missing`, and the server log names its error at ERROR level.
 
 ### Issue 9: Mixed Provider (Ollama Embeddings + OpenAI Summary) Infinite Restart
 

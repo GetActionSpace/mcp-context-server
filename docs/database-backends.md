@@ -101,7 +101,7 @@ Which entries match and how many land on a page are the same on both backends. F
 
 ## Deferred Generation Jobs
 
-A store or update made with `defer_generation=true` commits the entry together with one row in `generation_jobs`, and the server's generation worker generates the entry's embeddings, summary and node summaries afterwards (see [Deferred Generation Settings](environment-variables.md#deferred-generation-settings)). Both base schemas declare the table and its index beside `context_entry_grants`:
+A store or update made with `defer_generation=true` commits the entry together with one row in `generation_jobs`, and the server's generation worker generates the entry's embeddings, summary and node summaries afterward (see [Deferred Generation Settings](environment-variables.md#deferred-generation-settings)). Both base schemas declare the table and its index beside `context_entry_grants`:
 
 | Column               | SQLite                                                                               | PostgreSQL                                                                  | Meaning                                                                                         |
 |----------------------|--------------------------------------------------------------------------------------|-----------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------|
@@ -684,7 +684,7 @@ emitted by `store_context` / `update_context` (and their batch variants) while P
    The per-connection `statement_timeout` follows automatically at `0.9 *` this value.
 3. **Reduce write concurrency** if a pooler or replica count is forcing many simultaneous fp32 writes through the HNSW index.
 
-**Automatic retry (transient cases only):** A statement cancellation (SQLSTATE 57014) is retried with bounded exponential backoff at both the tool layer (store/update/batch) and in `execute_write`. Retry uses the SAME timeout ceiling, so it recovers only a TRANSIENT lock-WAIT (the write was blocked behind another writer and the contention has cleared by the retry). It does NOT rescue a write that is fundamentally slower than the ceiling -- for that, apply solution 1 or 2 above. Retry is safe because PostgreSQL aborts the transaction of a cancelled statement, so the failed attempt never committed, and generation already completed outside the transaction, so a retry never regenerates or skips embeddings/summaries.
+**Automatic retry (transient cases only):** A statement cancellation (SQLSTATE 57014) is retried with bounded exponential backoff at both the tool layer (store/update/batch) and in `execute_write`. Retry uses the SAME timeout ceiling, so it recovers only a TRANSIENT lock-WAIT (the write was blocked behind another writer and the contention has cleared by the retry). It does NOT rescue a write that is fundamentally slower than the ceiling -- for that, apply solution 1 or 2 above. Retry is safe because PostgreSQL aborts the transaction of a canceled statement, so the failed attempt never committed, and generation already completed outside the transaction, so a retry never regenerates or skips embeddings/summaries.
 
 ## Troubleshooting
 
