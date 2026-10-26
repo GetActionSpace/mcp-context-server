@@ -3,8 +3,8 @@ Tests for embedding concurrency controls and dynamic timeout computation.
 
 Tests verify:
 - compute_embedding_total_timeout() produces correct values for various settings
-- Semaphore limits concurrent embedding operations
-- Total timeout wrapper raises ToolError on expiration
+- Semaphore limits concurrent embedding requests, one slot per batch
+- The total timeout applies per batch and raises ToolError naming the batch
 - FTS/semantic error logging in hybrid search graceful degradation
 """
 
@@ -15,6 +15,10 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
+
+from app.embeddings.batching import FixedBatchSizer
+from app.repositories.embedding_repository.records import ChunkEmbedding
+from app.services.chunking_service import TextChunk
 
 # --- Tests for compute_embedding_total_timeout() ---
 
@@ -111,30 +115,42 @@ def test_compute_timeout_backoff_cap(mock_retry_settings: MagicMock) -> None:
 # --- Tests for semaphore concurrency control ---
 
 
+def _chunking_service(chunks_per_document: int) -> MagicMock:
+    """An enabled chunking service splitting every document into a fixed number of chunks."""
+    service = MagicMock()
+    service.is_enabled = True
+    service.chunk_size = 1500
+    service.split_text = lambda text: [
+        TextChunk(text=f'{text}-{i}', chunk_index=i, start_index=i, end_index=i + 1)
+        for i in range(chunks_per_document)
+    ]
+    return service
+
+
 @pytest.mark.asyncio
 async def test_semaphore_limits_concurrency() -> None:
-    """Verify that the semaphore limits concurrent embedding calls."""
-    max_concurrent_seen = 0
-    current_concurrent = 0
-    lock = asyncio.Lock()
+    """Concurrent documents never have more provider requests in flight than EMBEDDING_MAX_CONCURRENT."""
+    in_flight = 0
+    peak = 0
+    requests = 0
 
-    async def mock_generate(_text: str) -> list[MagicMock]:
-        nonlocal max_concurrent_seen, current_concurrent
-        async with lock:
-            current_concurrent += 1
-            if current_concurrent > max_concurrent_seen:
-                max_concurrent_seen = current_concurrent
-        await asyncio.sleep(0.05)
-        async with lock:
-            current_concurrent -= 1
-        return [MagicMock()]
+    class CountingProvider:
+        async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            nonlocal in_flight, peak, requests
+            requests += 1
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.02)
+            in_flight -= 1
+            return [[0.0] for _ in texts]
 
     max_concurrent_setting = 2
 
     with (
-        patch('app.tools._generation.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools._generation.get_embedding_provider', return_value=CountingProvider()),
+        patch('app.tools._generation.get_chunking_service', return_value=_chunking_service(6)),
         patch('app.tools._generation.compute_embedding_total_timeout', return_value=999.0),
-        patch('app.tools._generation._generate_embeddings_for_text', side_effect=mock_generate),
+        patch('app.tools._generation._batch_sizer', FixedBatchSizer(2)),
         patch('app.tools._generation.settings') as mock_settings,
     ):
         mock_settings.embedding.max_concurrent = max_concurrent_setting
@@ -147,40 +163,38 @@ async def test_semaphore_limits_concurrency() -> None:
         generation_module._reset_embedding_semaphore()
 
         try:
-            sem = generation_module._embedding_semaphore
+            from app.tools._generation import generate_embeddings_with_timeout
 
-            # Launch 4 concurrent tasks through the semaphore
-            async def run_with_semaphore():
-                async with sem:
-                    await mock_generate('test')
-
-            tasks = [run_with_semaphore() for _ in range(4)]
-            await asyncio.gather(*tasks)
-
-            assert max_concurrent_seen <= max_concurrent_setting
+            # Four documents of three batches each, embedded at once.
+            await asyncio.gather(*(generate_embeddings_with_timeout(f'doc{n}') for n in range(4)))
         finally:
             generation_module._embedding_semaphore = original_semaphore
+
+    assert requests == 12
+    assert peak == max_concurrent_setting
 
 
 @pytest.mark.asyncio
 async def test_total_timeout_raises_tool_error() -> None:
-    """Verify that exceeding total timeout raises ToolError."""
+    """A batch exceeding the total timeout fails the store and names the batch."""
     from fastmcp.exceptions import ToolError
 
-    async def slow_embedding(_text: str) -> list[MagicMock]:
-        await asyncio.sleep(10.0)
-        return [MagicMock()]
+    class SecondBatchHangsProvider:
+        async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            if texts[0].endswith('-1'):
+                await asyncio.sleep(10.0)
+            return [[0.0] for _ in texts]
 
     mock_repos = MagicMock()
     mock_repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
+    provider = SecondBatchHangsProvider()
 
     with (
-        patch('app.tools.context.store.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools._generation.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools.context.store.get_embedding_provider', return_value=MagicMock()),
-        patch('app.tools._generation.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools.context.store.get_embedding_provider', return_value=provider),
+        patch('app.tools._generation.get_embedding_provider', return_value=provider),
+        patch('app.tools._generation.get_chunking_service', return_value=_chunking_service(3)),
         patch('app.tools._generation.compute_embedding_total_timeout', return_value=0.05),
-        patch('app.tools._generation._generate_embeddings_for_text', side_effect=slow_embedding),
+        patch('app.tools._generation._batch_sizer', FixedBatchSizer(1)),
         patch('app.tools._generation.settings') as mock_settings,
         patch('app.tools.context.store.ensure_repositories', new_callable=AsyncMock, return_value=mock_repos),
     ):
@@ -194,7 +208,8 @@ async def test_total_timeout_raises_tool_error() -> None:
         try:
             from app.tools.context.store import store_context
 
-            with pytest.raises(ToolError, match='total timeout'):
+            # The first batch finishes well inside the timeout; the second one runs out of it.
+            with pytest.raises(ToolError, match=r'total timeout \(0s\) on batch 2 of 3 \(chunk 2 of 3; 1 chunk embedded'):
                 await store_context(
                     thread_id='test-thread',
                     source='agent',
@@ -436,13 +451,14 @@ async def testgenerate_embeddings_with_timeout_returns_none_when_no_provider() -
 
 @pytest.mark.asyncio
 async def testgenerate_embeddings_with_timeout_success() -> None:
-    """Verify helper returns embeddings on success."""
-    mock_embeddings = [MagicMock()]
+    """Verify helper returns the single embedding when chunking is disabled."""
+    provider = MagicMock()
+    provider.embed_query = AsyncMock(return_value=[0.1, 0.2])
 
     with (
-        patch('app.tools._generation.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools._generation.get_embedding_provider', return_value=provider),
+        patch('app.tools._generation.get_chunking_service', return_value=None),
         patch('app.tools._generation.compute_embedding_total_timeout', return_value=999.0),
-        patch('app.tools._generation._generate_embeddings_for_text', new_callable=AsyncMock, return_value=mock_embeddings),
         patch('app.tools._generation.settings') as mock_settings,
     ):
         mock_settings.embedding.max_concurrent = 3
@@ -456,24 +472,27 @@ async def testgenerate_embeddings_with_timeout_success() -> None:
             from app.tools._generation import generate_embeddings_with_timeout
 
             result = await generate_embeddings_with_timeout('test text')
-            assert result == mock_embeddings
+            assert result == [ChunkEmbedding(embedding=[0.1, 0.2], start_index=0, end_index=9)]
         finally:
             generation_module._embedding_semaphore = original_semaphore
 
 
 @pytest.mark.asyncio
 async def testgenerate_embeddings_with_timeout_raises_on_timeout() -> None:
-    """Verify helper raises ToolError when embedding generation times out."""
+    """Verify helper raises ToolError when the single embedding times out."""
     from fastmcp.exceptions import ToolError
 
-    async def slow_embedding(_text: str) -> list[MagicMock]:
+    async def slow_embedding(_text: str) -> list[float]:
         await asyncio.sleep(10.0)
-        return [MagicMock()]
+        return [0.0]
+
+    provider = MagicMock()
+    provider.embed_query = slow_embedding
 
     with (
-        patch('app.tools._generation.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools._generation.get_embedding_provider', return_value=provider),
+        patch('app.tools._generation.get_chunking_service', return_value=None),
         patch('app.tools._generation.compute_embedding_total_timeout', return_value=0.05),
-        patch('app.tools._generation._generate_embeddings_for_text', side_effect=slow_embedding),
         patch('app.tools._generation.settings') as mock_settings,
     ):
         mock_settings.embedding.max_concurrent = 3
@@ -486,7 +505,7 @@ async def testgenerate_embeddings_with_timeout_raises_on_timeout() -> None:
         try:
             from app.tools._generation import generate_embeddings_with_timeout
 
-            with pytest.raises(ToolError, match='total timeout'):
+            with pytest.raises(ToolError, match=r'^Embedding generation exceeded total timeout \(0s\)\. '):
                 await generate_embeddings_with_timeout('test text')
         finally:
             generation_module._embedding_semaphore = original_semaphore

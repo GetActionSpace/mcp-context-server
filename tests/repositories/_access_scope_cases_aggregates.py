@@ -299,7 +299,7 @@ async def _database_size_is_deployment_wide(db: ScopedDb, scope: Scope) -> tuple
     """Return the scope's entry total and whether its database size is the system scope's.
 
     The size is read for the system scope right before and right after the scope's call, so
-    a size that only grows between the reads still compares exactly.
+    a size that moves between the reads, in either direction, still brackets the scope's reading.
 
     Args:
         db: The seeded database.
@@ -314,7 +314,8 @@ async def _database_size_is_deployment_wide(db: ScopedDb, scope: Scope) -> tuple
     before = await statistics.get_database_statistics(scope=SYSTEM_SCOPE, db_path=db_path)
     stats = await statistics.get_database_statistics(scope=scope, db_path=db_path)
     after = await statistics.get_database_statistics(scope=SYSTEM_SCOPE, db_path=db_path)
-    return stats['total_entries'], before['database_size_mb'] <= stats['database_size_mb'] <= after['database_size_mb']
+    sizes = (before['database_size_mb'], after['database_size_mb'])
+    return stats['total_entries'], min(sizes) <= stats['database_size_mb'] <= max(sizes)
 
 
 # A3: summaries on rows of every kind of reader, an empty summary that does not count, and a

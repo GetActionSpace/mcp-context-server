@@ -3,6 +3,7 @@
 These tests use mocks to avoid requiring actual provider dependencies.
 """
 
+import logging
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -297,3 +298,34 @@ class TestVoyageEmbeddingProvider:
 
             result = await provider.is_available()
             assert result is False
+
+    @pytest.mark.asyncio
+    async def test_embed_documents_logs_the_request_at_debug(
+        self,
+        mock_settings_with_key: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """One embed_documents call embeds one batch of a document, so its line is DEBUG.
+
+        The batching loop logs each document's start and completion at INFO; an
+        INFO line per request would repeat once per batch at the default level.
+        """
+        caplog.set_level(logging.DEBUG, logger='app.embeddings.providers.langchain_voyage')
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_documents = AsyncMock(return_value=[[0.1] * 1024, [0.2] * 1024])
+
+        with patch(
+            'app.embeddings.providers.langchain_voyage.get_settings',
+            return_value=mock_settings_with_key,
+        ):
+            from app.embeddings.providers.langchain_voyage import VoyageEmbeddingProvider
+
+            provider = VoyageEmbeddingProvider()
+            provider._embeddings = mock_embeddings
+
+            await provider.embed_documents(['text1', 'text2'])
+
+        records = [record for record in caplog.records if record.name == 'app.embeddings.providers.langchain_voyage']
+        assert [(record.levelno, record.getMessage()) for record in records] == [
+            (logging.DEBUG, 'Generated 2 embeddings for 2 texts'),
+        ]
