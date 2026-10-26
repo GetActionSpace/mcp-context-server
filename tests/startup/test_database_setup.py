@@ -5,11 +5,9 @@ refused right after the compression guard, before any provisioning migration run
 ingest index runs right after the access-control migration, because its SQLite key names
 the access columns that migration adds on an in-place upgrade, and the grant owner
 migration follows it, because its index and foreign key name ``owner_id``, which the
-access-control migration adds the same way. The generation jobs table is created right
-after the index tree migration, the last provisioning migration. The request role's grants
-and then the row-level security migration run last, once every table and column this
-boot provisions exists, so the grants cover every managed table and the read view lists
-every column.
+access-control migration adds the same way. The request role's grants and then the
+row-level security migration run last, once every table and column this boot provisions
+exists, so the grants cover every managed table and the read view lists every column.
 """
 
 import inspect
@@ -42,7 +40,6 @@ _ASYNC_STEPS = (
     'apply_tag_uniqueness_migration',
     'apply_compression_migration',
     'apply_index_tree_migration',
-    'apply_generation_jobs_migration',
     'validate_compression_provenance',
     '_announce_compression',
     'apply_request_role_grants',
@@ -122,18 +119,3 @@ async def test_the_grant_owner_migration_follows_the_access_columns_and_precedes
     assert names.index('apply_grant_owner_migration') < names.index('apply_tag_uniqueness_migration')
     assert names.index('apply_grant_owner_migration') < names.index('apply_request_role_grants')
     assert dict(calls)['apply_grant_owner_migration'] == (backend,)
-
-
-@pytest.mark.asyncio
-async def test_the_generation_jobs_table_follows_the_index_tree_and_precedes_the_grants_and_rls(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = cast(StorageBackend, SimpleNamespace(backend_type='postgresql'))
-
-    calls = await _recorded_steps(monkeypatch, backend, cast(AppSettings, SimpleNamespace()))
-
-    names = [name for name, _ in calls]
-    assert names.index('apply_generation_jobs_migration') == names.index('apply_index_tree_migration') + 1
-    assert names.index('apply_generation_jobs_migration') < names.index('apply_request_role_grants')
-    assert names.index('apply_generation_jobs_migration') < names.index('apply_rls')
-    assert dict(calls)['apply_generation_jobs_migration'] == (backend,)

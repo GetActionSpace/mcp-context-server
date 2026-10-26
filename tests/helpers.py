@@ -274,7 +274,6 @@ def patch_database_setup_steps() -> AbstractContextManager[Any]:
         apply_fts_migration=AsyncMock(),
         apply_chunking_migration=AsyncMock(),
         apply_index_tree_migration=AsyncMock(),
-        apply_generation_jobs_migration=AsyncMock(),
         apply_summary_migration=AsyncMock(),
         apply_content_hash_migration=AsyncMock(),
         apply_version_migration=AsyncMock(),

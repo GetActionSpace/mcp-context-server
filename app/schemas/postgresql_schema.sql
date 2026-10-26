@@ -126,8 +126,8 @@ ON context_entry_grants(principal_type, principal_id, context_entry_id);
 -- orders the queue, and available_at is the time from which a pending job
 -- may be claimed or a running job's lease ends, both from the database
 -- clock. The queue index serves the scan for the oldest claimable job and
--- the counts per status. apply_generation_jobs_migration runs these two
--- statements on a database that lacks either object.
+-- the counts per status. This script runs at every startup, so the two
+-- statements also create both objects on a database that predates them.
 CREATE TABLE IF NOT EXISTS generation_jobs (
     context_entry_id UUID PRIMARY KEY REFERENCES context_entries(id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'failed')),
