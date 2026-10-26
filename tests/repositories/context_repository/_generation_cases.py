@@ -5,7 +5,7 @@ and drives the generation reads and writes of
 :class:`~app.repositories.context_repository.ContextRepository` through its request
 channel, reading the entry rows as the table owner through its seed channel. Every seeded
 entry carries one embedding and one index-tree node and no summary.
-``tests/repositories/test_context_generation_mixin.py`` runs them on SQLite and
+``tests/repositories/context_repository/test_generation.py`` runs them on SQLite and
 ``tests/integration/postgresql/test_context_generation_mixin_postgresql.py`` on PostgreSQL.
 """
 

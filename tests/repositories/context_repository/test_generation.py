@@ -1,6 +1,6 @@
 """Tests for the generation reads and writes of the context repository on SQLite.
 
-Every case of ``tests/repositories/_context_generation_cases.py`` runs here on a SQLite
+Every case of ``tests/repositories/context_repository/_generation_cases.py`` runs here on a SQLite
 database the server's own preparation built and seeded;
 ``tests/integration/postgresql/test_context_generation_mixin_postgresql.py`` runs the same
 cases on PostgreSQL.
@@ -16,7 +16,7 @@ import pytest_asyncio
 from app.backends.base import StorageBackend
 from tests.repositories._access_scope_cases import ScopedDb
 from tests.repositories._access_scope_layouts import sqlite_scoped_db
-from tests.repositories._context_generation_cases import CONTEXT_GENERATION_CASES
+from tests.repositories.context_repository._generation_cases import CONTEXT_GENERATION_CASES
 
 
 @pytest_asyncio.fixture
