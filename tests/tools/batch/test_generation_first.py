@@ -99,7 +99,7 @@ class TestStoreContextBatchGenerationFirst:
             ),
             patch('app.tools.batch.store.get_summary_provider', return_value=None),
             patch(
-                'app.tools.batch.store.generate_embeddings_with_timeout',
+                'app.tools.batch._store_generation.generate_embeddings_with_timeout',
                 new=AsyncMock(side_effect=ToolError('Embedding generation timed out')),
             ),
             pytest.raises(ToolError, match='Generation failed at index 0'),
@@ -124,7 +124,7 @@ class TestStoreContextBatchGenerationFirst:
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools.batch.store.get_summary_provider', return_value=MagicMock()),
             patch(
-                'app.tools.batch.store.generate_summary_with_timeout',
+                'app.tools.batch._store_generation.generate_summary_with_timeout',
                 new=AsyncMock(side_effect=ToolError('Summary generation timed out')),
             ),
             pytest.raises(ToolError, match='Generation failed at index 0'),
@@ -159,7 +159,7 @@ class TestStoreContextBatchGenerationFirst:
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools.batch.store.get_summary_provider', return_value=MagicMock()),
             patch(
-                'app.tools.batch.store.generate_summary_with_timeout',
+                'app.tools.batch._store_generation.generate_summary_with_timeout',
                 new=AsyncMock(side_effect=selective_summary),
             ),
         ):
@@ -191,7 +191,7 @@ class TestStoreContextBatchGenerationFirst:
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools.batch.store.get_summary_provider', return_value=MagicMock()),
             patch(
-                'app.tools.batch.store.generate_summary_with_timeout',
+                'app.tools.batch._store_generation.generate_summary_with_timeout',
                 new=AsyncMock(return_value='Batch summary'),
             ),
         ):

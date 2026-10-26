@@ -44,7 +44,7 @@ class TestGenerationConformance:
             patch('app.tools._generation.generate_embeddings_with_timeout', mock_gen_embed),
             patch('app.tools.batch.store.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.batch.store.get_summary_provider', return_value=None),
-            patch('app.tools.batch.store.generate_embeddings_with_timeout', mock_gen_embed),
+            patch('app.tools.batch._store_generation.generate_embeddings_with_timeout', mock_gen_embed),
             patch('app.tools._generation.get_embedding_provider', return_value=mock_provider),
             patch('app.tools._generation.get_summary_provider', return_value=None),
             patch.object(repos.embeddings, 'store_chunked', AsyncMock()),
@@ -90,7 +90,7 @@ class TestGenerationConformance:
             patch('app.tools._generation.generate_summary_with_timeout', mock_gen_summary),
             patch('app.tools.batch.store.get_embedding_provider', return_value=None),
             patch('app.tools.batch.store.get_summary_provider', return_value=mock_provider),
-            patch('app.tools.batch.store.generate_summary_with_timeout', mock_gen_summary),
+            patch('app.tools.batch._store_generation.generate_summary_with_timeout', mock_gen_summary),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
         ):
@@ -132,7 +132,7 @@ class TestGenerationConformance:
             patch('app.tools._generation.generate_summary_with_timeout', mock_gen_summary),
             patch('app.tools.batch.store.get_embedding_provider', return_value=None),
             patch('app.tools.batch.store.get_summary_provider', return_value=mock_provider),
-            patch('app.tools.batch.store.generate_summary_with_timeout', mock_gen_summary),
+            patch('app.tools.batch._store_generation.generate_summary_with_timeout', mock_gen_summary),
             patch('app.tools._generation.get_embedding_provider', return_value=None),
             patch('app.tools._generation.get_summary_provider', return_value=mock_provider),
         ):
