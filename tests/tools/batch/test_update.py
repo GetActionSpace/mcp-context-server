@@ -276,12 +276,12 @@ class TestUpdateBatchSiblingNotDropped:
             patch('app.tools.batch.update.get_embedding_provider', return_value=MagicMock()),
             patch('app.tools.batch.update.get_summary_provider', return_value=None),
             patch(
-                'app.tools.batch.update.generate_embeddings_with_timeout',
+                'app.tools.batch._update_generation.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,
                 side_effect=emb_side_effect,
             ),
             patch(
-                'app.tools.batch.update.generate_compression_with_timeout',
+                'app.tools.batch._update_generation.generate_compression_with_timeout',
                 new_callable=AsyncMock,
                 side_effect=lambda emb: emb,
             ),

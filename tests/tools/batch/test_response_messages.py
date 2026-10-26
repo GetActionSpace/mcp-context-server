@@ -282,7 +282,7 @@ class TestBatchMessageAccuracy:
             patch('app.startup.get_chunking_service', return_value=None),
             patch('app.tools._generation.get_chunking_service', return_value=None),
             patch(
-                'app.tools.batch.update.execute_update_in_transaction',
+                'app.tools.batch._update_commit.execute_update_in_transaction',
                 new=AsyncMock(side_effect=ToolError('Failed to update context')),
             ),
         ):
