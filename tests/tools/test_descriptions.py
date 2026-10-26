@@ -7,7 +7,8 @@ template are maintained. The access-scoping tests also pin the
 SQLite score note in the description hybrid_search_context serves,
 and the read-back tests pin that the full-text description and the
 return description of every other entry-carrying search and read tool
-name the visibility and is_owner their results report.
+name the visibility, is_owner and generation_status their results report,
+and that the get_statistics description names its generation block.
 The sync tests pin what the corpus sync tools' served schemas tell a
 client: how to compute a manifest item's text digest, and no name of
 the server's own modules or constants.
@@ -25,6 +26,7 @@ from fastmcp.tools import Tool
 
 from app.ingest import MAX_PLAN_DELETES
 from app.tools import get_context_by_ids
+from app.tools import get_statistics
 from app.tools import list_ingest_state
 from app.tools import plan_context_sync
 from app.tools import register_tool
@@ -192,7 +194,7 @@ class TestDescriptionAccessScoping:
 
 
 class TestDescriptionReadBack:
-    """Every entry-carrying search and read tool names the visibility and ownership its results report."""
+    """Every entry-carrying search and read tool names the visibility, ownership and generation state its results report."""
 
     @pytest.mark.parametrize('backend', ['sqlite', 'postgresql'])
     def test_fts_description_names_the_access_fields(self, backend: Literal['sqlite', 'postgresql']) -> None:
@@ -223,6 +225,55 @@ class TestDescriptionReadBack:
         assert 'is_owner' in returns
         assert 'whether the caller owns the entry' in returns
         assert 'owner_id' not in returns
+
+    @pytest.mark.parametrize('backend', ['sqlite', 'postgresql'])
+    def test_fts_description_names_the_generation_state(self, backend: Literal['sqlite', 'postgresql']) -> None:
+        """The served full-text description names generation_status and each state it takes."""
+        description = ' '.join(generate_fts_description(backend, 'english').split())
+        assert 'generation_status' in description
+        for state in ("'ready'", "'pending'", "'failed'"):
+            assert state in description
+
+    @pytest.mark.parametrize(
+        'tool_name',
+        [
+            'semantic_search_context', 'hybrid_search_context', 'search_context', 'get_context_by_ids',
+            'grep_context', 'navigate_context', 'read_context_range',
+        ],
+    )
+    def test_docstring_return_description_names_the_generation_state(self, tool_name: str) -> None:
+        """The return description of each docstring-described entry-carrying tool names generation_status and its states."""
+        from app.tools.navigation.grep import grep_context
+        from app.tools.navigation.navigate import navigate_context
+        from app.tools.navigation.read_range import read_context_range
+        from app.tools.search.hybrid import hybrid_search_context
+        from app.tools.search.semantic import semantic_search_context
+
+        functions: dict[str, Callable[..., Awaitable[object]]] = {
+            'semantic_search_context': semantic_search_context,
+            'hybrid_search_context': hybrid_search_context,
+            'search_context': search_context,
+            'get_context_by_ids': get_context_by_ids,
+            'grep_context': grep_context,
+            'navigate_context': navigate_context,
+            'read_context_range': read_context_range,
+        }
+        docstring = functions[tool_name].__doc__
+        assert docstring is not None
+        returns = ' '.join(docstring[docstring.index('Returns:'):docstring.index('Raises:')].split())
+        assert 'generation_status' in returns
+        for state in ("'ready'", "'pending'", "'failed'"):
+            assert state in returns
+
+    def test_statistics_return_description_names_the_generation_block(self) -> None:
+        """The get_statistics description names the generation block and counts it per caller."""
+        docstring = get_statistics.__doc__
+        assert docstring is not None
+        description = ' '.join(docstring.split())
+        returns = description[description.index('Returns:'):description.index('Raises:')]
+        assert 'generation (dict with pending' in returns
+        assert 'and failed' in returns
+        assert 'summary, node and generation figures count only the entries the caller may read' in description
 
 
 _INTERNAL_NAME = re.compile(r'\bapp\.|MAX_PLAN_DELETES|content_hash')

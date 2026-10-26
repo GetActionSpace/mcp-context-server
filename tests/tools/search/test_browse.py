@@ -14,6 +14,7 @@ import app.tools
 from app.access_scope import AccessScope
 from app.backends.base import MAINTENANCE
 from tests.helpers import as_principal
+from tests.tools._generation_jobs import seed_generation_jobs
 
 # The tool functions are plain coroutines that lifespan() registers with FastMCP at startup; tests call them directly.
 store_context = app.tools.store_context
@@ -460,3 +461,24 @@ class TestSearchContextScoping:
             assert results['stats']['query_plan']
 
         assert filters_applied == {'alice': 3, 'bob': 3}
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestSearchContextGenerationStatus:
+    """Every result reports the state of its entry's generated outputs."""
+
+    @pytest.mark.asyncio
+    async def test_results_report_their_generation_state(self) -> None:
+        """No job reads ready, a waiting job pending and a failed job failed."""
+        stored = {
+            label: (await store_context(thread_id='generation-browse', source='agent', text=f'browse {label}'))['context_id']
+            for label in ('ready', 'pending', 'failed')
+        }
+        repos = await app.startup.ensure_repositories()
+        await seed_generation_jobs(repos.context.backend, {stored['pending']: 'pending', stored['failed']: 'failed'})
+
+        results = (await search_context(thread_id='generation-browse', limit=50))['results']
+
+        assert {entry['id']: entry['generation_status'] for entry in results} == {
+            stored['ready']: 'ready', stored['pending']: 'pending', stored['failed']: 'failed',
+        }

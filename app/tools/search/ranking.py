@@ -1,18 +1,26 @@
 """Post-retrieval shaping of search results.
 
 Cross-encoder reranking with an injected provider, and the display format (text
-truncation, summary normalization, canonical timestamps, the entry's access fields)
-applied to every result a search tool returns.
+truncation, summary normalization, canonical timestamps, the entry's access fields
+and generation state) applied to every result a search tool returns.
 """
 
 import logging
+from collections.abc import MutableMapping
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 from typing import Any
 
+from app.access_scope import AccessScope
 from app.repositories.base import canonical_timestamp
 from app.reranking.base import RerankingProvider
 from app.settings import get_settings
 from app.startup.validation import truncate_text
+from app.tools._responses import attach_generation_status
 from app.tools._responses import entry_access_fields
+
+if TYPE_CHECKING:
+    from app.repositories import RepositoryContainer
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -102,7 +110,28 @@ async def apply_reranking(
         return results[:limit] if limit else results
 
 
-def apply_search_display_format(entry: dict[str, Any]) -> None:
+async def apply_search_display_format(
+    results: Sequence[MutableMapping[str, Any]], repos: 'RepositoryContainer', *, scope: AccessScope,
+) -> None:
+    """Apply the unified search display format to every result of one search response.
+
+    Formats each result (see :func:`_format_search_result`) and sets its
+    ``generation_status`` from one generation state read for the whole response.
+
+    Modifies the result dicts in place.
+
+    Args:
+        results: The response's results, each carrying its ``id`` and the
+            ``visibility`` and ``is_owner`` the search statement selected.
+        repos: The repositories.
+        scope: The caller's scope.
+    """
+    for result in results:
+        _format_search_result(result)
+    await attach_generation_status(results, repos, scope=scope)
+
+
+def _format_search_result(entry: MutableMapping[str, Any]) -> None:
     """Apply unified search display formatting to a single result entry.
 
     Truncates text_content based on SEARCH_TRUNCATION_LENGTH setting and

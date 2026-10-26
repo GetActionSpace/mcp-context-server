@@ -14,6 +14,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 from app.repositories import RepositoryContainer
+from tests.tools._generation_jobs import NoGenerationJobs
 
 
 @pytest.mark.usefixtures('mock_server_dependencies')
@@ -31,6 +32,7 @@ class TestSemanticSearchDateFiltering:
         self.mock_repos.context = AsyncMock()
         self.mock_repos.tags = AsyncMock()
         self.mock_repos.embeddings = AsyncMock()
+        self.mock_repos.generation_jobs = NoGenerationJobs()
 
     @pytest.mark.asyncio
     async def test_semantic_search_with_start_date(self) -> None:

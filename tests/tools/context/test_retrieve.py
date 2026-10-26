@@ -11,6 +11,8 @@ from fastmcp.exceptions import ToolError
 import app.tools
 from app.startup import ensure_repositories
 from tests.helpers import as_principal
+from tests.tools._generation_jobs import record_state_reads
+from tests.tools._generation_jobs import seed_generation_jobs
 
 # The tool functions are plain coroutines that lifespan() registers with FastMCP at startup; tests call them directly.
 store_context = app.tools.store_context
@@ -229,3 +231,28 @@ class TestGetContextByIdsReadBack:
         for entry in (*owned, *read):
             assert type(entry['is_owner']) is bool
             assert 'owner_id' not in entry
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestGetContextByIdsGenerationStatus:
+    """Every returned entry reports the state of its generated outputs, read once per response."""
+
+    @pytest.mark.asyncio
+    async def test_each_entry_reports_its_generation_state(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No job reads ready, a waiting or running job pending, a failed job failed, all from one state read."""
+        stored = [
+            (await store_context(thread_id='generation-state', source='agent', text=f'entry {label}'))['context_id']
+            for label in ('ready', 'waiting', 'running', 'failed')
+        ]
+        ready, waiting, running, failed = stored
+        repos = await ensure_repositories()
+        await seed_generation_jobs(repos.context.backend, {waiting: 'pending', running: 'running', failed: 'failed'})
+        reads = record_state_reads(monkeypatch, repos)
+
+        entries = [dict(entry) for entry in await get_context_by_ids(context_ids=stored)]
+
+        assert {entry['id']: entry['generation_status'] for entry in entries} == {
+            ready: 'ready', waiting: 'pending', running: 'pending', failed: 'failed',
+        }
+        assert len(reads) == 1
+        assert sorted(reads[0]) == sorted(stored)

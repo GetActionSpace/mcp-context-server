@@ -15,6 +15,7 @@ from app.repositories.base import canonical_timestamp
 from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.tools._responses import entry_access_fields
+from app.tools._responses import generation_statuses
 from app.types import ContextEntryDict
 
 logger = logging.getLogger(__name__)
@@ -41,8 +42,11 @@ async def get_context_by_ids(
 
     Returns:
         List of ContextEntryDict with id, thread_id, source, text_content, metadata,
-        tags, images, created_at, updated_at, visibility and is_owner fields;
-        is_owner says whether the caller owns the entry. The summary field follows a
+        tags, images, created_at, updated_at, visibility, is_owner and
+        generation_status fields; is_owner says whether the caller owns the entry,
+        and generation_status is 'ready' once the entry's embeddings and summaries
+        are generated, 'pending' while their generation waits or runs, and 'failed'
+        when it gave up after its retries. The summary field follows a
         tri-state contract controlled by GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY:
 
         - When disabled (the default), the summary key is omitted entirely; consumers
@@ -74,8 +78,9 @@ async def get_context_by_ids(
         except ValueError as e:
             raise ToolError(f'Invalid context ID: {e}') from e
 
-        # Fetch the readable entries; tags and images below are read only for these ids.
+        # Fetch the readable entries; tags, images and generation states below are read only for these ids.
         rows = await repos.context.get_by_ids(context_ids, scope=scope)
+        statuses = await generation_statuses((str(row['id']) for row in rows), repos, scope=scope)
         entries: list[ContextEntryDict] = []
         include_summary = settings.retrieval.include_summary
 
@@ -85,6 +90,7 @@ async def get_context_by_ids(
             access = entry_access_fields(row)
             entry['visibility'] = access['visibility']
             entry['is_owner'] = access['is_owner']
+            entry['generation_status'] = statuses[str(row['id'])]
 
             # Canonical timestamp wire format: identical across SQLite and PostgreSQL
             # and to the search tools (text_content stays FULL here -- get_context_by_ids

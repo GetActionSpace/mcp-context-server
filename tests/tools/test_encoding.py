@@ -17,6 +17,7 @@ from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository.records import EntryProbe
 from app.types import MetadataDict
+from tests.tools._generation_jobs import NoGenerationJobs
 
 # Get the actual async functions from app.tools
 store_context = app.tools.store_context
@@ -68,6 +69,7 @@ class TestUTF8Encoding:
         self.mock_repos.index_nodes = AsyncMock()
         self.mock_repos.index_nodes.replace_nodes_for_context = AsyncMock(return_value=None)
         self.mock_repos.index_nodes.get_nodes_for_context = AsyncMock(return_value={})
+        self.mock_repos.generation_jobs = NoGenerationJobs()
 
     @pytest.mark.asyncio
     async def test_russian_text_encoding(self) -> None:
