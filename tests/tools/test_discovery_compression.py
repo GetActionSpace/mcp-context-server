@@ -29,6 +29,7 @@ from app.backends import create_backend
 from app.compression.provenance import insert_compression_metadata
 from app.compression.types import CompressionMetadata
 from app.migrations.compression import apply_compression_migration
+from app.migrations.generation_jobs import apply_generation_jobs_migration
 from app.settings import get_settings
 from app.startup import set_backend
 from app.startup import set_repositories
@@ -95,7 +96,7 @@ def _configure_compression_env(
 async def backend_with_compression_enabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncGenerator[StorageBackend, None]:
-    """SQLite backend with compression migration applied + provenance row.
+    """SQLite backend with the compression and generation jobs migrations applied + provenance row.
 
     Yields:
         Initialized backend ready for ``get_statistics`` to query the
@@ -114,6 +115,7 @@ async def backend_with_compression_enabled(
     backend = create_backend(backend_type='sqlite', db_path=str(db_path))
     await backend.initialize()
     await apply_compression_migration(backend=backend)
+    await apply_generation_jobs_migration(backend)
 
     # Bootstrap the provenance row directly (the validator normally does this
     # during lifespan; this fixture shortcuts that step so the test focuses on
@@ -140,7 +142,7 @@ async def backend_with_compression_enabled(
 async def backend_with_compression_disabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncGenerator[StorageBackend, None]:
-    """SQLite backend with compression DISABLED at env level.
+    """SQLite backend with compression DISABLED at env level and the generation jobs migration applied.
 
     Yields:
         Initialized backend ready for ``get_statistics`` to verify the
@@ -158,8 +160,9 @@ async def backend_with_compression_disabled(
 
     backend = create_backend(backend_type='sqlite', db_path=str(db_path))
     await backend.initialize()
-    # Disabled: migration is a no-op, validator never runs.
+    # Disabled: the compression migration is a no-op and the validator never runs.
     await apply_compression_migration(backend=backend)
+    await apply_generation_jobs_migration(backend)
 
     set_backend(backend)
 
