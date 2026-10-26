@@ -1,9 +1,157 @@
-"""Tests for the store and update response message builders in app.tools._responses."""
+"""Tests for the response helpers in app.tools._responses.
 
+The generation status reads run against a SQLite database built from the server's
+schema; the message builders are pure.
+"""
+
+import sqlite3
+from collections.abc import Callable
+from collections.abc import Sequence
+from typing import Any
+
+import pytest
+
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
+from app.backends.base import StorageBackend
+from app.ids import generate_id
+from app.repositories import RepositoryContainer
+from app.tools._responses import attach_generation_status
 from app.tools._responses import build_batch_store_response_message
 from app.tools._responses import build_batch_update_response_message
 from app.tools._responses import build_store_response_message
 from app.tools._responses import build_update_response_message
+from app.tools._responses import generation_statuses
+from app.types import GenerationStatus
+from tests.helpers import LOCAL_SCOPE
+from tests.repositories._access_scope_layouts import SQLITE_TEST_VARIABLE_LIMIT
+from tests.repositories._access_scope_layouts import limit_sqlite_variables
+
+
+async def _insert_entries(backend: StorageBackend, count: int) -> list[str]:
+    """Store ``count`` bare entries of the local principal as the table owner and return their ids in order."""
+    ids = [generate_id() for _ in range(count)]
+
+    def _insert(conn: sqlite3.Connection) -> None:
+        conn.executemany(
+            'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
+            "VALUES (?, 'responses', 'agent', 'text', ?, 'local')",
+            [(context_id, f'entry {position}') for position, context_id in enumerate(ids)],
+        )
+
+    await backend.execute_write(_insert, access_scope=MAINTENANCE)
+    return ids
+
+
+async def _insert_jobs(backend: StorageBackend, statuses: dict[str, str]) -> None:
+    """Give each entry a generation job in the stored status mapped to its id."""
+
+    def _insert(conn: sqlite3.Connection) -> None:
+        conn.executemany(
+            'INSERT INTO generation_jobs (context_entry_id, status) VALUES (?, ?)', list(statuses.items()),
+        )
+
+    await backend.execute_write(_insert, access_scope=MAINTENANCE)
+
+
+def _record_state_reads(monkeypatch: pytest.MonkeyPatch, repos: RepositoryContainer) -> list[list[str]]:
+    """Record the ids of every state read the job repository runs, letting each read through."""
+    reads: list[list[str]] = []
+    read_states = repos.generation_jobs.states_for_ids
+
+    async def _recording_read(context_ids: Sequence[str], *, scope: BackendAccess) -> dict[str, GenerationStatus]:
+        reads.append(list(context_ids))
+        return await read_states(context_ids, scope=scope)
+
+    monkeypatch.setattr(repos.generation_jobs, 'states_for_ids', _recording_read)
+    return reads
+
+
+class TestGenerationStatuses:
+    """Test generation_statuses, the one generation state read of a response."""
+
+    @pytest.mark.asyncio
+    async def test_reports_the_state_of_every_entry(self, async_db_initialized: StorageBackend) -> None:
+        """No job reads ready, a waiting or running job pending, and a failed job failed."""
+        ready, waiting, running, failed = await _insert_entries(async_db_initialized, 4)
+        await _insert_jobs(async_db_initialized, {waiting: 'pending', running: 'running', failed: 'failed'})
+
+        statuses = await generation_statuses(
+            [ready, waiting, running, failed], RepositoryContainer(async_db_initialized), scope=LOCAL_SCOPE,
+        )
+
+        assert statuses == {ready: 'ready', waiting: 'pending', running: 'pending', failed: 'failed'}
+
+    @pytest.mark.asyncio
+    async def test_reads_each_entry_once_in_one_read(
+        self, async_db_initialized: StorageBackend, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An entry a response carries several times, as grep match rows do, is read once."""
+        first, second = await _insert_entries(async_db_initialized, 2)
+        await _insert_jobs(async_db_initialized, {second: 'pending'})
+        repos = RepositoryContainer(async_db_initialized)
+        reads = _record_state_reads(monkeypatch, repos)
+
+        statuses = await generation_statuses([first, second, first, second], repos, scope=LOCAL_SCOPE)
+
+        assert reads == [[first, second]]
+        assert statuses == {first: 'ready', second: 'pending'}
+
+    @pytest.mark.asyncio
+    async def test_reads_more_entries_than_one_statement_binds(
+        self, async_db_initialized: StorageBackend, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A response of more entries than the lowest SQLite variable limit gets the state of every one."""
+        limit_sqlite_variables(monkeypatch, SQLITE_TEST_VARIABLE_LIMIT)
+        ids = await _insert_entries(async_db_initialized, SQLITE_TEST_VARIABLE_LIMIT + 1)
+        await _insert_jobs(async_db_initialized, {ids[0]: 'pending', ids[-1]: 'failed'})
+
+        statuses = await generation_statuses(ids, RepositoryContainer(async_db_initialized), scope=LOCAL_SCOPE)
+
+        assert list(statuses) == ids
+        assert (statuses[ids[0]], statuses[ids[-1]]) == ('pending', 'failed')
+        assert {statuses[context_id] for context_id in ids[1:-1]} == {'ready'}
+
+
+class TestAttachGenerationStatus:
+    """Test attach_generation_status, which sets the state on each entry of a response."""
+
+    @pytest.mark.asyncio
+    async def test_sets_the_state_of_every_entry_from_one_read(
+        self, async_db_initialized: StorageBackend, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Each entry gains its own generation_status and keeps every other field."""
+        ready, failed = await _insert_entries(async_db_initialized, 2)
+        await _insert_jobs(async_db_initialized, {failed: 'failed'})
+        repos = RepositoryContainer(async_db_initialized)
+        reads = _record_state_reads(monkeypatch, repos)
+        entries: list[dict[str, Any]] = [{'id': ready, 'thread_id': 'responses'}, {'id': failed, 'thread_id': 'responses'}]
+
+        await attach_generation_status(entries, repos, scope=LOCAL_SCOPE)
+
+        assert entries == [
+            {'id': ready, 'thread_id': 'responses', 'generation_status': 'ready'},
+            {'id': failed, 'thread_id': 'responses', 'generation_status': 'failed'},
+        ]
+        assert reads == [[ready, failed]]
+
+    @pytest.mark.asyncio
+    async def test_reads_nothing_for_a_response_without_entries(
+        self, async_db_initialized: StorageBackend, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An empty result, such as a search without hits, runs no statement."""
+        reads: list[object] = []
+        execute_read = async_db_initialized.execute_read
+
+        async def _recording_execute_read(operation: Callable[..., object], *, access_scope: BackendAccess) -> object:
+            reads.append(operation)
+            return await execute_read(operation, access_scope=access_scope)
+
+        monkeypatch.setattr(async_db_initialized, 'execute_read', _recording_execute_read)
+
+        await attach_generation_status([], RepositoryContainer(async_db_initialized), scope=LOCAL_SCOPE)
+
+        assert reads == []
 
 
 class TestBuildStoreResponseMessage:

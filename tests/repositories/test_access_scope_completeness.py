@@ -106,6 +106,8 @@ SCOPE_CARRYING_HELPERS = (
     'app.tools._delete_cleanup:delete_entries_with_cleanup',
     'app.tools._delete_cleanup:cleanup_embeddings_for_delete',
     'app.tools.sharing:_run_owned_grant_change',
+    'app.tools._responses:generation_statuses',
+    'app.tools._responses:attach_generation_status',
     'app.ids:resolve_prefix',
     'app.ids:resolve_or_normalize_id',
     'app.ids:resolve_or_normalize_ids',

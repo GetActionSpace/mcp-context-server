@@ -1,15 +1,27 @@
-"""Response pieces the tools share: the access fields of an entry read and the success messages of writes.
+"""Response pieces the tools share: the per-entry fields of an entry read and the success messages of writes.
 
 ``entry_access_fields`` shapes the ``visibility`` and ``is_owner`` every entry-carrying
-read response reports; the ``build_*_message`` functions write the success-message text
-of single-entry and batch store and update responses.
+read response reports; ``generation_statuses`` and ``attach_generation_status`` read the
+``generation_status`` it reports beside them, once per response; the ``build_*_message``
+functions write the success-message text of single-entry and batch store and update
+responses.
 """
 
+from collections.abc import Iterable
 from collections.abc import Mapping
+from collections.abc import MutableMapping
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+from typing import Any
 from typing import cast
 
+from app.access_scope import AccessScope
 from app.types import EntryAccessFields
 from app.types import EntryVisibility
+from app.types import GenerationStatus
+
+if TYPE_CHECKING:
+    from app.repositories import RepositoryContainer
 
 
 def entry_access_fields(row: Mapping[str, object]) -> EntryAccessFields:
@@ -25,6 +37,41 @@ def entry_access_fields(row: Mapping[str, object]) -> EntryAccessFields:
         The entry's ``visibility`` and whether the caller owns it.
     """
     return {'visibility': cast(EntryVisibility, str(row['visibility'])), 'is_owner': bool(row['is_owner'])}
+
+
+async def generation_statuses(
+    context_ids: Iterable[str], repos: 'RepositoryContainer', *, scope: AccessScope,
+) -> dict[str, GenerationStatus]:
+    """Read the generation state of the entries one response carries, in one read.
+
+    Args:
+        context_ids: Ids of the entries a scoped read returned for this response, in
+            canonical form; an id given more than once is read once.
+        repos: The repositories.
+        scope: The caller's scope.
+
+    Returns:
+        The state of each id: 'ready' when the entry's generated outputs are complete,
+        'pending' while its generation job waits or runs, 'failed' once the job spent
+        every attempt.
+    """
+    return await repos.generation_jobs.states_for_ids(list(dict.fromkeys(context_ids)), scope=scope)
+
+
+async def attach_generation_status(
+    entries: Sequence[MutableMapping[str, Any]], repos: 'RepositoryContainer', *, scope: AccessScope,
+) -> None:
+    """Set ``generation_status`` on every entry of one response, from one read.
+
+    Args:
+        entries: The response's entries as a scoped read returned them, each carrying
+            its ``id``; each gains its ``generation_status`` in place.
+        repos: The repositories.
+        scope: The caller's scope.
+    """
+    statuses = await generation_statuses((str(entry['id']) for entry in entries), repos, scope=scope)
+    for entry in entries:
+        entry['generation_status'] = statuses[str(entry['id'])]
 
 
 def build_store_response_message(

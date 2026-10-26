@@ -232,7 +232,7 @@ REGISTRY: dict[str, Entry] = {
     _IMAGES + 'get_images_for_context': _child(Seam.CHILD_BY_TRUSTED_ID, *_RESULT_HYDRATORS),
     _IMAGES + 'count_images_for_context': _child(Seam.CHILD_BY_TRUSTED_ID, _UPDATE_TX),
     _NODES + 'get_nodes_for_context': _child(Seam.CHILD_BY_TRUSTED_ID, 'tools/navigation/navigate.py:navigate_context'),
-    _JOBS + 'states_for_ids': _child(Seam.CHILD_BY_TRUSTED_ID, cases=('J2',)),
+    _JOBS + 'states_for_ids': _child(Seam.CHILD_BY_TRUSTED_ID, 'tools/_responses.py:generation_statuses', cases=('J2',)),
     _JOBS + 'state_for': _child(Seam.CHILD_BY_TRUSTED_ID),
     _JOBS + '_states_sql': _child(
         Seam.CHILD_BY_TRUSTED_ID,
