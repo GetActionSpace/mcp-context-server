@@ -831,7 +831,7 @@ Embedding generation failed: <provider message> (batch 3 of 41, chunks 9-15 of 2
 Embedding generation exceeded total timeout (1341s) on batch 3 of 41 (chunks 9-15 of 280; 8 chunks embedded in 12.3 s). This may indicate the embedding provider is overloaded or unreachable.
 ```
 
-In `auto` mode the batch count is projected from the size of the failing batch. The server logs the start of each document's embedding (text length, chunk count, batch mode) and its completion (chunks, batches, elapsed time) at INFO, and every batch at DEBUG.
+In `auto` mode the batch count is projected from the size of the failing batch. The time runs from the start of the document's embedding to its last embedded chunk, so it leaves out the failing batch's attempts, backoff and timeout. The server logs the start of each document's embedding (text length, chunk count, batch mode) and its completion (chunks, batches, elapsed time) at INFO, and every batch at DEBUG.
 
 ## Embedding-First Transactional Integrity
 

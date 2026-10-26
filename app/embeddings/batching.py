@@ -210,7 +210,7 @@ class BatchPosition:
         last_chunk: Position of the batch's last chunk.
         total_chunks: Chunks in the document.
         embedded_chunks: Chunks embedded before this batch.
-        elapsed_s: Seconds since the document's embedding started.
+        elapsed_s: Seconds from the document's start to its last embedded chunk.
     """
 
     batch_number: int
@@ -304,6 +304,9 @@ async def embed_in_batches(
     total = len(texts)
     vectors: list[list[float]] = []
     started = clock()
+    # The time the latest batch's vectors arrived. A failure reports its progress up
+    # to here, leaving out the failing batch's own attempts, backoff and timeout.
+    progress_at = started
     embedded = 0
     batch_number = 0
     while embedded < total:
@@ -317,12 +320,13 @@ async def embed_in_batches(
                     batch_vectors = await provider.embed_documents(batch)
             except Exception as exc:
                 position = _position(
-                    batch_number=batch_number, embedded=embedded, size=size, total=total, elapsed_s=clock() - started,
+                    batch_number=batch_number, embedded=embedded, size=size, total=total, elapsed_s=progress_at - started,
                 )
                 if isinstance(exc, TimeoutError):
                     raise EmbeddingBatchTimeoutError(position, exc) from exc
                 raise EmbeddingBatchError(position, exc) from exc
-            elapsed_s = clock() - batch_started
+            progress_at = clock()
+            elapsed_s = progress_at - batch_started
         sizer.observe(size, elapsed_s)
         vectors.extend(batch_vectors)
         logger.debug(

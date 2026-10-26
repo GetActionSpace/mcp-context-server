@@ -211,6 +211,7 @@ class TestEmbedInBatches:
             @override
             async def embed_documents(self, texts: list[str]) -> list[list[float]]:
                 if texts[0] == 't3':
+                    clock.now += 7.0  # the failing request's own attempts and backoff
                     raise cause
                 return await super().embed_documents(texts)
 
@@ -237,6 +238,38 @@ class TestEmbedInBatches:
         assert position.chunk_label == 'chunks 4-6 of 8'
         assert position.progress_label == '3 chunks embedded in 1.5 s'
 
+    @pytest.mark.asyncio
+    async def test_failure_progress_leaves_out_the_wait_for_the_failing_batch(self) -> None:
+        clock = FakeClock()
+        semaphore = asyncio.Semaphore(1)
+
+        async def other_caller() -> None:
+            async with semaphore:
+                clock.now += 100.0  # another document's batch holds the slot
+
+        class Provider:
+            def __init__(self) -> None:
+                self.other: asyncio.Task[None] | None = None
+
+            async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+                if self.other is not None:
+                    raise RuntimeError('model not loaded')
+                self.other = asyncio.create_task(other_caller())
+                await asyncio.sleep(0)  # the other caller queues for the slot
+                clock.now += 1.0
+                return [[0.0] for _ in texts]
+
+        provider = Provider()
+        with pytest.raises(EmbeddingBatchError) as excinfo:
+            await embed_in_batches(
+                provider, _texts(4), sizer=FixedBatchSizer(2), semaphore=semaphore, batch_timeout_s=10.0, clock=clock,
+            )
+        assert provider.other is not None
+        await provider.other
+
+        assert clock.now == pytest.approx(101.0)
+        assert excinfo.value.position.progress_label == '2 chunks embedded in 1.0 s'
+
     def test_labels_read_naturally_for_one_chunk(self) -> None:
         position = BatchPosition(
             batch_number=2,
@@ -255,6 +288,7 @@ class TestEmbedInBatches:
 
     @pytest.mark.asyncio
     async def test_the_timeout_bounds_each_batch_not_the_document(self) -> None:
+        clock = FakeClock()
         never = asyncio.Event()
 
         class SlowProvider:
@@ -264,21 +298,34 @@ class TestEmbedInBatches:
             async def embed_documents(self, texts: list[str]) -> list[list[float]]:
                 self.calls += 1
                 if self.calls == 5:
-                    await never.wait()
+                    try:
+                        await never.wait()
+                    except asyncio.CancelledError:
+                        clock.now += 0.25  # the hang lasts until the batch timeout cancels it
+                        raise
                 await asyncio.sleep(0.1)
+                clock.now += 0.1
                 return [[0.0] for _ in texts]
 
         # Four 0.1 s batches together take longer than the 0.25 s timeout, so only a
         # per-batch timeout lets them finish; the fifth batch never answers.
         with pytest.raises(EmbeddingBatchTimeoutError) as excinfo:
             await embed_in_batches(
-                SlowProvider(), _texts(5), sizer=FixedBatchSizer(1), semaphore=asyncio.Semaphore(1), batch_timeout_s=0.25,
+                SlowProvider(),
+                _texts(5),
+                sizer=FixedBatchSizer(1),
+                semaphore=asyncio.Semaphore(1),
+                batch_timeout_s=0.25,
+                clock=clock,
             )
 
         error = excinfo.value
         assert (error.position.batch_number, error.position.batch_count) == (5, 5)
         assert error.position.embedded_chunks == 4
         assert isinstance(error.cause, TimeoutError)
+        # The progress covers the four embedded chunks and leaves out the timed-out batch.
+        assert error.position.elapsed_s == pytest.approx(0.4)
+        assert error.position.progress_label == '4 chunks embedded in 0.4 s'
 
     @pytest.mark.asyncio
     async def test_a_waiting_caller_is_served_after_the_current_batch(self) -> None:
