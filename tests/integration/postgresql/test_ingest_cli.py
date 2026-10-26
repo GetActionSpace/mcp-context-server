@@ -1,9 +1,10 @@
 """The mcp-context-ingest command end to end against live PostgreSQL servers (over HTTP).
 
 Runs the scenarios of :mod:`tests.integration._ingest_cli` against real HTTP servers with
-generation off, except the deferred-generation scenario's server, which generates
-embeddings through a stub endpoint the test process serves, on the pgvector container of the ``pg_test_url`` fixture
-(``@requires_docker_postgres``, skipped cleanly without Docker). Every test runs twice on
+generation off, and the scenario of :mod:`tests.integration._ingest_cli_deferral` against
+a server that generates embeddings through a stub endpoint the test process serves, on
+the pgvector container of the ``pg_test_url`` fixture (``@requires_docker_postgres``,
+skipped cleanly without Docker). Every test runs twice on
 a fresh ``pg_rls_db`` database: once served by the superuser with row-level security off,
 so the application's own conditions alone decide what each request reaches, and once
 served as ``mcp_app`` with ``ENABLE_POSTGRESQL_RLS`` and ``RLS_CREDENTIALS``, so every
@@ -24,17 +25,17 @@ from tests.integration._http_jwt import build_env
 from tests.integration._http_jwt import build_jwt_env
 from tests.integration._http_jwt import free_port
 from tests.integration._http_jwt import running_http_server
-from tests.integration._ingest_cli import STUB_EMBEDDING_DIM
 from tests.integration._ingest_cli import SYNC_DISABLED
 from tests.integration._ingest_cli import requires_denying_modes
 from tests.integration._ingest_cli import verify_corpus_above_the_request_limit
 from tests.integration._ingest_cli import verify_corpus_lifecycle
-from tests.integration._ingest_cli import verify_deferred_generation
 from tests.integration._ingest_cli import verify_principals_manage_their_own_copy
 from tests.integration._ingest_cli import verify_sync_disabled_server
 from tests.integration._ingest_cli import verify_token_rotation
 from tests.integration._ingest_cli import verify_unlistable_directory
 from tests.integration._ingest_cli import verify_unusable_files_are_kept
+from tests.integration._ingest_cli_deferral import STUB_EMBEDDING_DIM
+from tests.integration._ingest_cli_deferral import verify_deferred_generation
 from tests.integration._ollama_stub import OllamaStub
 from tests.integration._ollama_stub import serve_ollama_embeddings
 from tests.integration._ollama_stub import stub_generation_env

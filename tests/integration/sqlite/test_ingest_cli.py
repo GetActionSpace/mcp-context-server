@@ -3,8 +3,8 @@
 Runs the scenarios of :mod:`tests.integration._ingest_cli` against real HTTP servers,
 each serving a temporary SQLite file with generation off: a server that requires no
 authentication, one that verifies minted JWTs, and one that does not offer corpus sync;
-plus a server that generates embeddings through a stub endpoint, for deferred generation.
-The same scenarios run against PostgreSQL in
+and the scenario of :mod:`tests.integration._ingest_cli_deferral` against a server that
+generates embeddings through a stub endpoint. The same scenarios run against PostgreSQL in
 ``tests/integration/postgresql/test_ingest_cli.py``; the unreachable-server scenario
 needs no server and runs here only.
 """
@@ -20,18 +20,18 @@ from tests.integration._http_jwt import build_env
 from tests.integration._http_jwt import build_jwt_env
 from tests.integration._http_jwt import free_port
 from tests.integration._http_jwt import running_http_server
-from tests.integration._ingest_cli import STUB_EMBEDDING_DIM
 from tests.integration._ingest_cli import SYNC_DISABLED
 from tests.integration._ingest_cli import requires_denying_modes
 from tests.integration._ingest_cli import verify_corpus_above_the_request_limit
 from tests.integration._ingest_cli import verify_corpus_lifecycle
-from tests.integration._ingest_cli import verify_deferred_generation
 from tests.integration._ingest_cli import verify_principals_manage_their_own_copy
 from tests.integration._ingest_cli import verify_sync_disabled_server
 from tests.integration._ingest_cli import verify_token_rotation
 from tests.integration._ingest_cli import verify_unlistable_directory
 from tests.integration._ingest_cli import verify_unreachable_server
 from tests.integration._ingest_cli import verify_unusable_files_are_kept
+from tests.integration._ingest_cli_deferral import STUB_EMBEDDING_DIM
+from tests.integration._ingest_cli_deferral import verify_deferred_generation
 from tests.integration._ollama_stub import OllamaStub
 from tests.integration._ollama_stub import serve_ollama_embeddings
 from tests.integration._ollama_stub import stub_generation_env
