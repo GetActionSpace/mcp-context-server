@@ -3,6 +3,7 @@
 These tests use mocks to avoid requiring actual provider dependencies.
 """
 
+import logging
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -460,3 +461,34 @@ class TestOllamaEmbeddingProvider:
 
             with pytest.raises(ValueError, match='Text 1 validation failed'):
                 await provider.embed_documents(texts)
+
+    @pytest.mark.asyncio
+    async def test_embed_documents_logs_the_request_at_debug(
+        self,
+        mock_settings: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """One embed_documents call embeds one batch of a document, so its line is DEBUG.
+
+        The batching loop logs each document's start and completion at INFO; an
+        INFO line per request would repeat once per batch at the default level.
+        """
+        caplog.set_level(logging.DEBUG, logger='app.embeddings.providers.langchain_ollama')
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_documents = AsyncMock(return_value=[[0.1] * 768, [0.2] * 768])
+
+        with patch(
+            'app.embeddings.providers.langchain_ollama.get_settings',
+            return_value=mock_settings,
+        ):
+            from app.embeddings.providers.langchain_ollama import OllamaEmbeddingProvider
+
+            provider = OllamaEmbeddingProvider()
+            provider._embeddings = mock_embeddings
+
+            await provider.embed_documents(['text1', 'text2'])
+
+        records = [record for record in caplog.records if record.name == 'app.embeddings.providers.langchain_ollama']
+        assert [(record.levelno, record.getMessage()) for record in records] == [
+            (logging.DEBUG, 'Generated 2 embeddings for 2 texts'),
+        ]

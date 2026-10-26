@@ -132,8 +132,8 @@ class HuggingFaceEmbeddingProvider:
 
         embeddings = await with_retry_and_timeout(_embed, f'{self.provider_name}_embed_documents')
 
-        # Key operational event: shows embedding generation worked
-        logger.info(f'Generated {len(embeddings)} embeddings for {len(texts)} texts')
+        # One provider request; the batching loop logs the document's outcome at INFO.
+        logger.debug(f'Generated {len(embeddings)} embeddings for {len(texts)} texts')
 
         # Convert numpy types and validate dimensions
         result: list[list[float]] = []

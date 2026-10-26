@@ -14,6 +14,11 @@ from typing import Any
 
 from fastmcp.exceptions import ToolError
 
+from app.embeddings.batching import BatchSizer
+from app.embeddings.batching import EmbeddingBatchError
+from app.embeddings.batching import EmbeddingBatchTimeoutError
+from app.embeddings.batching import create_batch_sizer
+from app.embeddings.batching import embed_in_batches
 from app.embeddings.retry import compute_embedding_total_timeout
 from app.errors import format_exception_message
 from app.metadata_types import sanitize_pg_unstorable_text
@@ -45,7 +50,9 @@ settings = get_settings()
 #
 # The semaphores are intentionally separate, one per physical resource:
 #   * ``_embedding_semaphore``: bounds outbound HTTP concurrency to the
-#     embedding provider.
+#     embedding provider. A chunked document holds it for one batch at a time
+#     (``app.embeddings.batching.embed_in_batches``), so a waiting caller is
+#     served after the current batch of a running document.
 #   * ``_summary_model_semaphore``: bounds outbound concurrency to the single
 #     physical SUMMARY model. It is acquired by BOTH the flat document summary
 #     (``generate_summary_with_timeout``) AND every per-node index_tree summary
@@ -128,10 +135,30 @@ def _reset_node_summary_semaphore() -> None:
     _node_summary_semaphore = asyncio.Semaphore(settings.index_tree.max_concurrent)
 
 
+# The embedding batch sizer, built from the settings on first use (see
+# ``_get_batch_sizer``); ``app.embeddings.batching`` documents the sizing.
+_batch_sizer: BatchSizer | None = None
+
+
+def _get_batch_sizer() -> BatchSizer:
+    """Return the process-wide embedding batch sizer, building it on first use.
+
+    One sizer serves every document, so the auto sizer's seconds-per-character
+    rate carries from one document to the next.
+
+    Returns:
+        The sizer ``EMBEDDING_BATCH_SIZE`` selects.
+    """
+    global _batch_sizer
+    if _batch_sizer is None:
+        _batch_sizer = create_batch_sizer(settings.embedding)
+    return _batch_sizer
+
+
 # Explicit re-export so type checkers do NOT flag the reset helpers as unused.
 # These are called only by test fixtures that need to rebind the module-level
-# semaphores against patched ``settings.*.max_concurrent`` values between
-# cases; production code uses the semaphores directly without rebinding.
+# semaphores against patched ``settings`` values between cases; production code
+# uses them directly without rebinding.
 _RESET_HELPERS_EXPORT = (
     _reset_embedding_semaphore,
     _reset_summary_model_semaphore,
@@ -145,27 +172,37 @@ _RESET_HELPERS_EXPORT = (
 # ---------------------------------------------------------------------------
 
 
-async def _generate_embeddings_for_text(text: str) -> list[ChunkEmbedding] | None:
-    """Generate embeddings for text using configured provider.
+async def generate_embeddings_with_timeout(text: str) -> list[ChunkEmbedding] | None:
+    """Generate the embeddings of a text, bounded per provider request.
 
-    This function implements the 'embedding-first' pattern by generating
-    embeddings BEFORE any database transaction is started. If embedding
-    generation fails, no data should be saved.
+    Runs BEFORE any database transaction (generation-first): when generation is
+    enabled and fails, the caller saves nothing. A chunked text is embedded in
+    batches by ``embed_in_batches``: each batch holds one slot of the embedding
+    semaphore and runs under ``compute_embedding_total_timeout()``, so the
+    provider's retries and the total timeout apply per batch and a caller waiting
+    for a slot is served after the current batch of a running document. With
+    chunking disabled the whole text is one ``embed_query`` request under one slot
+    and the same timeout.
+
+    Used by store_context, update_context, store_context_batch,
+    update_context_batch, and the migration CLI's embedding modes.
 
     Args:
-        text: Text content to embed
+        text: Text content to generate embeddings for.
 
     Returns:
-        List of ChunkEmbedding objects with embedding vectors and boundaries,
-        or None if embedding generation is not enabled.
+        One ChunkEmbedding per chunk with its vector and boundaries, or None when
+        no embedding provider is configured.
 
     Raises:
-        ToolError: If embedding generation is enabled but fails.
+        ToolError: If embedding generation fails or a request exceeds the total
+            timeout; a chunked text's message names the batch and the progress made.
     """
     embedding_provider = get_embedding_provider()
     if embedding_provider is None:
         return None
 
+    total_timeout = compute_embedding_total_timeout()
     try:
         chunking_service = get_chunking_service()
         logger.debug(
@@ -178,22 +215,26 @@ async def _generate_embeddings_for_text(text: str) -> list[ChunkEmbedding] | Non
             # RecursiveCharacterTextSplitter.create_documents) is pure CPU over
             # unbounded entry text and is EXPENSIVE per character -- roughly a
             # microsecond each, so a plain 1MB document costs the better part of a
-            # second. Gating on a large fixed character threshold left exactly that
-            # case running inline on the event loop. The real cost switch is the
-            # splitter's own fast path: at or below chunk_size split_text returns
-            # immediately (one chunk, no recursion), and above it the recursive
-            # split runs in full. Offload precisely when that recursion happens --
-            # the thread hop is negligible next to the provider round trip this leg
-            # is about to await anyway.
+            # second. The cost switch is the splitter's own fast path: at or below
+            # chunk_size split_text returns immediately (one chunk, no recursion),
+            # and above it the recursive split runs in full. Offload precisely when
+            # that recursion happens -- the thread hop is negligible next to the
+            # provider round trip this leg is about to await anyway.
             if len(text) > chunking_service.chunk_size:
                 chunks = await asyncio.to_thread(chunking_service.split_text, text)
             else:
                 chunks = chunking_service.split_text(text)
-            chunk_texts = [chunk.text for chunk in chunks]
-            logger.info(f'Generating embeddings: text_len={len(text)}, chunks={len(chunks)}')
-            embeddings = await embedding_provider.embed_documents(chunk_texts)
-            logger.info(f'Embeddings generated: chunks={len(chunk_texts)}, embeddings={len(embeddings)}')
-
+            sizer = _get_batch_sizer()
+            logger.info(
+                'Generating embeddings: text_len=%d, chunks=%d, batch_size=%s', len(text), len(chunks), sizer.mode,
+            )
+            embeddings = await embed_in_batches(
+                embedding_provider,
+                [chunk.text for chunk in chunks],
+                sizer=sizer,
+                semaphore=_embedding_semaphore,
+                batch_timeout_s=total_timeout,
+            )
             return [
                 ChunkEmbedding(
                     embedding=emb,
@@ -204,52 +245,32 @@ async def _generate_embeddings_for_text(text: str) -> list[ChunkEmbedding] | Non
             ]
         # Single embedding (chunking disabled)
         logger.info(f'Generating single embedding: text_len={len(text)}')
-        embedding = await embedding_provider.embed_query(text)
+        async with _embedding_semaphore:
+            embedding = await asyncio.wait_for(embedding_provider.embed_query(text), timeout=total_timeout)
         logger.info('Single embedding generated')
         return [ChunkEmbedding(embedding=embedding, start_index=0, end_index=len(text))]
 
-    except Exception as e:
-        # CRITICAL: Embedding generation failed - this error must be raised
-        # to prevent any data from being saved
-        raise ToolError(f'Embedding generation failed: {format_exception_message(e)}') from e
-
-
-async def generate_embeddings_with_timeout(text: str) -> list[ChunkEmbedding] | None:
-    """Generate embeddings with concurrency limiting and total timeout.
-
-    Wraps _generate_embeddings_for_text with:
-    - Concurrency-limited access via embedding semaphore
-    - Total timeout computed from retry settings
-    - ToolError on timeout for clear client feedback
-
-    Used by all four tools: store_context, update_context, store_context_batch,
-    and update_context_batch.
-
-    Args:
-        text: Text content to generate embeddings for.
-
-    Returns:
-        List of ChunkEmbedding objects, or None if embedding provider
-        is not configured.
-
-    Raises:
-        ToolError: If embedding generation times out or fails.
-    """
-    if get_embedding_provider() is None:
-        return None
-
-    total_timeout = compute_embedding_total_timeout()
-    try:
-        async with _embedding_semaphore:
-            return await asyncio.wait_for(
-                _generate_embeddings_for_text(text),
-                timeout=total_timeout,
-            )
+    # CRITICAL: every failure leaves as ToolError so the caller saves nothing.
+    except EmbeddingBatchTimeoutError as e:
+        position = e.position
+        raise ToolError(
+            f'Embedding generation exceeded total timeout ({total_timeout:.0f}s) on {position.batch_label} '
+            f'({position.chunk_label}; {position.progress_label}). '
+            f'This may indicate the embedding provider is overloaded or unreachable.',
+        ) from None
+    except EmbeddingBatchError as e:
+        position = e.position
+        raise ToolError(
+            f'Embedding generation failed: {format_exception_message(e.cause)} '
+            f'({position.batch_label}, {position.chunk_label}; {position.progress_label})',
+        ) from e
     except TimeoutError:
         raise ToolError(
             f'Embedding generation exceeded total timeout ({total_timeout:.0f}s). '
             f'This may indicate the embedding provider is overloaded or unreachable.',
         ) from None
+    except Exception as e:
+        raise ToolError(f'Embedding generation failed: {format_exception_message(e)}') from e
 
 
 async def generate_compression_with_timeout(
@@ -407,7 +428,7 @@ async def generate_summary_with_timeout(text: str, source: str) -> str | None:
         ) from None
     except Exception as e:
         # Normalize EVERY provider failure to ToolError, exactly as the embedding
-        # leg does (_generate_embeddings_for_text wraps its own body). Without this
+        # leg does (generate_embeddings_with_timeout wraps its own body). Without this
         # the retry layer's SummaryTimeoutError / SummaryRetryExhaustedError and the
         # providers' bare RuntimeError / ValueError escaped raw, so callers that
         # isolate a per-entry failure with ``except ToolError`` -- the non-atomic

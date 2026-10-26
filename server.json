@@ -474,7 +474,7 @@
           "name": "EMBEDDING_DIM"
         },
         {
-          "description": "Timeout in seconds for embedding generation API calls",
+          "description": "Timeout in seconds for one attempt of one embedding request: one batch of a document's chunks on the store/update path, one query on search (range: >0 to 3600)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -495,11 +495,25 @@
           "name": "EMBEDDING_RETRY_BASE_DELAY_S"
         },
         {
-          "description": "Maximum concurrent embedding generation operations (default: 3, range: 1-20)",
+          "description": "Maximum concurrent embedding requests on the store/update path; a chunked document holds one slot per batch and releases it between batches (default: 3, range: 1-20)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
           "name": "EMBEDDING_MAX_CONCURRENT"
+        },
+        {
+          "description": "Chunks per embedding request when a chunked document is embedded: 'auto' (default) sizes each batch to take about EMBEDDING_BATCH_TARGET_S from the measured seconds per character of chunk text and the lengths of its chunks (1 to 64 chunks); an integer from 1 to 512 fixes the size",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "EMBEDDING_BATCH_SIZE"
+        },
+        {
+          "description": "Wall time in seconds one embedding batch should take when EMBEDDING_BATCH_SIZE is 'auto' (default: 5.0, range: >0 to 3600)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "EMBEDDING_BATCH_TARGET_S"
         },
         {
           "description": "Instruction prefix prepended verbatim to the text embedded for search queries (semantic and hybrid search); document embeddings on the store/update path always stay bare. Unset or empty leaves query text unchanged. Recommended for instruct-aware models such as the default qwen3-embedding:0.6b; cloud models such as OpenAI text-embedding-3-small need no prefix.",
@@ -1739,7 +1753,7 @@
           "name": "EMBEDDING_DIM"
         },
         {
-          "description": "Timeout in seconds for embedding generation API calls",
+          "description": "Timeout in seconds for one attempt of one embedding request: one batch of a document's chunks on the store/update path, one query on search (range: >0 to 3600)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1760,11 +1774,25 @@
           "name": "EMBEDDING_RETRY_BASE_DELAY_S"
         },
         {
-          "description": "Maximum concurrent embedding generation operations (default: 3, range: 1-20)",
+          "description": "Maximum concurrent embedding requests on the store/update path; a chunked document holds one slot per batch and releases it between batches (default: 3, range: 1-20)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
           "name": "EMBEDDING_MAX_CONCURRENT"
+        },
+        {
+          "description": "Chunks per embedding request when a chunked document is embedded: 'auto' (default) sizes each batch to take about EMBEDDING_BATCH_TARGET_S from the measured seconds per character of chunk text and the lengths of its chunks (1 to 64 chunks); an integer from 1 to 512 fixes the size",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "EMBEDDING_BATCH_SIZE"
+        },
+        {
+          "description": "Wall time in seconds one embedding batch should take when EMBEDDING_BATCH_SIZE is 'auto' (default: 5.0, range: >0 to 3600)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "EMBEDDING_BATCH_TARGET_S"
         },
         {
           "description": "Instruction prefix prepended verbatim to the text embedded for search queries (semantic and hybrid search); document embeddings on the store/update path always stay bare. Unset or empty leaves query text unchanged. Recommended for instruct-aware models such as the default qwen3-embedding:0.6b; cloud models such as OpenAI text-embedding-3-small need no prefix.",
