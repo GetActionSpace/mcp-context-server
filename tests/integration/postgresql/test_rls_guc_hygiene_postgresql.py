@@ -34,7 +34,6 @@ from tests.integration.postgresql._rls_matrix import MATRIX_SCOPES
 from tests.integration.postgresql._rls_matrix import MATRIX_VISIBILITY
 from tests.integration.postgresql._rls_matrix import PUBLIC_ROWS
 from tests.integration.postgresql._rls_matrix import labels
-from tests.integration.postgresql._rls_matrix import rls_matrix_db
 from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import ScopedDb
 
@@ -46,17 +45,6 @@ ALICE = AccessScope('alice', frozenset())
 type AnyConnection = asyncpg.Connection[asyncpg.Record] | asyncpg.pool.PoolConnectionProxy[asyncpg.Record]
 type Observation = tuple[str | None, int, tuple[str, ...]]
 type BackendFactory = Callable[[int], Awaitable[PostgreSQLBackend]]
-
-
-@pytest_asyncio.fixture
-async def matrix_db(pg_rls_db: RlsUrls, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[ScopedDb]:
-    """The policy matrix database in the fp32 layout.
-
-    Yields:
-        The seeded database with the policies installed.
-    """
-    async with rls_matrix_db(pg_rls_db, layout='fp32', monkeypatch=monkeypatch) as db:
-        yield db
 
 
 @pytest_asyncio.fixture

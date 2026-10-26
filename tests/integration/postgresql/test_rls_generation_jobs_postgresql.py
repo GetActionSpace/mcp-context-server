@@ -10,16 +10,13 @@ Every refusal is asserted as SQLSTATE 42501.
 """
 
 import uuid
-from collections.abc import AsyncGenerator
 
 import asyncpg
 import pytest
-import pytest_asyncio
 
 from app.access_scope import AccessScope
 from tests.integration.postgresql._rls_matrix import MATRIX_SCOPES
 from tests.integration.postgresql._rls_matrix import entry_uuid
-from tests.integration.postgresql._rls_matrix import rls_matrix_db
 from tests.integration.postgresql._rls_matrix import scoped_transaction
 from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import SEED_LABELS
@@ -44,34 +41,6 @@ UPDATE_JOBS = (
     "UPDATE generation_jobs SET status = 'running', attempts = attempts + 1, claim_token = 'probe', "
     "last_error = 'probe', available_at = now()"
 )
-
-
-@pytest_asyncio.fixture(params=['fp32'])
-async def matrix_db(
-    request: pytest.FixtureRequest, pg_rls_db: RlsUrls, monkeypatch: pytest.MonkeyPatch,
-) -> AsyncGenerator[ScopedDb]:
-    """The policy matrix database in the requested layout (fp32 unless a test parametrizes it).
-
-    Yields:
-        The seeded database with a pending job on every seed entry and the policies installed.
-    """
-    async with rls_matrix_db(pg_rls_db, layout=request.param, monkeypatch=monkeypatch) as db:
-        yield db
-
-
-@pytest_asyncio.fixture
-async def app_conn(matrix_db: ScopedDb, pg_rls_db: RlsUrls) -> AsyncGenerator[asyncpg.Connection]:
-    """A raw connection of the request login role ``mcp_app`` to the matrix database.
-
-    Yields:
-        The open connection, closed afterwards.
-    """
-    _ = matrix_db
-    conn = await asyncpg.connect(pg_rls_db.app)
-    try:
-        yield conn
-    finally:
-        await conn.close()
 
 
 async def _without_job(db: ScopedDb, label: str) -> uuid.UUID:

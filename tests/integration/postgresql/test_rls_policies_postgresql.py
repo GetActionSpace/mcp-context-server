@@ -12,12 +12,10 @@ entry's real owner may refuse first (23503).
 """
 
 import uuid
-from collections.abc import AsyncGenerator
 from dataclasses import replace
 
 import asyncpg
 import pytest
-import pytest_asyncio
 
 from app.access_scope import AccessMode
 from app.access_scope import AccessScope
@@ -41,7 +39,6 @@ from tests.integration.postgresql._rls_matrix import bind
 from tests.integration.postgresql._rls_matrix import entry_uuid
 from tests.integration.postgresql._rls_matrix import labels
 from tests.integration.postgresql._rls_matrix import policy_visibility
-from tests.integration.postgresql._rls_matrix import rls_matrix_db
 from tests.integration.postgresql._rls_matrix import scoped_transaction
 from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import SCOPES
@@ -124,34 +121,6 @@ CHILD_INSERTS = {
     ),
     'generation_jobs': 'INSERT INTO generation_jobs (context_entry_id) VALUES ($1)',
 }
-
-
-@pytest_asyncio.fixture(params=['fp32'])
-async def matrix_db(
-    request: pytest.FixtureRequest, pg_rls_db: RlsUrls, monkeypatch: pytest.MonkeyPatch,
-) -> AsyncGenerator[ScopedDb]:
-    """The policy matrix database in the requested layout (fp32 unless a test parametrizes it).
-
-    Yields:
-        The seeded database with the policies installed.
-    """
-    async with rls_matrix_db(pg_rls_db, layout=request.param, monkeypatch=monkeypatch) as db:
-        yield db
-
-
-@pytest_asyncio.fixture
-async def app_conn(matrix_db: ScopedDb, pg_rls_db: RlsUrls) -> AsyncGenerator[asyncpg.Connection]:
-    """A raw connection of the request login role ``mcp_app`` to the matrix database.
-
-    Yields:
-        The open connection, closed afterwards.
-    """
-    _ = matrix_db
-    conn = await asyncpg.connect(pg_rls_db.app)
-    try:
-        yield conn
-    finally:
-        await conn.close()
 
 
 async def _child_tables(db: ScopedDb) -> list[tuple[str, str]]:

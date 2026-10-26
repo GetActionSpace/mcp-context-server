@@ -44,7 +44,6 @@ from tests.integration.postgresql._rls_matrix import MATRIX_SCOPES
 from tests.integration.postgresql._rls_matrix import MATRIX_VISIBILITY
 from tests.integration.postgresql._rls_matrix import POLICY_ROLE
 from tests.integration.postgresql._rls_matrix import labels
-from tests.integration.postgresql._rls_matrix import rls_matrix_db
 from tests.integration.postgresql._rls_matrix import rls_settings
 from tests.integration.postgresql._rls_matrix import scoped_transaction
 from tests.integration.postgresql._rls_profiles import pinned_repositories
@@ -74,17 +73,6 @@ VIEW_ACL = (
 CONTEXT_COLUMNS = (
     'SELECT attname FROM pg_attribute WHERE attrelid = to_regclass($1) AND attnum > 0 AND NOT attisdropped ORDER BY attnum'
 )
-
-
-@pytest_asyncio.fixture
-async def matrix_db(pg_rls_db: RlsUrls, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[ScopedDb]:
-    """The policy matrix database in the fp32 layout, with the policies and the read view installed.
-
-    Yields:
-        The seeded database.
-    """
-    async with rls_matrix_db(pg_rls_db, layout='fp32', monkeypatch=monkeypatch) as db:
-        yield db
 
 
 @pytest_asyncio.fixture
