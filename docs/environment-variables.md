@@ -168,6 +168,12 @@ For detailed embedding setup and provider selection, see the [Semantic Search Gu
 
 For detailed summary setup and provider selection, see the [Summary Generation Guide](summary-generation.md).
 
+## Deferred Generation Settings
+
+| Variable                        | Type      | Default   | Constraints   | Description                                                                                                                                                                                                                                                                                                                 |
+|---------------------------------|-----------|-----------|---------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `GENERATION_JOB_MAX_ATTEMPTS`   | integer   | `3`       | 1-10          | Number of times a deferred generation job (a store or update made with `defer_generation=true`) is attempted before it stays `failed`. A failed job is attempted again at the next server start or by `mcp-context-server-migrate --embed-missing` or `--re-embed`; its entry stays readable and FTS-searchable meanwhile   |
+
 ## Retrieval Settings
 
 | Variable                                | Type      | Default   | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |

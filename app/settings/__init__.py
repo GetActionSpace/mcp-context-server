@@ -1,9 +1,9 @@
 """Application settings: the ``AppSettings`` composition root and the cached ``get_settings()`` accessor.
 
-Each configuration domain lives in its own submodule (``base``, ``server``, ``auth``, ``storage``,
-``providers``, ``embedding``, ``summary``, ``search``, ``navigation``, ``sync``). ``AppSettings`` composes one
-instance of each domain class and runs the validators that span several domains. Only ``AppSettings``
-and ``get_settings`` are imported from this package; import a domain class from its defining submodule.
+Each configuration domain lives in its own submodule (``base``, ``server``, ``auth``, ``storage``, ``providers``,
+``embedding``, ``summary``, ``generation``, ``search``, ``navigation``, ``sync``). ``AppSettings`` composes one
+instance of each domain class and runs the validators that span several domains. Only ``AppSettings`` and
+``get_settings`` are imported from this package; import a domain class from its defining submodule.
 """
 
 import logging
@@ -21,6 +21,7 @@ from app.settings.base import CommonSettings
 from app.settings.embedding import ChunkingSettings
 from app.settings.embedding import CompressionSettings
 from app.settings.embedding import EmbeddingSettings
+from app.settings.generation import GenerationJobSettings
 from app.settings.navigation import ContextNavigationSettings
 from app.settings.navigation import ContextRangeSettings
 from app.settings.navigation import GrepContextSettings
@@ -69,6 +70,7 @@ class AppSettings(CommonSettings):
     # Embedding and processing settings
     embedding: EmbeddingSettings = Field(default_factory=lambda: EmbeddingSettings())
     summary: SummarySettings = Field(default_factory=lambda: SummarySettings())
+    generation_jobs: GenerationJobSettings = Field(default_factory=lambda: GenerationJobSettings())
     chunking: ChunkingSettings = Field(default_factory=lambda: ChunkingSettings())
     reranking: RerankingSettings = Field(default_factory=lambda: RerankingSettings())
 
