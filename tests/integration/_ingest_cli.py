@@ -7,7 +7,7 @@ and ``tests/integration/postgresql/test_ingest_cli.py``) start each server with
 and hand the scenario the server's origin. A scenario writes a corpus directory, runs
 the command against the server and reads the result back through the sync tools as
 the principal the command ran as. Every server runs with generation off except the
-deferred-generation scenario's, which ``generation_env`` points at an embedding
+deferred-generation scenario's, which ``stub_generation_env`` points at an embedding
 endpoint the test process serves (:mod:`tests.integration._ollama_stub`).
 
 The command runs as a child process of the test's own interpreter, as
@@ -566,24 +566,6 @@ async def verify_sync_disabled_server(base_url: str, work: Path) -> None:
         assert (await structured(client, 'search_context', {'thread_id': 'kb:disabled'}))['count'] == 0
 
 
-def generation_env(ollama_url: str) -> dict[str, str]:
-    """Return the server environment overrides of a server that generates embeddings through the stub endpoint.
-
-    Args:
-        ollama_url: The origin of a stub served with ``STUB_EMBEDDING_DIM``.
-
-    Returns:
-        The overrides; summaries stay off, so the embeddings are the only generated output.
-    """
-    return {
-        'ENABLE_EMBEDDING_GENERATION': 'true',
-        'EMBEDDING_PROVIDER': 'ollama',
-        'EMBEDDING_MODEL': 'stub-embedding',
-        'EMBEDDING_DIM': str(STUB_EMBEDDING_DIM),
-        'OLLAMA_HOST': ollama_url,
-    }
-
-
 async def generation_states(client: Client[Any], context_ids: list[str]) -> dict[str, str]:
     """Return the generation state of some entries the calling principal can read.
 
@@ -622,7 +604,7 @@ async def verify_deferred_generation(base_url: str, embedder: OllamaStub, work: 
 
     Args:
         base_url: Origin of a server that requires no authentication, started with
-            ``generation_env`` over ``embedder``.
+            ``stub_generation_env`` over ``embedder``.
         embedder: The stub endpoint the server embeds through.
         work: The test's directory.
     """

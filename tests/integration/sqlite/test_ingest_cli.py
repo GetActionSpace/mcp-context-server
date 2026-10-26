@@ -22,7 +22,6 @@ from tests.integration._http_jwt import free_port
 from tests.integration._http_jwt import running_http_server
 from tests.integration._ingest_cli import STUB_EMBEDDING_DIM
 from tests.integration._ingest_cli import SYNC_DISABLED
-from tests.integration._ingest_cli import generation_env
 from tests.integration._ingest_cli import requires_denying_modes
 from tests.integration._ingest_cli import verify_corpus_above_the_request_limit
 from tests.integration._ingest_cli import verify_corpus_lifecycle
@@ -35,6 +34,7 @@ from tests.integration._ingest_cli import verify_unreachable_server
 from tests.integration._ingest_cli import verify_unusable_files_are_kept
 from tests.integration._ollama_stub import OllamaStub
 from tests.integration._ollama_stub import serve_ollama_embeddings
+from tests.integration._ollama_stub import stub_generation_env
 
 pytestmark = pytest.mark.integration
 
@@ -95,7 +95,7 @@ def generating_server(tmp_path: Path) -> Iterator[GeneratingServer]:
     with serve_ollama_embeddings(STUB_EMBEDDING_DIM) as embedder:
         env = {
             **build_env(backend='sqlite', database=str(tmp_path / 'generating.db'), port=free_port(), auth=False),
-            **generation_env(embedder.url),
+            **stub_generation_env(embedder),
         }
         with running_http_server(env) as base_url:
             yield GeneratingServer(base_url, embedder)

@@ -26,7 +26,6 @@ from tests.integration._http_jwt import free_port
 from tests.integration._http_jwt import running_http_server
 from tests.integration._ingest_cli import STUB_EMBEDDING_DIM
 from tests.integration._ingest_cli import SYNC_DISABLED
-from tests.integration._ingest_cli import generation_env
 from tests.integration._ingest_cli import requires_denying_modes
 from tests.integration._ingest_cli import verify_corpus_above_the_request_limit
 from tests.integration._ingest_cli import verify_corpus_lifecycle
@@ -38,6 +37,7 @@ from tests.integration._ingest_cli import verify_unlistable_directory
 from tests.integration._ingest_cli import verify_unusable_files_are_kept
 from tests.integration._ollama_stub import OllamaStub
 from tests.integration._ollama_stub import serve_ollama_embeddings
+from tests.integration._ollama_stub import stub_generation_env
 from tests.integration.postgresql._rls_catalog import assert_served_with_row_level_security
 from tests.integration.postgresql.conftest import RLS_CREDENTIALS
 from tests.integration.postgresql.conftest import RlsUrls
@@ -149,7 +149,7 @@ def generating_server(served: ServedDatabase) -> Iterator[GeneratingServer]:
         env = {
             **build_env(backend='postgresql', database=served.database, port=free_port(), auth=False),
             **served.environment,
-            **generation_env(embedder.url),
+            **stub_generation_env(embedder),
         }
         with running_http_server(env) as base_url:
             yield GeneratingServer(base_url, embedder)
