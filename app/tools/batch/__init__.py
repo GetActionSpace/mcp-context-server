@@ -5,6 +5,10 @@ This package contains tools for bulk context management:
 - store.py: store_context_batch, store multiple entries in one operation
 - update.py: update_context_batch, update multiple entries in one operation
 - delete.py: delete_context_batch, delete entries by various criteria
+- _store_generation.py, _update_generation.py: the generation pass of the store and update tools,
+  run before any transaction opens
+- _store_commit.py, _update_commit.py: the transaction pass of the store and update tools, atomic
+  or per entry
 - entry_validation.py: per-entry validation shared by the store and update tools
 - update_access.py: the update tool's write-access checks (pre-generation authorization of every
   update, and the in-transaction re-probe that disambiguates a compare-and-set matching zero rows)
