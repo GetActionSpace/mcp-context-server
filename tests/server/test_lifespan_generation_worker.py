@@ -53,7 +53,7 @@ class _Lifespan:
 
     @contextmanager
     def patched(self) -> Generator[None]:
-        """Install the patches, restoring the startup globals afterwards."""
+        """Install the patches, restoring the startup globals afterward."""
         original = (app_startup._backend, app_startup._repositories)
         try:
             with (

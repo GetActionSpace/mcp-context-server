@@ -96,7 +96,7 @@ async def admin(pg_rls_db: RlsUrls) -> AsyncGenerator[asyncpg.Connection]:
     """A superuser connection to the database.
 
     Yields:
-        The open connection, closed afterwards.
+        The open connection, closed afterward.
     """
     conn = await asyncpg.connect(pg_rls_db.admin)
     try:
@@ -110,7 +110,7 @@ async def owner(pg_rls_db: RlsUrls) -> AsyncGenerator[asyncpg.Connection]:
     """A connection of the table owner ``mcp_owner``, for changes made outside the server.
 
     Yields:
-        The open connection, closed afterwards.
+        The open connection, closed afterward.
     """
     conn = await asyncpg.connect(pg_rls_db.maintenance)
     try:

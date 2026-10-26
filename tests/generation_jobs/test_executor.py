@@ -5,7 +5,7 @@ built, with the generation replaced by a fake: the legs follow the outputs the e
 a completion stores every output and deletes the job in one transaction, a text change, a
 lost claim or a deleted entry discards the outputs, a failed attempt returns the job to the
 queue with a backoff or fails it at the cap, and the lease is renewed while the outputs are
-generated, a lost renewal cancelling the generation at once.
+generated, a lost renewal canceling the generation at once.
 """
 
 import asyncio
@@ -442,7 +442,7 @@ class TestLease:
 
     @pytest.mark.asyncio
     async def test_a_cancelled_run_records_nothing(self, db: ScopedDb, generation: InstallGeneration) -> None:
-        """Cancelling the run cancels the generation and leaves the claim for the caller to release."""
+        """Canceling the run cancels the generation and leaves the claim for the caller to release."""
         fake = generation(block=True)
         job = await _claimed(db, 'doc')
 

@@ -5,7 +5,7 @@ backend and the embedding provider, and the PostgreSQL start: the request role i
 discovered and refused before any DDL when the policies could not hold it, the schema is
 prepared on a maintenance backend logged in as the table owner, the runtime check
 refuses request and migration credentials that resolve to one role with row-level
-security on, and the request backend opens afterwards and is checked whenever the roles
+security on, and the request backend opens afterward and is checked whenever the roles
 are split. The read-only principal is logged right after the row-level security posture
 warning, before any tool registers.
 """
@@ -305,7 +305,7 @@ class _PostgreSQLStart:
 
     @contextmanager
     def patched(self) -> Generator[None]:
-        """Install the patches, restoring the startup globals afterwards."""
+        """Install the patches, restoring the startup globals afterward."""
         original = (app_startup._backend, app_startup._repositories)
         try:
             with (

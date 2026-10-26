@@ -40,11 +40,11 @@ class FakeGeneration:
         outputs: What a generation returns.
         error: What a generation raises instead, if anything.
         during: Awaited at the start of each generation, before it returns or raises.
-        block: Whether a generation waits until it is cancelled.
+        block: Whether a generation waits until it is canceled.
         delay_s: How long a generation takes.
         calls: The text, source and legs of every generation, in order.
         started: Set once a generation started.
-        cancelled: Whether a generation was cancelled.
+        cancelled: Whether a generation was canceled.
     """
 
     outputs: Outputs = (None, None, None)

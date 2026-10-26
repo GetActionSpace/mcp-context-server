@@ -265,7 +265,7 @@ class TestStop:
 
     @pytest.mark.asyncio
     async def test_stop_cancels_the_running_jobs_and_releases_their_claims(self, runs: FakeRuns) -> None:
-        """Every running job is cancelled and every claim is released; no further job is claimed."""
+        """Every running job is canceled and every claim is released; no further job is claimed."""
         jobs = FakeJobs([_job(1), _job(2), _job(3)], runs.changes)
         worker = _worker(jobs, concurrency=2)
         await worker.start()
@@ -313,7 +313,7 @@ class TestStop:
     async def test_stop_returns_a_running_job_to_the_queue_with_its_attempt(
         self, db: ScopedDb, generation: InstallGeneration, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """On a real database the generation is cancelled and the job is pending again with no attempt spent."""
+        """On a real database the generation is canceled and the job is pending again with no attempt spent."""
         monkeypatch.setattr(worker_module, 'POLL_INTERVAL_S', 60.0)
         fake = generation(block=True)
         context_id = await db.add_entry('doc', owner='alice', visibility='private')

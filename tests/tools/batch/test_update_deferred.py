@@ -89,7 +89,7 @@ async def _summaries() -> dict[str, object]:
 
 @pytest.fixture(autouse=True)
 def restore_providers() -> Iterator[None]:
-    """Run every test without an embedding provider and restore both providers afterwards."""
+    """Run every test without an embedding provider and restore both providers afterward."""
     original = (app.startup.get_embedding_provider(), app.startup.get_summary_provider())
     app.startup.set_embedding_provider(None)
     app.startup.set_summary_provider(None)
