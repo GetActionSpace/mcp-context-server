@@ -383,7 +383,7 @@ mcp-context-server-migrate \
   --dry-run
 ```
 
-The dry run reports the count of missing entries without calling the embedding provider. Re-run without `--dry-run` to execute the backfill. The CLI streams entries one at a time inside per-entry transactions; a failure mid-backfill does not poison the overall run, and re-running the command is idempotent (entries that already have embeddings are skipped).
+The dry run reports the count of missing entries, and the pending and failed generation jobs the command completes first (see [Completing deferred generation jobs](#completing-deferred-generation-jobs)), without calling a provider. Re-run without `--dry-run` to execute the backfill. The CLI streams entries one at a time inside per-entry transactions; a failure mid-backfill does not poison the overall run, and re-running the command is idempotent (entries that already have embeddings are skipped).
 
 When `ENABLE_EMBEDDING_COMPRESSION=true` (the default in v3.0.0), the backfill writes compressed payloads to `vec_context_embeddings_compressed`. When `ENABLE_EMBEDDING_COMPRESSION=false`, it writes fp32 vectors to `vec_context_embeddings`.
 
@@ -404,6 +404,12 @@ The compose order is fixed: `--compress` runs first (converts the existing fp32 
 
 Cost note: `--embed-missing` calls whichever embedding provider is configured via `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL`. For local Ollama the cost is zero; for cloud providers (OpenAI / Voyage / HuggingFace) the cost scales with the number of missing entries. The CLI prints a warning banner before starting that lists the source URL (with credentials masked) and reminds the operator that live provider calls will follow.
 
+### Completing deferred generation jobs
+
+A store or update made with `defer_generation=true` leaves a generation job beside its entry until a server's generation worker generates the entry's embeddings, summary and index-tree node summaries. `--embed-missing` and `--re-embed` complete those jobs first, in their own process, so a database whose server is stopped still receives every deferred output: failed jobs return to the queue, then every claimable job is claimed under a lease, exactly as a server's worker claims it, and attempted once with the configured embedding provider and, when `ENABLE_SUMMARY_GENERATION=true`, the configured summary provider. The command exits with code 1 before touching any job when a provider it needs is unavailable.
+
+A job a running server holds stays with that server, and a job whose attempt fails returns to the queue after its backoff, or stays failed after its last attempt (`GENERATION_JOB_MAX_ATTEMPTS`). The entry of every job that remains keeps its job and is left out of the command's own pass. The command prints how many jobs it completed, left for a later attempt, failed or discarded, and how many remain; `--dry-run` reports the pending and failed counts without calling a provider. Run the command with the provider and model settings the server uses, because the jobs it completes are generated with them.
+
 ### Re-embedding the whole corpus (changing the embedding model)
 
 `--embed-missing` does not touch entries that already have embeddings, so it cannot change the embedding MODEL of an existing corpus. To switch models -- for example, replacing `qwen3-embedding:0.6b` with a different model of the same dimension -- use `--re-embed`. It regenerates embeddings for EVERY `context_entries` row (deleting the old vectors first) using the currently configured `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL`, and backfills any entries that were missing embeddings along the way (it is a superset of `--embed-missing`):
@@ -416,7 +422,7 @@ mcp-context-server-migrate \
   --dry-run
 ```
 
-The dry run reports the number of entries that would be re-embedded and the existing model(s) being replaced, without calling the provider. Re-run without `--dry-run` to execute. Each entry's delete + regenerate runs inside one transaction, so an entry is never left without embeddings. `--re-embed` works on both fp32 and compressed layouts and requires `ENABLE_EMBEDDING_GENERATION=true`. It is mutually exclusive with `--compress` / `--decompress`, and it supersedes `--embed-missing` (re-embedding the whole corpus already covers the gaps).
+The dry run reports the number of entries that would be re-embedded, the pending and failed generation jobs the command completes first, and the existing model(s) being replaced, without calling a provider. An entry whose generation job remains after that step is not re-embedded. Re-run without `--dry-run` to execute. Each entry's delete + regenerate runs inside one transaction, so an entry is never left without embeddings. `--re-embed` works on both fp32 and compressed layouts and requires `ENABLE_EMBEDDING_GENERATION=true`. It is mutually exclusive with `--compress` / `--decompress`, and it supersedes `--embed-missing` (re-embedding the whole corpus already covers the gaps).
 
 `--re-embed` deliberately refuses a DIMENSION change: if the configured `EMBEDDING_DIM` differs from the stored dimension, it exits with an actionable error. A dimension change rewrites the vector-storage geometry -- the fp32 vector column width is fixed at table creation, and under compression the dimension is part of the seed-locked `compression_metadata` codebook -- so it requires the destructive rebuild documented in the [Migration Guide](migration-v2-to-v3.md#changing-the-embedding-model-or-dimensions), not an in-place re-embed.
 
