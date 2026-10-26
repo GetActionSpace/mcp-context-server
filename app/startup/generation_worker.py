@@ -21,8 +21,8 @@ from app.repositories import RepositoryContainer
 from app.settings import AppSettings
 from app.startup import get_embedding_provider
 from app.startup import get_generation_worker
-from app.startup import get_summary_provider
 from app.startup import set_generation_worker
+from app.tools._generation import generation_active
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +38,7 @@ async def start_generation_worker(settings: AppSettings, backend: StorageBackend
         backend: The backend the server's requests run on.
     """
     global _dedicated_backend
-    embedding_active = get_embedding_provider() is not None
-    if not embedding_active and get_summary_provider() is None:
+    if not generation_active():
         logger.info('Generation worker not started: neither an embedding nor a summary provider is active')
         return
 
@@ -47,6 +46,7 @@ async def start_generation_worker(settings: AppSettings, backend: StorageBackend
     if backend.backend_type == 'postgresql' and settings.access_control.postgresql_rls_enabled:
         dedicated = create_maintenance_backend()
     worker_backend = dedicated or backend
+    embedding_active = get_embedding_provider() is not None
     concurrency = settings.embedding.max_concurrent if embedding_active else settings.summary.max_concurrent
     worker = GenerationWorker(
         RepositoryContainer(worker_backend),

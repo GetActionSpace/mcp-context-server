@@ -20,6 +20,7 @@ import pytest
 import pytest_asyncio
 
 import app.generation_jobs.executor as executor
+import app.tools._generation as generation_module
 from app.backends.base import StorageBackend
 from app.compression.factory import get_cached_compression_provider
 from app.repositories.embedding_repository.records import ChunkEmbedding
@@ -106,7 +107,7 @@ async def db(async_db_initialized: StorageBackend, monkeypatch: pytest.MonkeyPat
 def active_legs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the embedding provider, the summary provider and the node-summary layer active."""
     monkeypatch.setattr(executor, 'get_embedding_provider', MagicMock)
-    monkeypatch.setattr(executor, 'get_summary_provider', MagicMock)
+    monkeypatch.setattr(generation_module, 'get_summary_provider', MagicMock)
     monkeypatch.setattr(executor, 'node_layer_active', lambda: True)
 
 

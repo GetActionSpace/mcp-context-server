@@ -30,9 +30,9 @@ from app.repositories.generation_job_repository import ClaimedJob
 from app.repositories.index_node_repository import IndexNodeRow
 from app.settings import get_settings
 from app.startup import get_embedding_provider
-from app.startup import get_summary_provider
 from app.tools._generation import node_layer_active
 from app.tools._generation import run_generation
+from app.tools._generation import summary_applies
 from app.tools._transactions import write_generation_outputs
 
 if TYPE_CHECKING:
@@ -89,14 +89,11 @@ def _legs_for(source: GenerationSource) -> _Legs:
         source: The entry's text and the outputs it already holds.
 
     Returns:
-        The legs to run. A text shorter than ``SUMMARY_MIN_CONTENT_LENGTH`` gets no summary,
-        as on the synchronous write paths.
+        The legs to run. A text the synchronous write paths would not summarize gets no summary.
     """
-    min_length = settings.summary.min_content_length
-    too_short = min_length > 0 and len(source.text_content) < min_length
     return _Legs(
         embedding=get_embedding_provider() is not None and not source.has_embeddings,
-        summary=get_summary_provider() is not None and not source.has_summary and not too_short,
+        summary=summary_applies(source.text_content) and not source.has_summary,
         nodes=node_layer_active() and source.node_count == 0,
     )
 

@@ -17,6 +17,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 import app.generation_jobs.executor as executor
+import app.tools._generation as generation_module
 from app import digests
 from app.backends.base import MAINTENANCE
 from app.generation_jobs.executor import JobOutcome
@@ -110,8 +111,8 @@ class TestLegs:
         self, db: ScopedDb, generation: InstallGeneration, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A text shorter than SUMMARY_MIN_CONTENT_LENGTH is never summarized, as on the synchronous path."""
-        summary = executor.settings.summary.model_copy(update={'min_content_length': len(LONG_TEXT) + 1})
-        monkeypatch.setattr(executor, 'settings', executor.settings.model_copy(update={'summary': summary}))
+        summary = generation_module.settings.summary.model_copy(update={'min_content_length': len(LONG_TEXT) + 1})
+        monkeypatch.setattr(generation_module, 'settings', generation_module.settings.model_copy(update={'summary': summary}))
         fake = generation()
         job = await _claimed(db, 'short')
 
@@ -126,7 +127,7 @@ class TestLegs:
     ) -> None:
         """Without a provider no leg runs: the job completes without generating anything."""
         monkeypatch.setattr(executor, 'get_embedding_provider', lambda: None)
-        monkeypatch.setattr(executor, 'get_summary_provider', lambda: None)
+        monkeypatch.setattr(generation_module, 'get_summary_provider', lambda: None)
         monkeypatch.setattr(executor, 'node_layer_active', lambda: False)
         fake = generation()
         job = await _claimed(db, 'doc')

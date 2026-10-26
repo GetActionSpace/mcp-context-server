@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 
 import app.startup.generation_worker as phase
+import app.tools._generation as generation_module
 from app.backends.base import MAINTENANCE
 from app.repositories import RepositoryContainer
 from app.startup import get_generation_worker
@@ -94,8 +95,9 @@ def isolated_worker() -> Generator[None]:
 def providers(monkeypatch: pytest.MonkeyPatch) -> dict[str, object | None]:
     """Make both providers active; a test switches one off by setting its entry to None."""
     active: dict[str, object | None] = {'embedding': object(), 'summary': object()}
+    monkeypatch.setattr(generation_module, 'get_embedding_provider', lambda: active['embedding'])
+    monkeypatch.setattr(generation_module, 'get_summary_provider', lambda: active['summary'])
     monkeypatch.setattr(phase, 'get_embedding_provider', lambda: active['embedding'])
-    monkeypatch.setattr(phase, 'get_summary_provider', lambda: active['summary'])
     return active
 
 
