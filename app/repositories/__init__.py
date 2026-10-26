@@ -10,6 +10,7 @@ from app.backends.base import StorageBackend
 from app.repositories.context_repository import ContextRepository
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.fts_repository import FtsRepository
+from app.repositories.generation_job_repository import GenerationJobRepository
 from app.repositories.grant_repository import GrantRepository
 from app.repositories.image_repository import ImageRepository
 from app.repositories.index_node_repository import IndexNodeRepository
@@ -38,12 +39,14 @@ class RepositoryContainer:
         self.fts = FtsRepository(backend)
         self.index_nodes = IndexNodeRepository(backend)
         self.grants = GrantRepository(backend)
+        self.generation_jobs = GenerationJobRepository(backend)
 
 
 __all__ = [
     'ContextRepository',
     'EmbeddingRepository',
     'FtsRepository',
+    'GenerationJobRepository',
     'GrantRepository',
     'ImageRepository',
     'IndexNodeRepository',
