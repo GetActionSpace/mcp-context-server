@@ -32,14 +32,15 @@ NEW_TEXT = 'Batch-updated text long enough to get a summary. ' * 20
 @pytest.fixture
 def summaries() -> Iterator[AsyncMock]:
     """Replace the batch's summary generation; every generated summary reads 'A summary.'."""
-    with patch('app.tools.batch.update.generate_summary_with_timeout', AsyncMock(return_value='A summary.')) as generate:
+    summary = AsyncMock(return_value='A summary.')
+    with patch('app.tools.batch._update_generation.generate_summary_with_timeout', summary) as generate:
         yield generate
 
 
 @pytest.fixture
 def nodes() -> Iterator[AsyncMock]:
     """Replace the batch's node-summary pass; it produces no node rows."""
-    with patch('app.tools.batch.update.generate_index_nodes_with_timeout', AsyncMock(return_value=[])) as generate:
+    with patch('app.tools.batch._update_generation.generate_index_nodes_with_timeout', AsyncMock(return_value=[])) as generate:
         yield generate
 
 
@@ -135,7 +136,7 @@ async def test_a_deferring_update_removes_the_old_outputs(summaries: AsyncMock, 
     (context_id,) = await _entries([None])
 
     with patch(
-        'app.tools.batch.update.execute_update_in_transaction', side_effect=execute_update_in_transaction,
+        'app.tools.batch._update_commit.execute_update_in_transaction', side_effect=execute_update_in_transaction,
     ) as transaction:
         await update_context_batch(updates=[{'context_id': context_id, 'text': NEW_TEXT, 'defer_generation': True}])
 

@@ -41,14 +41,15 @@ def summary_provider() -> Iterator[None]:
 @pytest.fixture
 def summaries() -> Iterator[AsyncMock]:
     """Replace the batch's summary generation; every generated summary reads 'A summary.'."""
-    with patch('app.tools.batch.store.generate_summary_with_timeout', AsyncMock(return_value='A summary.')) as generate:
+    summary = AsyncMock(return_value='A summary.')
+    with patch('app.tools.batch._store_generation.generate_summary_with_timeout', summary) as generate:
         yield generate
 
 
 @pytest.fixture
 def nodes() -> Iterator[AsyncMock]:
     """Replace the batch's node-summary pass; it produces no node rows."""
-    with patch('app.tools.batch.store.generate_index_nodes_with_timeout', AsyncMock(return_value=[])) as generate:
+    with patch('app.tools.batch._store_generation.generate_index_nodes_with_timeout', AsyncMock(return_value=[])) as generate:
         yield generate
 
 

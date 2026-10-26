@@ -92,7 +92,7 @@ class TestBatchStoreResponseParity:
             patch('app.tools._generation.get_embedding_provider') as mock_shared_emb_provider_fn,
             patch('app.tools.batch.store.get_summary_provider', return_value=None),
             patch(
-                'app.tools.batch.store.generate_embeddings_with_timeout',
+                'app.tools.batch._store_generation.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,
                 return_value=mock_chunk_embeddings,
             ),
@@ -221,18 +221,22 @@ class TestBatchStoreWithoutDeduplication:
             patch('app.tools.batch.store.get_embedding_provider', return_value=MagicMock()),
             patch('app.tools.batch.store.get_summary_provider', return_value=None),
             patch(
-                'app.tools.batch.store.generate_embeddings_with_timeout',
+                'app.tools.batch._store_generation.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,
                 return_value=[('chunk-0', [0.1, 0.2])],
             ) as mock_embed,
             patch(
-                'app.tools.batch.store.generate_compression_with_timeout',
+                'app.tools.batch._store_generation.generate_compression_with_timeout',
                 new_callable=AsyncMock,
                 side_effect=lambda embeddings: embeddings,
             ),
-            patch('app.tools.batch.store.generate_index_nodes_with_timeout', new_callable=AsyncMock, return_value=None),
             patch(
-                'app.tools.batch.store.execute_store_in_transaction',
+                'app.tools.batch._store_generation.generate_index_nodes_with_timeout',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'app.tools.batch._store_commit.execute_store_in_transaction',
                 new_callable=AsyncMock,
                 side_effect=[StoreOutcome('fresh-id', False, True, 'ready'), StoreOutcome('dup-id', True, False, 'ready')],
             ) as mock_store,

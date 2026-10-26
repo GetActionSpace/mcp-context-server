@@ -245,7 +245,7 @@ REGISTRY: dict[str, Entry] = {
     ),
     _INVENTORY + 'exists': _child(
         Seam.CHILD_BY_TRUSTED_ID,
-        _STORE_TX, 'tools/batch/store.py:store_context_batch', 'tools/context/store.py:store_context',
+        _STORE_TX, 'tools/batch/_store_generation.py:generate_store_outputs', 'tools/context/store.py:store_context',
         'tools/_store_transaction.py:_outputs_missing',
         receiver='embeddings',
     ),
