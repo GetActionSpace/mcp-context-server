@@ -52,17 +52,24 @@ ERA_PROTOCOL_VERSIONS: dict[ClientMode, tuple[str, ...]] = {
 # or None and the text of the tool error.
 type ToolOutcome = tuple[dict[str, Any] | None, str | None]
 
+# Embedding batch size of both primary servers and of every second server: a fixed
+# size makes the long-document store check embed its twelve chunks in three
+# batches of four on both backends, whatever the provider's speed.
+HARNESS_EMBEDDING_BATCH_SIZE = '4'
+
 # Feature settings of the PostgreSQL primary server and of every second server that
 # does not share the primary's environment: the full search surface, low-effort
-# summaries, and the fp32 vector layout. The fp32 layout exercises the pgvector
-# <-> / HNSW / DISTINCT ON path, which the compressed tests leave uncovered, and
-# keeps the run independent of the seed-locked compression_metadata singleton that
-# the dedicated compression round-trip tests seal.
+# summaries, the fixed embedding batch size, and the fp32 vector layout. The fp32
+# layout exercises the pgvector <-> / HNSW / DISTINCT ON path, which the compressed
+# tests leave uncovered, and keeps the run independent of the seed-locked
+# compression_metadata singleton that the dedicated compression round-trip tests
+# seal.
 SERVER_FEATURES: dict[str, str] = {
     'ENABLE_SEMANTIC_SEARCH': 'true',
     'ENABLE_FTS': 'true',
     'ENABLE_HYBRID_SEARCH': 'true',
     'ENABLE_EMBEDDING_COMPRESSION': 'false',
+    'EMBEDDING_BATCH_SIZE': HARNESS_EMBEDDING_BATCH_SIZE,
     'SUMMARY_OPENAI_REASONING_EFFORT': 'low',
     'SUMMARY_ANTHROPIC_EFFORT': 'low',
 }
@@ -207,6 +214,7 @@ class HarnessCore:
                 'ENABLE_SEMANTIC_SEARCH': 'true',
                 'ENABLE_FTS': 'true',
                 'ENABLE_HYBRID_SEARCH': 'true',
+                'EMBEDDING_BATCH_SIZE': HARNESS_EMBEDDING_BATCH_SIZE,
                 'SUMMARY_OPENAI_REASONING_EFFORT': 'low',
                 'SUMMARY_ANTHROPIC_EFFORT': 'low',
             }

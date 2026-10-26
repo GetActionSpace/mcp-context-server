@@ -349,11 +349,14 @@ class StoreMixin(HarnessCore):
             return False
 
     async def test_store_context_long_document_in_batches(self) -> bool:
-        """Store a Markdown document long enough for several embedding batches.
+        """Store a Markdown document that the server embeds in three batches.
 
         Runs when the server registered ``semantic_search_context``: the document
-        splits into twelve chunks at the default chunk size, so the store
-        embeds it in more than one batch, and semantic search must then find it.
+        splits into twelve chunks at the default chunk size, and the harness
+        servers pin ``EMBEDDING_BATCH_SIZE`` to 4 (``HARNESS_EMBEDDING_BATCH_SIZE``),
+        so the store sends three batches of four chunks. The check verifies that
+        the store completes and that semantic search then finds the entry; the
+        batch count itself is not observable through the protocol.
 
         Returns:
             bool: True if test passed or was skipped because semantic search is not registered.
@@ -381,7 +384,10 @@ class StoreMixin(HarnessCore):
             elif context_id not in [row.get('id') for row in found.get('results', [])]:
                 problems.append(f'semantic search did not return {context_id}: {found}')
             return self._record(
-                test_name, problems, f'stored {len(text)} characters as {context_id} and found it by semantic search',
+                test_name,
+                problems,
+                f'stored {len(text)} characters (twelve chunks, three batches of four at the pinned batch size) '
+                f'as {context_id} and found it by semantic search',
             )
         except Exception as e:
             return self._record(test_name, [f'Exception: {e}'], '')
