@@ -46,6 +46,7 @@ from app.repositories import RepositoryContainer
 from app.repositories.context_repository.records import EntryProbe
 from app.repositories.context_repository.records import VersionConflictError
 from app.schemas import load_schema
+from app.tools._transactions import UpdateOutcome
 from app.tools.context.update import update_context
 from app.types import UpdateContextSuccessDict
 
@@ -319,7 +320,7 @@ class TestUpdateContextVersionGuard:
 
         attempts = {'count': 0}
 
-        async def always_conflict(*_args: object, **_kwargs: object) -> tuple[list[str], bool]:
+        async def always_conflict(*_args: object, **_kwargs: object) -> UpdateOutcome:
             attempts['count'] += 1
             raise VersionConflictError(entry_id)
 
@@ -454,11 +455,11 @@ class TestUpdateContextVersionGuard:
                 raise asyncpg.InterfaceError('connection recycled by the pooler')
             return EntryProbe(True, 'agent', 3, 'local', True)
 
-        async def conflict_once(*_args: object, **kwargs: object) -> tuple[list[str], bool]:
+        async def conflict_once(*_args: object, **kwargs: object) -> UpdateOutcome:
             versions_seen.append(cast('int | None', kwargs.get('expected_version')))
             if len(versions_seen) == 1:
                 raise VersionConflictError(entry_id)
-            return ['metadata'], False
+            return UpdateOutcome(['metadata'], False, 'ready')
 
         with (
             patch('app.tools.context.update.ensure_repositories', return_value=repos),

@@ -22,10 +22,12 @@ from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
 from app.startup import get_summary_provider
+from app.startup import notify_generation_worker
 from app.tools._generation import generate_compression_with_timeout
 from app.tools._generation import generate_embeddings_with_timeout
 from app.tools._generation import generate_index_nodes_with_timeout
 from app.tools._generation import generate_summary_with_timeout
+from app.tools._generation import generation_active
 from app.tools._responses import build_batch_update_response_message
 from app.tools._transactions import EntryNotFoundError
 from app.tools._transactions import execute_update_in_transaction
@@ -51,7 +53,9 @@ async def update_context_batch(
             'Optional: text (str), metadata (dict - full replace), '
             'metadata_patch (dict - RFC 7396 merge), tags (list[str]), images (list[dict]), '
             'visibility ("private" or "public"; owner-only, publishing as public '
-            'may require a configured role).',
+            'may require a configured role), defer_generation (bool, default false; with text, '
+            'true stores the new text at once and leaves its embeddings, summary and section '
+            'summaries to a background job).',
             min_length=1,
             max_length=100,
         ),
@@ -85,6 +89,14 @@ async def update_context_batch(
       - metadata_patch: RFC 7396 JSON Merge Patch (new keys added, existing updated,
         null values DELETE keys; cannot store null values; arrays replaced entirely)
     - Tags and images use REPLACEMENT semantics (not merge)
+    - A text change regenerates the entry's embeddings, summary and section summaries
+      before the batch is applied, unless the update sets defer_generation=True, which
+      stores the new text at once, removes the old text's outputs and leaves the new ones
+      to a background job; an update without text generates nothing and leaves any job as
+      it is
+    - Each applied update's generation_status is 'ready' when the entry's generated outputs
+      are complete, 'pending' while its generation job waits or runs, and 'failed' once the
+      job exhausted its retries; a failed update reports null
 
     Size limits:
     - Maximum 100 entries per batch
@@ -94,8 +106,8 @@ async def update_context_batch(
 
     Returns:
         BulkUpdateResponseDict with success (bool), total (int), succeeded (int),
-        failed (int), results (list of index, context_id, success, updated_fields, error),
-        message (str).
+        failed (int), results (list of index, context_id, success, updated_fields, error,
+        generation_status), message (str).
 
     Raises:
         ToolError: If validation fails, embedding generation fails (atomic), or batch operation fails.
@@ -144,6 +156,7 @@ async def update_context_batch(
                 success=False,
                 updated_fields=None,
                 error=error,
+                generation_status=None,
             ))
 
         if not validated_updates:
@@ -172,6 +185,7 @@ async def update_context_batch(
                     success=False,
                     updated_fields=None,
                     error=error,
+                    generation_status=None,
                 ))
 
         # Filter out non-existent entries in non-atomic mode by ORIGINAL INDEX, not by
@@ -214,6 +228,14 @@ async def update_context_batch(
         embedding_provider = get_embedding_provider()
         summary_provider = get_summary_provider()
         min_content_length = settings.summary.min_content_length
+        # The text updates whose generation is left to a job: those asking for it while a
+        # generation provider is active. Without one there is nothing to defer, and such an
+        # update is applied like any other.
+        generation_can_defer = generation_active()
+        deferred = {
+            vu_idx for vu_idx, update in validated_updates_filtered
+            if update['defer_generation'] and update.get('text') is not None and generation_can_defer
+        }
         embeddings_generated_count = 0
         summaries_generated_count = 0
         summaries_cleared_count = 0
@@ -227,6 +249,14 @@ async def update_context_batch(
             if text_content is None:
                 update_embeddings[vu_idx] = None
                 update_summaries[vu_idx] = None
+                continue
+
+            # A deferring text change generates nothing here; its transaction clears the
+            # old text's summary, embeddings and node rows and leaves the new ones to a job.
+            if vu_idx in deferred:
+                update_embeddings[vu_idx] = None
+                update_summaries[vu_idx] = None
+                update_clear_summaries.add(vu_idx)
                 continue
 
             tasks_to_run: list[Awaitable[list[ChunkEmbedding] | str | None]] = []
@@ -344,6 +374,7 @@ async def update_context_batch(
                     success=False,
                     updated_fields=None,
                     error=error,
+                    generation_status=None,
                 ))
             # Filter by ORIGINAL INDEX, not by context_id: two updates may target
             # the same context_id in one non-atomic batch, and filtering by a
@@ -375,7 +406,9 @@ async def update_context_batch(
         update_index_nodes: dict[int, list[IndexNodeRow] | None] = {}
         for vu_idx, update in validated_updates_final:
             new_text = update.get('text')
-            if new_text is not None:
+            if vu_idx in deferred:
+                update_index_nodes[vu_idx] = []
+            elif new_text is not None:
                 rebuilt = await generate_index_nodes_with_timeout(new_text)
                 # Text changed: a None result must CLEAR the rows describing the old text
                 # ([]) because navigate_context attaches stored summaries by heading-slug
@@ -409,6 +442,7 @@ async def update_context_batch(
 
         # === PHASE 4: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
+        deferred_committed = False
 
         if atomic:
             # ATOMIC MODE: All updates in a single transaction with retry
@@ -435,7 +469,7 @@ async def update_context_batch(
 
                             update_images = update.get('images')
                             try:
-                                updated_fields, summary_cleared = (
+                                outcome = (
                                     await execute_update_in_transaction(
                                         repos, txn,
                                         context_id=context_id,
@@ -453,6 +487,7 @@ async def update_context_batch(
                                         embedding_model=settings.embedding.model,
                                         index_nodes=update_index_nodes.get(vu_idx),
                                         expected_version=live_versions.get(context_id),
+                                        defer_generation=vu_idx in deferred,
                                     )
                                 )
                             except VersionConflictError:
@@ -469,7 +504,7 @@ async def update_context_batch(
                                 # path emits instead of retry advice no retry can
                                 # satisfy.
                                 await reraise_disambiguated_cas_conflict(repos, txn, context_id, scope=scope)
-                            if summary_cleared:
+                            if outcome.summary_cleared:
                                 cleared_attempt += 1
                             bumps_version = (
                                 update.get('text') is not None
@@ -487,8 +522,9 @@ async def update_context_batch(
                                 index=original_idx,
                                 context_id=context_id,
                                 success=True,
-                                updated_fields=updated_fields,
+                                updated_fields=outcome.updated_fields,
                                 error=None,
+                                generation_status=outcome.generation_status,
                             ))
 
                         # COMMIT happens here - all or nothing
@@ -498,6 +534,7 @@ async def update_context_batch(
                     # Accumulate the authoritative per-entry cleared count from this
                     # committed attempt (a rolled-back/retried attempt contributes nothing).
                     summaries_cleared_count += cleared_attempt
+                    deferred_committed = bool(deferred)
                     break
 
                 except VersionConflictError as e:
@@ -547,7 +584,7 @@ async def update_context_batch(
                     try:
                         async with backend.begin_transaction(access_scope=scope) as txn:
                             update_images = update.get('images')
-                            updated_fields_list, summary_cleared = (
+                            outcome = (
                                 await execute_update_in_transaction(
                                     repos, txn,
                                     context_id=context_id,
@@ -565,6 +602,7 @@ async def update_context_batch(
                                     embedding_model=settings.embedding.model,
                                     index_nodes=update_index_nodes.get(vu_idx),
                                     expected_version=live_versions.get(context_id),
+                                    defer_generation=vu_idx in deferred,
                                 )
                             )
 
@@ -574,11 +612,14 @@ async def update_context_batch(
                             index=original_idx,
                             context_id=context_id,
                             success=True,
-                            updated_fields=updated_fields_list,
+                            updated_fields=outcome.updated_fields,
                             error=None,
+                            generation_status=outcome.generation_status,
                         ))
-                        if summary_cleared:
+                        if outcome.summary_cleared:
                             summaries_cleared_count += 1
+                        if vu_idx in deferred:
+                            deferred_committed = True
                         bumps_version = (
                             update.get('text') is not None
                             or update.get('metadata') is not None
@@ -601,6 +642,7 @@ async def update_context_batch(
                                 success=False,
                                 updated_fields=None,
                                 error=format_exception_message(e),
+                                generation_status=None,
                             ))
                             discard_generation_counts(vu_idx)
                             break
@@ -622,6 +664,7 @@ async def update_context_batch(
                                 success=False,
                                 updated_fields=None,
                                 error=format_exception_message(reread_error),
+                                generation_status=None,
                             ))
                             discard_generation_counts(vu_idx)
                             break
@@ -636,6 +679,7 @@ async def update_context_batch(
                                     f'Context entry {context_id} not found' if not current.exists
                                     else f'Not authorized to modify context entry {context_id}'
                                 ),
+                                generation_status=None,
                             ))
                             discard_generation_counts(vu_idx)
                             break
@@ -654,6 +698,7 @@ async def update_context_batch(
                             success=False,
                             updated_fields=None,
                             error=format_exception_message(e),
+                            generation_status=None,
                         ))
                         discard_generation_counts(vu_idx)
                         break
@@ -666,6 +711,7 @@ async def update_context_batch(
                             success=False,
                             updated_fields=None,
                             error=format_exception_message(e),
+                            generation_status=None,
                         ))
                         discard_generation_counts(vu_idx)
                         break
@@ -688,9 +734,14 @@ async def update_context_batch(
                             success=False,
                             updated_fields=None,
                             error=format_exception_message(e),
+                            generation_status=None,
                         ))
                         discard_generation_counts(vu_idx)
                         break
+
+        # One wake-up covers every job the batch enqueued.
+        if deferred_committed:
+            notify_generation_worker()
 
         # Sort results by index for consistent ordering
         results.sort(key=operator.itemgetter('index'))
@@ -713,6 +764,8 @@ async def update_context_batch(
             embeddings_generated_count=embeddings_generated_count,
             summaries_generated_count=summaries_generated_count,
             summaries_cleared_count=summaries_cleared_count,
+            generation_pending_count=sum(1 for r in results if r['generation_status'] == 'pending'),
+            generation_failed_count=sum(1 for r in results if r['generation_status'] == 'failed'),
         )
 
         return BulkUpdateResponseDict(

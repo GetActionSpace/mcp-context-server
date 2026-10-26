@@ -20,13 +20,17 @@ from app.models import MAX_IMAGES_PER_ENTRY
 from app.models import MAX_TAG_LENGTH
 from app.models import MAX_TAGS_PER_ENTRY
 from app.models import MAX_THREAD_ID_LENGTH
+from app.repositories.embedding_repository.records import ChunkEmbedding
+from app.repositories.index_node_repository import IndexNodeRow
 from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
 from app.startup import get_summary_provider
+from app.startup import notify_generation_worker
 from app.tools._generation import embed_then_compress
 from app.tools._generation import generate_index_nodes_with_timeout
 from app.tools._generation import generate_summary_with_timeout
+from app.tools._generation import generation_active
 from app.tools._generation import node_layer_active
 from app.tools._generation import run_generation
 from app.tools._responses import build_store_response_message
@@ -102,6 +106,17 @@ async def store_context(
             "(docs/knowledge-base.md, 'Storing Without Deduplication').",
         ),
     ] = True,
+    defer_generation: Annotated[
+        bool,
+        Field(
+            description='False (default): embeddings, the summary and the section summaries are '
+            'generated before the entry is stored, and a generation failure stores nothing. True: '
+            'the entry is stored at once, readable and full-text searchable, and a background job '
+            "generates its outputs; the response's generation_status is 'pending' until the job "
+            "writes them ('ready'), or 'failed' once its retries are exhausted. Semantic search "
+            'finds the entry once it is ready.',
+        ),
+    ] = False,
 ) -> StoreContextSuccessDict:
     """Store a context entry.
 
@@ -124,13 +139,25 @@ async def store_context(
     This preserves chronological ordering for repeated identical messages in
     conversations.
 
+    Generation: by default embeddings, the summary and the section summaries are generated
+    before the entry is stored, and a generation failure stores nothing. With
+    defer_generation=True the entry is stored at once and a background job generates its
+    outputs: the entry is readable and full-text searchable immediately, and semantic
+    search finds it once the job has written its embeddings. A deferred store that
+    deduplicates into an existing entry keeps that entry's waiting job, restarts a failed
+    one, and adds one only when an output is missing. The response's generation_status is
+    'ready' when the entry's generated outputs are complete, 'pending' while its generation
+    job waits or runs, and 'failed' once the job exhausted its retries; the entry stays
+    stored and readable either way.
+
     Notes:
         - Tags are normalized to lowercase
         - Use indexed metadata fields for faster filtering:
           status, agent_name, task_name, project, report_type
 
     Returns:
-        StoreContextSuccessDict with success, context_id, thread_id, message fields.
+        StoreContextSuccessDict with success, context_id, thread_id, message and
+        generation_status fields.
 
     Raises:
         ToolError: If validation fails, embedding generation fails, or storage operation fails.
@@ -226,99 +253,104 @@ async def store_context(
         # (see run_generation).
 
         repos = await ensure_repositories()
+        # A deferring store generates nothing here: the entry and its generation job land
+        # together, and the generation worker writes the outputs after the commit. Without an
+        # active provider there is nothing to defer, and the store is the plain store.
+        defer = defer_generation and generation_active()
         summary_text: str | None = None
         summary_generated = False
-
-        # Performance optimization: pre-check for likely duplicates (read-only).
-        # The candidate id and its stored summary come from ONE statement-level
-        # snapshot (see DuplicateCandidate): a separate later summary read could
-        # observe a row version a concurrent update committed in between,
-        # pairing a reused summary with text it does not describe. A store that
-        # does not deduplicate always inserts, so it skips the pre-check: a skipped
-        # leg would only force the reconcile regeneration after its INSERT.
-        likely_duplicate_id: str | None = None
-        duplicate_summary: str | None = None
-
-        if deduplicate and (get_embedding_provider() is not None or get_summary_provider() is not None):
-            duplicate_candidate = await repos.context.check_latest_is_duplicate(
-                thread_id=thread_id,
-                source=source,
-                text_content=text,
-                scope=scope,
-            )
-            if duplicate_candidate is not None:
-                likely_duplicate_id = duplicate_candidate.context_id
-                duplicate_summary = duplicate_candidate.summary
-
-        # Decide which generation legs to run. The dedup pre-check lets a likely
-        # retransmit skip work it would only discard (embeddings already stored,
-        # summary reusable, node rows left untouched).
-        run_embedding = False
-        if get_embedding_provider() is not None:
-            if likely_duplicate_id is not None:
-                run_embedding = not await repos.embeddings.exists(likely_duplicate_id, scope=scope)
-                if not run_embedding:
-                    logger.debug(
-                        'Pre-check: skipping embedding generation for likely duplicate '
-                        'of context %s in thread %s', likely_duplicate_id, thread_id,
-                    )
-            else:
-                run_embedding = True
-
-        run_summary = False
         summary_reused = False
-        if get_summary_provider() is not None:
-            min_content_length = settings.summary.min_content_length
-            if min_content_length > 0 and len(text) < min_content_length:
-                logger.info(
-                    'Skipping summary generation: text length %d < min_content_length %d',
-                    len(text), min_content_length,
+        likely_duplicate_id: str | None = None
+        chunk_embeddings: list[ChunkEmbedding] | None = None
+        index_nodes: list[IndexNodeRow] | None = None
+        embedding_generated = False
+
+        if not defer:
+            # Performance optimization: pre-check for likely duplicates (read-only).
+            # The candidate id and its stored summary come from ONE statement-level
+            # snapshot (see DuplicateCandidate): a separate later summary read could
+            # observe a row version a concurrent update committed in between,
+            # pairing a reused summary with text it does not describe. A store that
+            # does not deduplicate always inserts, so it skips the pre-check: a skipped
+            # leg would only force the reconcile regeneration after its INSERT.
+            duplicate_summary: str | None = None
+
+            if deduplicate and (get_embedding_provider() is not None or get_summary_provider() is not None):
+                duplicate_candidate = await repos.context.check_latest_is_duplicate(
+                    thread_id=thread_id,
+                    source=source,
+                    text_content=text,
+                    scope=scope,
                 )
-            elif likely_duplicate_id is not None:
-                if duplicate_summary is not None:
-                    summary_text = duplicate_summary  # reuse; no model call
-                    summary_reused = True
-                    logger.debug(
-                        'Pre-check: reusing existing summary for likely duplicate '
-                        'of context %s in thread %s', likely_duplicate_id, thread_id,
+                if duplicate_candidate is not None:
+                    likely_duplicate_id = duplicate_candidate.context_id
+                    duplicate_summary = duplicate_candidate.summary
+
+            # Decide which generation legs to run. The dedup pre-check lets a likely
+            # retransmit skip work it would only discard (embeddings already stored,
+            # summary reusable, node rows left untouched).
+            run_embedding = False
+            if get_embedding_provider() is not None:
+                if likely_duplicate_id is not None:
+                    run_embedding = not await repos.embeddings.exists(likely_duplicate_id, scope=scope)
+                    if not run_embedding:
+                        logger.debug(
+                            'Pre-check: skipping embedding generation for likely duplicate '
+                            'of context %s in thread %s', likely_duplicate_id, thread_id,
+                        )
+                else:
+                    run_embedding = True
+
+            run_summary = False
+            if get_summary_provider() is not None:
+                min_content_length = settings.summary.min_content_length
+                if min_content_length > 0 and len(text) < min_content_length:
+                    logger.info(
+                        'Skipping summary generation: text length %d < min_content_length %d',
+                        len(text), min_content_length,
                     )
+                elif likely_duplicate_id is not None:
+                    if duplicate_summary is not None:
+                        summary_text = duplicate_summary  # reuse; no model call
+                        summary_reused = True
+                        logger.debug(
+                            'Pre-check: reusing existing summary for likely duplicate '
+                            'of context %s in thread %s', likely_duplicate_id, thread_id,
+                        )
+                    else:
+                        run_summary = True
                 else:
                     run_summary = True
-            else:
-                run_summary = True
 
-        # Node summaries are gated symmetrically with embeddings/summary: a likely
-        # retransmit re-issues none and leaves stored rows untouched (index_nodes
-        # stays None). On a reconcile-divergence INSERT below they are regenerated
-        # for the diverged text.
-        run_nodes = likely_duplicate_id is None
+            # Node summaries are gated symmetrically with embeddings/summary: a likely
+            # retransmit re-issues none and leaves stored rows untouched (index_nodes
+            # stays None). On a reconcile-divergence INSERT below they are regenerated
+            # for the diverged text.
+            run_nodes = likely_duplicate_id is None
 
-        chunk_embeddings, generated_summary, index_nodes = await run_generation(
-            text, source,
-            run_embedding=run_embedding,
-            run_summary=run_summary,
-            run_nodes=run_nodes,
-        )
-        if generated_summary is not None:
-            summary_text = generated_summary
-            summary_generated = True
-        embedding_generated = chunk_embeddings is not None
+            chunk_embeddings, generated_summary, index_nodes = await run_generation(
+                text, source,
+                run_embedding=run_embedding,
+                run_summary=run_summary,
+                run_nodes=run_nodes,
+            )
+            if generated_summary is not None:
+                summary_text = generated_summary
+                summary_generated = True
+            embedding_generated = chunk_embeddings is not None
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
         metadata_str = json.dumps(metadata, ensure_ascii=False) if metadata is not None else None
 
         max_retries = 2
-        context_id = ''
-        was_updated = False
-        embedding_stored = False
         reconciled = False
         attempt = 0
 
         while True:
             try:
                 async with backend.begin_transaction(access_scope=scope) as txn:
-                    context_id, was_updated, embedding_stored = await execute_store_in_transaction(
+                    outcome = await execute_store_in_transaction(
                         repos, txn,
                         thread_id=thread_id,
                         source=source,
@@ -333,9 +365,10 @@ async def store_context(
                         validated_images=validated_images,
                         images_provided=images is not None,
                         deduplicate=deduplicate,
+                        defer_generation=defer,
                         chunk_embeddings=chunk_embeddings,
                         embedding_model=settings.embedding.model,
-                        embedding_generation_enabled=get_embedding_provider() is not None,
+                        embedding_generation_enabled=not defer and get_embedding_provider() is not None,
                         index_nodes=index_nodes,
                         nodes_pending=node_layer_active() and likely_duplicate_id is not None,
                         summary_pending=summary_reused and not summary_generated,
@@ -401,23 +434,28 @@ async def store_context(
                     continue
                 raise  # Non-connection error or max retries exceeded
 
-        action = 'updated' if was_updated else 'stored'
-        logger.info(f'{action.capitalize()} context {context_id} in thread {thread_id}')
+        if defer:
+            notify_generation_worker()
+
+        action = 'updated' if outcome.was_updated else 'stored'
+        logger.info(f'{action.capitalize()} context {outcome.context_id} in thread {thread_id}')
 
         message = build_store_response_message(
             action=action,
             image_count=len(validated_images),
             embedding_generated=embedding_generated,
-            embedding_stored=embedding_stored,
+            embedding_stored=outcome.embedding_stored,
             summary_generated=summary_generated,
             summary_preserved=summary_text is not None and not summary_generated,
+            generation_status=outcome.generation_status,
         )
 
         return StoreContextSuccessDict(
             success=True,
-            context_id=context_id,
+            context_id=outcome.context_id,
             thread_id=thread_id,
             message=message,
+            generation_status=outcome.generation_status,
         )
     except ToolError:
         raise  # Re-raise ToolError as-is for FastMCP to handle

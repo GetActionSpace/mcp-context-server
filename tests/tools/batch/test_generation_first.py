@@ -15,6 +15,7 @@ from fastmcp.exceptions import ToolError
 
 import app.tools
 from app.repositories.context_repository.records import EntryProbe
+from tests.tools._generation_jobs import InMemoryGenerationJobs
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -69,6 +70,8 @@ def _create_mock_repositories() -> MagicMock:
     repos.index_nodes = MagicMock()
     repos.index_nodes.replace_nodes_for_context = AsyncMock(return_value=None)
     repos.index_nodes.get_nodes_for_context = AsyncMock(return_value={})
+
+    repos.generation_jobs = InMemoryGenerationJobs()
 
     return repos
 

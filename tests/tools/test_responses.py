@@ -8,6 +8,7 @@ import sqlite3
 from collections.abc import Callable
 from collections.abc import Sequence
 from typing import Any
+from typing import Literal
 
 import pytest
 
@@ -162,7 +163,7 @@ class TestBuildStoreResponseMessage:
         msg = build_store_response_message(
             action='stored', image_count=0,
             embedding_generated=False, embedding_stored=False,
-            summary_generated=False, summary_preserved=False,
+            summary_generated=False, summary_preserved=False, generation_status='ready',
         )
         assert msg == 'Context stored'
 
@@ -171,7 +172,7 @@ class TestBuildStoreResponseMessage:
         msg = build_store_response_message(
             action='stored', image_count=3,
             embedding_generated=False, embedding_stored=False,
-            summary_generated=False, summary_preserved=False,
+            summary_generated=False, summary_preserved=False, generation_status='ready',
         )
         assert msg == 'Context stored with 3 images'
 
@@ -180,7 +181,7 @@ class TestBuildStoreResponseMessage:
         msg = build_store_response_message(
             action='stored', image_count=0,
             embedding_generated=True, embedding_stored=True,
-            summary_generated=False, summary_preserved=False,
+            summary_generated=False, summary_preserved=False, generation_status='ready',
         )
         assert 'embedding generated' in msg
         assert 'not stored' not in msg
@@ -190,7 +191,7 @@ class TestBuildStoreResponseMessage:
         msg = build_store_response_message(
             action='stored', image_count=0,
             embedding_generated=True, embedding_stored=False,
-            summary_generated=False, summary_preserved=False,
+            summary_generated=False, summary_preserved=False, generation_status='ready',
         )
         assert 'embedding generated but not stored - duplicate' in msg
 
@@ -199,7 +200,7 @@ class TestBuildStoreResponseMessage:
         msg = build_store_response_message(
             action='stored', image_count=0,
             embedding_generated=False, embedding_stored=False,
-            summary_generated=True, summary_preserved=False,
+            summary_generated=True, summary_preserved=False, generation_status='ready',
         )
         assert 'summary generated' in msg
 
@@ -208,7 +209,7 @@ class TestBuildStoreResponseMessage:
         msg = build_store_response_message(
             action='stored', image_count=0,
             embedding_generated=False, embedding_stored=False,
-            summary_generated=False, summary_preserved=True,
+            summary_generated=False, summary_preserved=True, generation_status='ready',
         )
         assert 'summary preserved' in msg
 
@@ -217,7 +218,7 @@ class TestBuildStoreResponseMessage:
         msg = build_store_response_message(
             action='stored', image_count=2,
             embedding_generated=True, embedding_stored=True,
-            summary_generated=True, summary_preserved=False,
+            summary_generated=True, summary_preserved=False, generation_status='ready',
         )
         assert 'Context stored with 2 images' in msg
         assert 'embedding generated' in msg
@@ -228,10 +229,28 @@ class TestBuildStoreResponseMessage:
         msg = build_store_response_message(
             action='updated', image_count=0,
             embedding_generated=False, embedding_stored=False,
-            summary_generated=False, summary_preserved=False,
+            summary_generated=False, summary_preserved=False, generation_status='ready',
         )
         assert msg == 'Context updated'
         assert '(' not in msg
+
+    @pytest.mark.parametrize('status', ['pending', 'failed'])
+    def test_an_outstanding_generation_state_is_named(self, status: Literal['pending', 'failed']) -> None:
+        """A store whose entry still waits for its outputs, or gave up on them, says so."""
+        msg = build_store_response_message(
+            action='stored', image_count=0,
+            embedding_generated=False, embedding_stored=False,
+            summary_generated=False, summary_preserved=False, generation_status=status,
+        )
+        assert msg == f'Context stored (generation {status})'
+
+    def test_a_ready_entry_names_no_generation_state(self) -> None:
+        msg = build_store_response_message(
+            action='stored', image_count=0,
+            embedding_generated=False, embedding_stored=False,
+            summary_generated=True, summary_preserved=False, generation_status='ready',
+        )
+        assert msg == 'Context stored (summary generated)'
 
 
 class TestBuildUpdateResponseMessage:
@@ -244,6 +263,7 @@ class TestBuildUpdateResponseMessage:
             embedding_generated=False,
             summary_generated=False,
             summary_cleared=False,
+            generation_status='ready',
         )
         assert msg == 'Successfully updated 3 field(s)'
 
@@ -254,6 +274,7 @@ class TestBuildUpdateResponseMessage:
             embedding_generated=True,
             summary_generated=False,
             summary_cleared=False,
+            generation_status='ready',
         )
         assert 'embedding regenerated' in msg
 
@@ -264,6 +285,7 @@ class TestBuildUpdateResponseMessage:
             embedding_generated=False,
             summary_generated=True,
             summary_cleared=False,
+            generation_status='ready',
         )
         assert 'summary regenerated' in msg
 
@@ -274,6 +296,7 @@ class TestBuildUpdateResponseMessage:
             embedding_generated=False,
             summary_generated=False,
             summary_cleared=True,
+            generation_status='ready',
         )
         assert 'summary cleared' in msg
 
@@ -284,10 +307,32 @@ class TestBuildUpdateResponseMessage:
             embedding_generated=True,
             summary_generated=True,
             summary_cleared=False,
+            generation_status='ready',
         )
         assert 'embedding regenerated' in msg
         assert 'summary regenerated' in msg
         assert '5 field(s)' in msg
+
+    def test_a_pending_generation_follows_the_cleared_summary(self) -> None:
+        """A deferred text update clears the old summary and leaves the new one to its job."""
+        msg = build_update_response_message(
+            updated_fields_count=2,
+            embedding_generated=False,
+            summary_generated=False,
+            summary_cleared=True,
+            generation_status='pending',
+        )
+        assert msg == 'Successfully updated 2 field(s) (summary cleared, generation pending)'
+
+    def test_a_failed_generation_is_named(self) -> None:
+        msg = build_update_response_message(
+            updated_fields_count=1,
+            embedding_generated=False,
+            summary_generated=False,
+            summary_cleared=False,
+            generation_status='failed',
+        )
+        assert msg == 'Successfully updated 1 field(s) (generation failed)'
 
 
 class TestBuildBatchStoreResponseMessage:
@@ -299,6 +344,7 @@ class TestBuildBatchStoreResponseMessage:
             succeeded=3, total=3,
             embeddings_generated_count=0, embeddings_stored_count=0,
             summaries_generated_count=0, summaries_preserved_count=0,
+            generation_pending_count=0, generation_failed_count=0,
         )
         assert msg == 'Stored 3/3 entries successfully'
 
@@ -308,6 +354,7 @@ class TestBuildBatchStoreResponseMessage:
             succeeded=3, total=3,
             embeddings_generated_count=3, embeddings_stored_count=1,
             summaries_generated_count=0, summaries_preserved_count=0,
+            generation_pending_count=0, generation_failed_count=0,
         )
         assert 'embeddings generated (2 not stored - duplicates)' in msg
 
@@ -317,9 +364,19 @@ class TestBuildBatchStoreResponseMessage:
             succeeded=3, total=3,
             embeddings_generated_count=0, embeddings_stored_count=0,
             summaries_generated_count=2, summaries_preserved_count=1,
+            generation_pending_count=0, generation_failed_count=0,
         )
         assert 'summaries generated' in msg
         assert 'summaries preserved' in msg
+
+    def test_outstanding_generation_counts_are_named(self) -> None:
+        msg = build_batch_store_response_message(
+            succeeded=3, total=3,
+            embeddings_generated_count=0, embeddings_stored_count=0,
+            summaries_generated_count=0, summaries_preserved_count=0,
+            generation_pending_count=2, generation_failed_count=1,
+        )
+        assert msg == 'Stored 3/3 entries successfully (generation pending for 2 entries, generation failed for 1 entry)'
 
 
 class TestBuildBatchUpdateResponseMessage:
@@ -332,6 +389,8 @@ class TestBuildBatchUpdateResponseMessage:
             embeddings_generated_count=0,
             summaries_generated_count=0,
             summaries_cleared_count=0,
+            generation_pending_count=0,
+            generation_failed_count=0,
         )
         assert msg == 'Updated 3/3 entries successfully'
 
@@ -342,5 +401,18 @@ class TestBuildBatchUpdateResponseMessage:
             embeddings_generated_count=0,
             summaries_generated_count=0,
             summaries_cleared_count=2,
+            generation_pending_count=0,
+            generation_failed_count=0,
         )
         assert 'summaries cleared' in msg
+
+    def test_outstanding_generation_counts_are_named(self) -> None:
+        msg = build_batch_update_response_message(
+            succeeded=2, total=2,
+            embeddings_generated_count=0,
+            summaries_generated_count=0,
+            summaries_cleared_count=2,
+            generation_pending_count=1,
+            generation_failed_count=0,
+        )
+        assert msg == 'Updated 2/2 entries successfully (summaries cleared, generation pending for 1 entry)'

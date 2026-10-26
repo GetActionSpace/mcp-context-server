@@ -10,6 +10,7 @@ from fastmcp.exceptions import ToolError
 
 from app.access_scope import AccessScope
 from app.repositories.context_repository.records import DuplicateCandidate
+from app.tools._transactions import StoreOutcome
 from app.tools.discovery import get_statistics
 from tests.helpers import as_principal
 from tests.tools._read_only import read_only_caller
@@ -233,7 +234,7 @@ class TestBatchStoreWithoutDeduplication:
             patch(
                 'app.tools.batch.store.execute_store_in_transaction',
                 new_callable=AsyncMock,
-                side_effect=[('fresh-id', False, True), ('dup-id', True, False)],
+                side_effect=[StoreOutcome('fresh-id', False, True, 'ready'), StoreOutcome('dup-id', True, False, 'ready')],
             ) as mock_store,
         ):
             mock_repos = AsyncMock()
@@ -335,7 +336,9 @@ class TestBatchStoreIngestBlock:
         result = await store_context_batch(entries=self._entries(), atomic=False)
 
         by_index = {item['index']: item for item in result['results']}
-        assert by_index[1] == {'index': 1, 'success': False, 'context_id': None, 'error': _PARTIAL_BLOCK_ERROR}
+        assert by_index[1] == {
+            'index': 1, 'success': False, 'context_id': None, 'error': _PARTIAL_BLOCK_ERROR, 'generation_status': None,
+        }
         assert by_index[0]['success'] is True
         assert by_index[2]['success'] is True
         assert (result['succeeded'], result['failed']) == (2, 1)

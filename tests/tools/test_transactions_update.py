@@ -21,6 +21,7 @@ from app.tools._transactions import EntryNotFoundError
 from app.tools._transactions import execute_update_in_transaction
 from app.tools._transactions import write_generation_outputs
 from tests.helpers import LOCAL_SCOPE
+from tests.tools._generation_jobs import InMemoryGenerationJobs
 
 
 class TestExecuteUpdateInTransaction:
@@ -42,6 +43,7 @@ class TestExecuteUpdateInTransaction:
         repos.embeddings.delete_all_chunks = AsyncMock()
         repos.embeddings.embedding_tables_exist = AsyncMock(return_value=False)
         repos.embeddings.store_chunked = AsyncMock()
+        repos.generation_jobs = InMemoryGenerationJobs()
         return repos
 
     @pytest.fixture
@@ -56,7 +58,7 @@ class TestExecuteUpdateInTransaction:
         self, mock_repos: MagicMock, mock_txn: MagicMock,
     ) -> None:
         """Update text field returns updated_fields with text."""
-        updated_fields, summary_cleared = await execute_update_in_transaction(
+        outcome = await execute_update_in_transaction(
             mock_repos, mock_txn,
             context_id='0190abcdef1234567890abcd00000001',
             scope=LOCAL_SCOPE,
@@ -70,9 +72,10 @@ class TestExecuteUpdateInTransaction:
             validated_images=[],
             chunk_embeddings=None,
             embedding_model='m',
+            defer_generation=False,
         )
-        assert 'text' in updated_fields
-        assert summary_cleared is False
+        assert 'text' in outcome.updated_fields
+        assert outcome.summary_cleared is False
         mock_repos.context.update_context_entry.assert_called_once()
 
     @pytest.mark.asyncio
@@ -80,7 +83,7 @@ class TestExecuteUpdateInTransaction:
         self, mock_repos: MagicMock, mock_txn: MagicMock,
     ) -> None:
         """Apply metadata_patch calls patch_metadata."""
-        updated_fields, _ = await execute_update_in_transaction(
+        outcome = await execute_update_in_transaction(
             mock_repos, mock_txn,
             context_id='0190abcdef1234567890abcd00000001',
             scope=LOCAL_SCOPE,
@@ -94,8 +97,9 @@ class TestExecuteUpdateInTransaction:
             validated_images=[],
             chunk_embeddings=None,
             embedding_model='m',
+            defer_generation=False,
         )
-        assert 'metadata' in updated_fields
+        assert 'metadata' in outcome.updated_fields
         mock_repos.context.patch_metadata.assert_called_once()
 
     @pytest.mark.asyncio
@@ -103,7 +107,7 @@ class TestExecuteUpdateInTransaction:
         self, mock_repos: MagicMock, mock_txn: MagicMock,
     ) -> None:
         """Tags provided triggers replace_tags_for_context."""
-        updated_fields, _ = await execute_update_in_transaction(
+        outcome = await execute_update_in_transaction(
             mock_repos, mock_txn,
             context_id='0190abcdef1234567890abcd00000001',
             scope=LOCAL_SCOPE,
@@ -117,8 +121,9 @@ class TestExecuteUpdateInTransaction:
             validated_images=[],
             chunk_embeddings=None,
             embedding_model='m',
+            defer_generation=False,
         )
-        assert 'tags' in updated_fields
+        assert 'tags' in outcome.updated_fields
         mock_repos.tags.replace_tags_for_context.assert_called_once()
 
     @pytest.mark.asyncio
@@ -126,7 +131,7 @@ class TestExecuteUpdateInTransaction:
         self, mock_repos: MagicMock, mock_txn: MagicMock,
     ) -> None:
         """Empty images list removes all images and sets content_type to text."""
-        updated_fields, _ = await execute_update_in_transaction(
+        outcome = await execute_update_in_transaction(
             mock_repos, mock_txn,
             context_id='0190abcdef1234567890abcd00000001',
             scope=LOCAL_SCOPE,
@@ -140,9 +145,10 @@ class TestExecuteUpdateInTransaction:
             validated_images=[],
             chunk_embeddings=None,
             embedding_model='m',
+            defer_generation=False,
         )
-        assert 'images' in updated_fields
-        assert 'content_type' in updated_fields
+        assert 'images' in outcome.updated_fields
+        assert 'content_type' in outcome.updated_fields
         mock_repos.images.replace_images_for_context.assert_called_once_with(
             '0190abcdef1234567890abcd00000001', [], txn=mock_txn, scope=LOCAL_SCOPE,
         )
@@ -156,7 +162,7 @@ class TestExecuteUpdateInTransaction:
     ) -> None:
         """Chunk embeddings provided triggers delete+store cycle."""
         chunk_embeddings = cast(list[ChunkEmbedding], [MagicMock()])
-        updated_fields, _ = await execute_update_in_transaction(
+        outcome = await execute_update_in_transaction(
             mock_repos, mock_txn,
             context_id='0190abcdef1234567890abcd00000001',
             scope=LOCAL_SCOPE,
@@ -170,8 +176,9 @@ class TestExecuteUpdateInTransaction:
             validated_images=[],
             chunk_embeddings=chunk_embeddings,
             embedding_model='m',
+            defer_generation=False,
         )
-        assert 'embedding' in updated_fields
+        assert 'embedding' in outcome.updated_fields
         mock_repos.embeddings.delete_all_chunks.assert_called_once_with(
             '0190abcdef1234567890abcd00000001', txn=mock_txn, scope=LOCAL_SCOPE,
         )
@@ -193,7 +200,7 @@ class TestExecuteUpdateInTransaction:
         mock_repos.embeddings.embedding_tables_exist = AsyncMock(return_value=True)
         mock_repos.embeddings.delete_all_chunks = AsyncMock(return_value=True)
 
-        updated_fields, _ = await execute_update_in_transaction(
+        outcome = await execute_update_in_transaction(
             mock_repos, mock_txn,
             context_id='0190abcdef1234567890abcd00000001',
             scope=LOCAL_SCOPE,
@@ -207,9 +214,10 @@ class TestExecuteUpdateInTransaction:
             validated_images=[],
             chunk_embeddings=None,
             embedding_model='m',
+            defer_generation=False,
         )
 
-        assert 'embedding' in updated_fields
+        assert 'embedding' in outcome.updated_fields
         mock_repos.embeddings.delete_all_chunks.assert_called_once_with(
             '0190abcdef1234567890abcd00000001', txn=mock_txn, scope=LOCAL_SCOPE,
         )
@@ -227,7 +235,7 @@ class TestExecuteUpdateInTransaction:
         mock_repos.embeddings.embedding_tables_exist = AsyncMock(return_value=False)
         mock_repos.embeddings.delete_all_chunks = AsyncMock(return_value=True)
 
-        updated_fields, _ = await execute_update_in_transaction(
+        outcome = await execute_update_in_transaction(
             mock_repos, mock_txn,
             context_id='0190abcdef1234567890abcd00000001',
             scope=LOCAL_SCOPE,
@@ -241,9 +249,10 @@ class TestExecuteUpdateInTransaction:
             validated_images=[],
             chunk_embeddings=None,
             embedding_model='m',
+            defer_generation=False,
         )
 
-        assert 'embedding' not in updated_fields
+        assert 'embedding' not in outcome.updated_fields
         mock_repos.embeddings.delete_all_chunks.assert_not_called()
 
     @pytest.mark.asyncio
@@ -267,6 +276,7 @@ class TestExecuteUpdateInTransaction:
                 validated_images=[],
                 chunk_embeddings=None,
                 embedding_model='m',
+                defer_generation=False,
             )
 
     @pytest.mark.asyncio
@@ -290,6 +300,7 @@ class TestExecuteUpdateInTransaction:
                 validated_images=[],
                 chunk_embeddings=None,
                 embedding_model='m',
+                defer_generation=False,
             )
 
     @pytest.mark.asyncio
@@ -318,6 +329,7 @@ class TestExecuteUpdateInTransaction:
                 validated_images=[],
                 chunk_embeddings=None,
                 embedding_model='m',
+                defer_generation=False,
             )
         mock_repos.tags.replace_tags_for_context.assert_not_called()
 
@@ -346,6 +358,7 @@ class TestExecuteUpdateInTransaction:
                 validated_images=[],
                 chunk_embeddings=None,
                 embedding_model='m',
+                defer_generation=False,
             )
         mock_repos.images.replace_images_for_context.assert_not_called()
 
@@ -354,7 +367,7 @@ class TestExecuteUpdateInTransaction:
         self, mock_repos: MagicMock, mock_txn: MagicMock,
     ) -> None:
         """clear_summary=True is returned as summary_cleared."""
-        _, summary_cleared = await execute_update_in_transaction(
+        outcome = await execute_update_in_transaction(
             mock_repos, mock_txn,
             context_id='0190abcdef1234567890abcd00000001',
             scope=LOCAL_SCOPE,
@@ -368,8 +381,9 @@ class TestExecuteUpdateInTransaction:
             validated_images=[],
             chunk_embeddings=None,
             embedding_model='m',
+            defer_generation=False,
         )
-        assert summary_cleared is True
+        assert outcome.summary_cleared is True
 
     @pytest.mark.asyncio
     async def test_every_gate_receives_the_scope(
@@ -386,14 +400,17 @@ class TestExecuteUpdateInTransaction:
         await execute_update_in_transaction(
             mock_repos, mock_txn, text='New text', metadata=None, metadata_patch={'k': 'v'}, visibility='public',
             tags=None, images=None, validated_images=[], **common,
+            defer_generation=False,
         )
         await execute_update_in_transaction(
             mock_repos, mock_txn, text=None, metadata=None, metadata_patch=None,
             tags=['tag'], images=None, validated_images=[], **common,
+            defer_generation=False,
         )
         await execute_update_in_transaction(
             mock_repos, mock_txn, text=None, metadata=None, metadata_patch=None,
             tags=None, images=[], validated_images=[], **common,
+            defer_generation=False,
         )
 
         assert mock_repos.context.update_context_entry.await_args.kwargs['scope'] is bob
@@ -430,6 +447,7 @@ class TestExecuteUpdateInTransaction:
                 validated_images=[],
                 chunk_embeddings=None,
                 embedding_model='m',
+                defer_generation=False,
             )
         mock_repos.context.update_content_type.assert_not_called()
         mock_repos.context.touch_updated_at.assert_not_called()
@@ -444,7 +462,7 @@ class TestExecuteUpdateInTransaction:
         helper = AsyncMock(return_value=True)
 
         with patch('app.tools._transactions.write_generation_outputs', helper):
-            updated_fields, _ = await execute_update_in_transaction(
+            outcome = await execute_update_in_transaction(
                 mock_repos, mock_txn,
                 context_id=CONTEXT_ID,
                 scope=LOCAL_SCOPE,
@@ -459,12 +477,13 @@ class TestExecuteUpdateInTransaction:
                 chunk_embeddings=chunk_embeddings,
                 embedding_model='m',
                 index_nodes=nodes,
+                defer_generation=False,
             )
 
         helper.assert_awaited_once_with(
             mock_repos, mock_txn, CONTEXT_ID, chunk_embeddings, nodes, embedding_model='m', scope=LOCAL_SCOPE,
         )
-        assert 'embedding' in updated_fields
+        assert 'embedding' in outcome.updated_fields
 
 
 CONTEXT_ID = '0190abcdef1234567890abcd00000001'

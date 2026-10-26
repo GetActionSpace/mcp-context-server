@@ -4,7 +4,7 @@
 read response reports; ``generation_statuses`` and ``attach_generation_status`` read the
 ``generation_status`` it reports beside them, once per response; the ``build_*_message``
 functions write the success-message text of single-entry and batch store and update
-responses.
+responses, naming an entry's generation state while its outputs are pending or failed.
 """
 
 from collections.abc import Iterable
@@ -82,11 +82,12 @@ def build_store_response_message(
     embedding_stored: bool,
     summary_generated: bool,
     summary_preserved: bool,
+    generation_status: GenerationStatus,
 ) -> str:
     """Build a response message for a store operation.
 
     Constructs a human-readable message with parenthetical detail parts
-    covering embedding status, summary status, and image count.
+    covering embedding status, summary status, generation state, and image count.
 
     Args:
         action: 'stored' or 'updated' (deduplication outcome)
@@ -95,6 +96,8 @@ def build_store_response_message(
         embedding_stored: Whether generated embeddings were stored to DB
         summary_generated: Whether a new summary was generated
         summary_preserved: Whether an existing summary was reused
+        generation_status: The entry's generation state after the store; a pending or
+            failed state is named, a ready one is not
 
     Returns:
         Formatted message string like 'Context stored (embedding generated, summary generated)'.
@@ -110,6 +113,7 @@ def build_store_response_message(
         parts.append('summary generated')
     elif summary_preserved:
         parts.append('summary preserved')
+    parts.extend(_generation_parts(generation_status))
 
     # Suppress "with 0 images" when no images
     base = f'Context {action} with {image_count} images' if image_count > 0 else f'Context {action}'
@@ -124,6 +128,7 @@ def build_update_response_message(
     embedding_generated: bool,
     summary_generated: bool,
     summary_cleared: bool,
+    generation_status: GenerationStatus,
 ) -> str:
     """Build a response message for an update operation.
 
@@ -132,6 +137,8 @@ def build_update_response_message(
         embedding_generated: Whether embeddings were regenerated
         summary_generated: Whether summary was regenerated
         summary_cleared: Whether existing summary was cleared
+        generation_status: The entry's generation state after the update; a pending or
+            failed state is named, a ready one is not
 
     Returns:
         Formatted message string.
@@ -143,6 +150,7 @@ def build_update_response_message(
         parts.append('summary regenerated')
     elif summary_cleared:
         parts.append('summary cleared')
+    parts.extend(_generation_parts(generation_status))
 
     base = f'Successfully updated {updated_fields_count} field(s)'
     return f'{base} ({", ".join(parts)})' if parts else base
@@ -156,6 +164,8 @@ def build_batch_store_response_message(
     embeddings_stored_count: int,
     summaries_generated_count: int,
     summaries_preserved_count: int,
+    generation_pending_count: int,
+    generation_failed_count: int,
 ) -> str:
     """Build a response message for a batch store operation.
 
@@ -166,6 +176,8 @@ def build_batch_store_response_message(
         embeddings_stored_count: Number of entries where embeddings were stored
         summaries_generated_count: Number of entries with generated summaries
         summaries_preserved_count: Number of entries with preserved summaries
+        generation_pending_count: Number of stored entries whose generation is pending
+        generation_failed_count: Number of stored entries whose generation failed
 
     Returns:
         Formatted batch message string.
@@ -181,6 +193,7 @@ def build_batch_store_response_message(
         parts.append('summaries generated')
     if summaries_preserved_count > 0:
         parts.append('summaries preserved')
+    parts.extend(_generation_count_parts(generation_pending_count, generation_failed_count))
     base = f'Stored {succeeded}/{total} entries successfully'
     return f'{base} ({", ".join(parts)})' if parts else base
 
@@ -192,6 +205,8 @@ def build_batch_update_response_message(
     embeddings_generated_count: int,
     summaries_generated_count: int,
     summaries_cleared_count: int,
+    generation_pending_count: int,
+    generation_failed_count: int,
 ) -> str:
     """Build a response message for a batch update operation.
 
@@ -201,6 +216,8 @@ def build_batch_update_response_message(
         embeddings_generated_count: Number of entries with regenerated embeddings
         summaries_generated_count: Number of entries with regenerated summaries
         summaries_cleared_count: Number of entries with cleared summaries
+        generation_pending_count: Number of updated entries whose generation is pending
+        generation_failed_count: Number of updated entries whose generation failed
 
     Returns:
         Formatted batch message string.
@@ -212,5 +229,20 @@ def build_batch_update_response_message(
         parts.append('summaries regenerated')
     if summaries_cleared_count > 0:
         parts.append('summaries cleared')
+    parts.extend(_generation_count_parts(generation_pending_count, generation_failed_count))
     base = f'Updated {succeeded}/{total} entries successfully'
     return f'{base} ({", ".join(parts)})' if parts else base
+
+
+def _generation_parts(generation_status: GenerationStatus) -> list[str]:
+    """Name an entry's generation state when its outputs are outstanding or failed."""
+    return [] if generation_status == 'ready' else [f'generation {generation_status}']
+
+
+def _generation_count_parts(pending: int, failed: int) -> list[str]:
+    """Count the entries of a batch whose generation is pending and whose generation failed."""
+    return [
+        f'generation {state} for {count} {"entry" if count == 1 else "entries"}'
+        for state, count in (('pending', pending), ('failed', failed))
+        if count > 0
+    ]

@@ -242,21 +242,29 @@ class NavigateContextResultDict(TypedDict, total=False):
 
 
 class StoreContextSuccessDict(TypedDict):
-    """Type definition for successful store context response."""
+    """Type definition for successful store context response.
+
+    ``generation_status`` is the entry's generation state as the store left it.
+    """
 
     success: bool
     context_id: str
     thread_id: str
     message: str
+    generation_status: GenerationStatus
 
 
 class UpdateContextSuccessDict(TypedDict):
-    """Type definition for successful update context response."""
+    """Type definition for successful update context response.
+
+    ``generation_status`` is the entry's generation state as the update left it.
+    """
 
     success: bool
     context_id: str
     updated_fields: list[str]
     message: str
+    generation_status: GenerationStatus
 
 
 # Sharing TypedDicts
@@ -314,12 +322,17 @@ class ListContextGrantsResultDict(TypedDict):
 
 
 class BulkStoreResultItemDict(TypedDict):
-    """Type definition for a single result in bulk store response."""
+    """Type definition for a single result in bulk store response.
+
+    ``generation_status`` is the entry's generation state as the store left it; None for
+    an entry that was not stored.
+    """
 
     index: int
     success: bool
     context_id: str | None
     error: str | None
+    generation_status: GenerationStatus | None
 
 
 class BulkStoreResponseDict(TypedDict):
@@ -334,13 +347,18 @@ class BulkStoreResponseDict(TypedDict):
 
 
 class BulkUpdateResultItemDict(TypedDict):
-    """Type definition for a single result in bulk update response."""
+    """Type definition for a single result in bulk update response.
+
+    ``generation_status`` is the entry's generation state as the update left it; None for
+    an update that failed.
+    """
 
     index: int
     context_id: str
     success: bool
     updated_fields: list[str] | None
     error: str | None
+    generation_status: GenerationStatus | None
 
 
 class BulkUpdateResponseDict(TypedDict):

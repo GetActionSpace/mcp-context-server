@@ -21,10 +21,12 @@ from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
 from app.startup import get_summary_provider
+from app.startup import notify_generation_worker
 from app.tools._generation import generate_compression_with_timeout
 from app.tools._generation import generate_embeddings_with_timeout
 from app.tools._generation import generate_index_nodes_with_timeout
 from app.tools._generation import generate_summary_with_timeout
+from app.tools._generation import generation_active
 from app.tools._generation import node_layer_active
 from app.tools._responses import build_batch_store_response_message
 from app.tools._transactions import EmbeddingsReconcileRequiredError
@@ -48,7 +50,9 @@ async def store_context_batch(
             'Optional: metadata (dict), tags (list[str]), images (list[dict]), '
             'visibility ("private" or "public"; omitted uses the server default, '
             'publishing as public may require a configured role), '
-            'deduplicate (bool, default true; false always inserts a new entry owned by the caller).',
+            'deduplicate (bool, default true; false always inserts a new entry owned by the caller), '
+            'defer_generation (bool, default false; true stores the entry at once and leaves its '
+            'embeddings, summary and section summaries to a background job).',
             min_length=1,
             max_length=100,
         ),
@@ -80,6 +84,15 @@ async def store_context_batch(
     owned by the caller; a later deduplicating entry of the same batch with identical
     text merges into that new entry, as it is then the latest one.
 
+    Generation: an entry's embeddings, summary and section summaries are generated before
+    it is stored, and a generation failure stores nothing of it. An entry with
+    defer_generation=True skips the pre-check and generation: it is stored at once with a
+    background job that generates its outputs, readable and full-text searchable
+    immediately, and found by semantic search once the job has written its embeddings.
+    Each stored item's generation_status is 'ready' when the entry's generated outputs are
+    complete, 'pending' while its generation job waits or runs, and 'failed' once the job
+    exhausted its retries; an item that was not stored reports null.
+
     Size limits:
     - Maximum 100 entries per batch
     - Image limits per entry: 10MB each, 100MB total
@@ -90,7 +103,8 @@ async def store_context_batch(
 
     Returns:
         BulkStoreResponseDict with success (bool), total (int), succeeded (int),
-        failed (int), results (list of index, success, context_id, error), message (str).
+        failed (int), results (list of index, success, context_id, error,
+        generation_status), message (str).
 
     Raises:
         ToolError: If validation fails, embedding generation fails (atomic), or batch operation fails.
@@ -141,6 +155,7 @@ async def store_context_batch(
                 success=False,
                 context_id=None,
                 error=error,
+                generation_status=None,
             ))
 
         if not validated_entries:
@@ -168,6 +183,14 @@ async def store_context_batch(
         embedding_provider = get_embedding_provider()
         summary_provider = get_summary_provider()
         min_content_length = settings.summary.min_content_length
+        # The entries whose generation is left to a job: those asking for it while a
+        # generation provider is active. Without one there is nothing to defer, and such
+        # an entry is stored like any other.
+        generation_can_defer = generation_active()
+        deferred = {
+            ve_idx for ve_idx, entry in enumerate(validated_entries)
+            if entry['defer_generation'] and generation_can_defer
+        }
         embeddings_generated_count = 0
         embeddings_stored_count = 0
         summaries_generated_count = 0
@@ -181,6 +204,11 @@ async def store_context_batch(
         for ve_idx, entry in enumerate(validated_entries):
             original_idx = entry['index']
             text_content = entry['text_content']
+            if ve_idx in deferred:
+                entry_embeddings[ve_idx] = None
+                entry_summaries[ve_idx] = None
+                entry_likely_duplicate[ve_idx] = None
+                continue
 
             tasks_to_run: list[Awaitable[list[ChunkEmbedding] | str | None]] = []
             task_names: list[str] = []
@@ -348,6 +376,7 @@ async def store_context_batch(
                     success=False,
                     context_id=None,
                     error=error,
+                    generation_status=None,
                 ))
             failed_indices = {idx for idx, _ in generation_errors}
             validated_entries_filtered = [
@@ -382,7 +411,7 @@ async def store_context_batch(
             # regenerate for the diverged text.
             entry_index_nodes[ve_idx] = (
                 None
-                if entry_likely_duplicate.get(ve_idx) is not None
+                if entry_likely_duplicate.get(ve_idx) is not None or ve_idx in deferred
                 else await generate_index_nodes_with_timeout(entry['text_content'])
             )
 
@@ -414,6 +443,7 @@ async def store_context_batch(
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
+        deferred_committed = False
 
         if atomic:
             # ATOMIC MODE: All entries in a single transaction with retry
@@ -440,7 +470,7 @@ async def store_context_batch(
                             if idx > 0:
                                 await transaction_heartbeat(txn)
 
-                            context_id, was_updated, embedding_stored = (
+                            outcome = (
                                 await execute_store_in_transaction(
                                     repos, txn,
                                     thread_id=entry['thread_id'],
@@ -456,6 +486,7 @@ async def store_context_batch(
                                     validated_images=entry.get('images', []),
                                     images_provided=bool(entry.get('images_provided')),
                                     deduplicate=entry['deduplicate'],
+                                    defer_generation=ve_idx in deferred,
                                     chunk_embeddings=entry_embeddings.get(ve_idx),
                                     embedding_model=settings.embedding.model,
                                     embedding_generation_enabled=embedding_provider is not None,
@@ -468,14 +499,15 @@ async def store_context_batch(
                                 )
                             )
 
-                            if embedding_stored:
+                            if outcome.embedding_stored:
                                 stored_count_attempt += 1
 
                             results_attempt.append(BulkStoreResultItemDict(
                                 index=original_idx,
                                 success=True,
-                                context_id=context_id,
+                                context_id=outcome.context_id,
                                 error=None,
+                                generation_status=outcome.generation_status,
                             ))
 
                         # COMMIT happens here - all or nothing
@@ -483,6 +515,7 @@ async def store_context_batch(
                     # Transaction committed successfully
                     results.extend(results_attempt)
                     embeddings_stored_count += stored_count_attempt
+                    deferred_committed = bool(deferred)
                     break
 
                 except EmbeddingsReconcileRequiredError as reconcile:
@@ -585,7 +618,7 @@ async def store_context_batch(
                 while True:
                     try:
                         async with backend.begin_transaction(access_scope=scope) as txn:
-                            context_id, was_updated, embedding_stored = (
+                            outcome = (
                                 await execute_store_in_transaction(
                                     repos, txn,
                                     thread_id=entry['thread_id'],
@@ -601,6 +634,7 @@ async def store_context_batch(
                                     validated_images=entry.get('images', []),
                                     images_provided=bool(entry.get('images_provided')),
                                     deduplicate=entry['deduplicate'],
+                                    defer_generation=ve_idx in deferred,
                                     chunk_embeddings=entry_embeddings.get(ve_idx),
                                     embedding_model=settings.embedding.model,
                                     embedding_generation_enabled=embedding_provider is not None,
@@ -615,14 +649,17 @@ async def store_context_batch(
 
                             # COMMIT happens here for this entry
 
-                        if embedding_stored:
+                        if outcome.embedding_stored:
                             embeddings_stored_count += 1
+                        if ve_idx in deferred:
+                            deferred_committed = True
 
                         results.append(BulkStoreResultItemDict(
                             index=original_idx,
                             success=True,
-                            context_id=context_id,
+                            context_id=outcome.context_id,
                             error=None,
+                            generation_status=outcome.generation_status,
                         ))
                         break  # Success -- exit retry loop
 
@@ -640,6 +677,7 @@ async def store_context_batch(
                                 success=False,
                                 context_id=None,
                                 error='Failed to reconcile embeddings after deduplication divergence',
+                                generation_status=None,
                             ))
                             discard_generation_counts(ve_idx)
                             break
@@ -677,6 +715,7 @@ async def store_context_batch(
                                 success=False,
                                 context_id=None,
                                 error=format_exception_message(e),
+                                generation_status=None,
                             ))
                             # This entry is discarded; undo every response-counter
                             # contribution it made -- counts must reflect entries
@@ -703,6 +742,7 @@ async def store_context_batch(
                                     success=False,
                                     context_id=None,
                                     error=format_exception_message(e),
+                                    generation_status=None,
                                 ))
                                 # This entry is discarded; undo every response-counter
                                 # contribution it made, including embeddings the first
@@ -733,6 +773,7 @@ async def store_context_batch(
                             success=False,
                             context_id=None,
                             error=format_exception_message(e),
+                            generation_status=None,
                         ))
                         discard_generation_counts(ve_idx)
                         break
@@ -754,9 +795,14 @@ async def store_context_batch(
                             success=False,
                             context_id=None,
                             error=format_exception_message(e),
+                            generation_status=None,
                         ))
                         discard_generation_counts(ve_idx)
                         break
+
+        # One wake-up covers every job the batch enqueued.
+        if deferred_committed:
+            notify_generation_worker()
 
         # Sort results by index for consistent ordering
         results.sort(key=operator.itemgetter('index'))
@@ -774,6 +820,8 @@ async def store_context_batch(
             embeddings_stored_count=embeddings_stored_count,
             summaries_generated_count=summaries_generated_count,
             summaries_preserved_count=summaries_preserved_count,
+            generation_pending_count=sum(1 for r in results if r['generation_status'] == 'pending'),
+            generation_failed_count=sum(1 for r in results if r['generation_status'] == 'failed'),
         )
 
         return BulkStoreResponseDict(

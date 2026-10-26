@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import app.startup
 from app.repositories.context_repository.records import EntryProbe
+from tests.tools._generation_jobs import InMemoryGenerationJobs
 
 
 def make_mock_txn() -> tuple[MagicMock, object]:
@@ -71,6 +72,8 @@ def create_mock_repositories() -> MagicMock:
     repos.index_nodes.replace_nodes_for_context = AsyncMock()
     repos.index_nodes.get_nodes_for_context = AsyncMock(return_value={})
     repos.index_nodes.count_all_nodes = AsyncMock(return_value=0)
+
+    repos.generation_jobs = InMemoryGenerationJobs()
 
     return repos
 

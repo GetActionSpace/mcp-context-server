@@ -27,6 +27,7 @@ from fastmcp.exceptions import ToolError
 
 from app.repositories.context_repository.records import DuplicateCandidate
 from app.tools._transactions import EmbeddingsReconcileRequiredError
+from app.tools._transactions import StoreOutcome
 
 
 def _make_mock_txn() -> tuple[MagicMock, object]:
@@ -92,7 +93,7 @@ class TestStoreContextReconcile:
             # First transaction diverges (INSERT); second succeeds after regeneration.
             mock_exec.side_effect = [
                 EmbeddingsReconcileRequiredError('reconcile this entry'),
-                ('ctx-1', False, True),
+                StoreOutcome('ctx-1', False, True, 'ready'),
             ]
 
             result = await store_context(
@@ -154,7 +155,7 @@ class TestStoreContextReconcile:
             # First transaction diverges (INSERT); second succeeds after regeneration.
             mock_exec.side_effect = [
                 EmbeddingsReconcileRequiredError('x' * 600),
-                ('ctx-1', False, False),
+                StoreOutcome('ctx-1', False, False, 'ready'),
             ]
 
             result = await store_context(
@@ -264,7 +265,7 @@ class TestStoreBatchReconcile:
 
             mock_exec.side_effect = [
                 EmbeddingsReconcileRequiredError('batch reconcile entry'),
-                ('ctx-1', False, True),
+                StoreOutcome('ctx-1', False, True, 'ready'),
             ]
 
             result = await store_context_batch(
@@ -343,8 +344,8 @@ class TestStoreBatchReconcile:
             # aborts); the retry stores both entries.
             mock_exec.side_effect = [
                 EmbeddingsReconcileRequiredError(shared_text),
-                ('ctx-1', False, True),
-                ('ctx-2', False, True),
+                StoreOutcome('ctx-1', False, True, 'ready'),
+                StoreOutcome('ctx-2', False, True, 'ready'),
             ]
 
             result = await store_context_batch(
@@ -410,7 +411,7 @@ class TestStoreBatchReconcile:
             # Entry 0 stores cleanly; entry 1 diverges (INSERT) so its skipped
             # embeddings must be regenerated -- and that regeneration raises.
             mock_exec.side_effect = [
-                ('ctx-good', False, True),
+                StoreOutcome('ctx-good', False, True, 'ready'),
                 EmbeddingsReconcileRequiredError('diverged entry'),
             ]
 
@@ -494,7 +495,7 @@ class TestStoreBatchReconcile:
             # Entry 0 stores cleanly; entry 1 diverges into an INSERT, so its
             # reused summary must be regenerated -- and the provider is down.
             mock_exec.side_effect = [
-                ('ctx-good', False, True),
+                StoreOutcome('ctx-good', False, True, 'ready'),
                 EmbeddingsReconcileRequiredError(diverged_text),
             ]
 

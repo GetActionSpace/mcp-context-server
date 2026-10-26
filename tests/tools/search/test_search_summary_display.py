@@ -11,7 +11,7 @@ from app.tools.search.fts import fts_search_context
 from app.tools.search.hybrid import hybrid_search_context
 from app.tools.search.semantic import semantic_search_context
 from tests.helpers import preserve_summary_state
-from tests.tools._generation_jobs import NoGenerationJobs
+from tests.tools._generation_jobs import InMemoryGenerationJobs
 
 
 @pytest.fixture(autouse=True)
@@ -32,7 +32,7 @@ class TestSummarySearchDisplay:
         mock_embedding_provider.embed_query = AsyncMock(return_value=[0.1] * 768)
 
         mock_repos = MagicMock()
-        mock_repos.generation_jobs = NoGenerationJobs()
+        mock_repos.generation_jobs = InMemoryGenerationJobs()
         mock_repos.embeddings.search = AsyncMock(return_value=([
             {
                 'id': 1,
@@ -81,7 +81,7 @@ class TestSummarySearchDisplay:
     async def test_fts_search_shows_truncated_text_and_summary(self) -> None:
         """Show truncated text_content and summary as separate fields in FTS search."""
         mock_repos = MagicMock()
-        mock_repos.generation_jobs = NoGenerationJobs()
+        mock_repos.generation_jobs = InMemoryGenerationJobs()
         mock_repos.fts.is_available = AsyncMock(return_value=True)
         mock_repos.fts.search = AsyncMock(return_value=([
             {
@@ -139,7 +139,7 @@ class TestSummarySearchDisplay:
         mock_embedding_provider.embed_query = AsyncMock(return_value=[0.1] * 768)
 
         mock_repos = MagicMock()
-        mock_repos.generation_jobs = NoGenerationJobs()
+        mock_repos.generation_jobs = InMemoryGenerationJobs()
         mock_repos.fts.is_available = AsyncMock(return_value=True)
         # FTS returns results with summary
         mock_repos.fts.search = AsyncMock(return_value=([

@@ -6,7 +6,7 @@ import pytest
 
 from app.backends.base import BackendAccess
 from tests.helpers import LOCAL_SCOPE
-from tests.tools._generation_jobs import NoGenerationJobs
+from tests.tools._generation_jobs import InMemoryGenerationJobs
 
 
 class TestSemanticEmbeddingGenerationStat:
@@ -44,7 +44,7 @@ class TestSemanticEmbeddingGenerationStat:
         class _FakeRepos:
             embeddings = _FakeEmbeddingsRepo()
             tags = _FakeTagsRepo()
-            generation_jobs = NoGenerationJobs()
+            generation_jobs = InMemoryGenerationJobs()
 
         provider = _FakeEmbeddingProvider()
         repos = _FakeRepos()
@@ -210,7 +210,7 @@ class TestSemanticSearchScoping:
 
         repos = MagicMock()
         repos.embeddings.search = AsyncMock(return_value=([], {'filters_applied': 2, 'rows_returned': 0}))
-        repos.generation_jobs = NoGenerationJobs()
+        repos.generation_jobs = InMemoryGenerationJobs()
         provider = MagicMock()
         provider.embed_query = AsyncMock(return_value=[0.1, 0.2, 0.3])
         monkeypatch.setattr(search_semantic, 'get_embedding_provider', lambda: provider)

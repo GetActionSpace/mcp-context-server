@@ -124,6 +124,7 @@ _GENERATION = _REPO + 'context_repository.generation:ContextGenerationMixin.'
 _STORE_TX = 'tools/_transactions.py:execute_store_in_transaction'
 _UPDATE_TX = 'tools/_transactions.py:execute_update_in_transaction'
 _OUTPUTS = 'tools/_transactions.py:write_generation_outputs'
+_STORE_JOB = 'tools/_transactions.py:_leave_deferred_store_job'
 _CHUNK_WRITES = 'repositories/embedding_repository/chunk_writes.py:ChunkWriteMixin.'
 _REEMBED = 'cli/migrate_reembed.py:_reembed_async'
 _RESULT_HYDRATORS = (
@@ -205,6 +206,7 @@ REGISTRY: dict[str, Entry] = {
     # Write-authorized: the write or owner predicate in the statement.
     _READS + 'entry_exists': _guarded(Seam.WRITE_AUTHORIZED, 'S6'),
     _READS + 'get_content_type': _guarded(Seam.WRITE_AUTHORIZED, 'W5'),
+    _READS + 'has_summary': _guarded(Seam.WRITE_AUTHORIZED, 'W6'),
     _UPDATES + 'update_context_entry': _guarded(Seam.WRITE_AUTHORIZED, 'W1', 'W2'),
     _UPDATES + 'patch_metadata': _guarded(Seam.WRITE_AUTHORIZED, 'W3'),
     _UPDATES + 'touch_updated_at': _guarded(Seam.WRITE_AUTHORIZED, 'W4'),
@@ -234,7 +236,7 @@ REGISTRY: dict[str, Entry] = {
     _IMAGES + 'count_images_for_context': _child(Seam.CHILD_BY_TRUSTED_ID, _UPDATE_TX),
     _NODES + 'get_nodes_for_context': _child(Seam.CHILD_BY_TRUSTED_ID, 'tools/navigation/navigate.py:navigate_context'),
     _JOBS + 'states_for_ids': _child(Seam.CHILD_BY_TRUSTED_ID, 'tools/_responses.py:generation_statuses', cases=('J2',)),
-    _JOBS + 'state_for': _child(Seam.CHILD_BY_TRUSTED_ID),
+    _JOBS + 'state_for': _child(Seam.CHILD_BY_TRUSTED_ID, _STORE_TX, _UPDATE_TX, _STORE_JOB),
     _JOBS + '_states_sql': _child(
         Seam.CHILD_BY_TRUSTED_ID,
         'repositories/generation_job_repository.py:GenerationJobRepository.state_for',
@@ -244,6 +246,7 @@ REGISTRY: dict[str, Entry] = {
     _INVENTORY + 'exists': _child(
         Seam.CHILD_BY_TRUSTED_ID,
         _STORE_TX, 'tools/batch/store.py:store_context_batch', 'tools/context/store.py:store_context',
+        'tools/_transactions.py:_outputs_missing',
         receiver='embeddings',
     ),
     # Child writers behind the write gate or the owned dedup.
@@ -259,8 +262,8 @@ REGISTRY: dict[str, Entry] = {
     _IMAGES + 'store_images': _child(Seam.CHILD_WRITER, _STORE_TX),
     _IMAGES + 'replace_images_for_context': _child(Seam.CHILD_WRITER, _STORE_TX, _UPDATE_TX, _UPDATE_TX),
     _NODES + 'replace_nodes_for_context': _child(Seam.CHILD_WRITER, _STORE_TX, _OUTPUTS),
-    _JOBS + 'enqueue': _child(Seam.CHILD_WRITER, cases=('J3',)),
-    _JOBS + 'delete_for_entry': _child(Seam.CHILD_WRITER, cases=('J4',)),
+    _JOBS + 'enqueue': _child(Seam.CHILD_WRITER, _UPDATE_TX, _STORE_JOB, cases=('J3',)),
+    _JOBS + 'delete_for_entry': _child(Seam.CHILD_WRITER, _UPDATE_TX, _STORE_JOB, cases=('J4',)),
     # The embedding CLI commands run outside any request and write by the ids they read.
     _CHUNKS + 'store_chunked': _child(
         Seam.CHILD_WRITER, _STORE_TX, _OUTPUTS, 'cli/migrate_embeddings.py:_embed_missing_async', _REEMBED,

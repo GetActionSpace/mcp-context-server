@@ -434,6 +434,7 @@ class TestUpdateBatchIngestBlock:
         by_index = {item['index']: item for item in result['results']}
         assert by_index[1] == {
             'index': 1, 'context_id': second, 'success': False, 'updated_fields': None, 'error': _PATCH_SHAPE_ERROR,
+            'generation_status': None,
         }
         assert by_index[0]['success'] is True
         assert by_index[2]['success'] is True

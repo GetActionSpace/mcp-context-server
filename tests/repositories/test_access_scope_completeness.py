@@ -104,6 +104,8 @@ SCOPE_CARRYING_HELPERS = (
     'app.tools._transactions:execute_store_in_transaction',
     'app.tools._transactions:execute_update_in_transaction',
     'app.tools._transactions:reread_entry_version',
+    'app.tools._transactions:_leave_deferred_store_job',
+    'app.tools._transactions:_outputs_missing',
     'app.tools._delete_cleanup:delete_entries_with_cleanup',
     'app.tools._delete_cleanup:cleanup_embeddings_for_delete',
     'app.tools.sharing:_run_owned_grant_change',

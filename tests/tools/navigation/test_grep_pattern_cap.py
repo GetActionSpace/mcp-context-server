@@ -14,7 +14,7 @@ from annotated_types import MaxLen
 from pydantic.fields import FieldInfo
 
 import app.tools
-from tests.tools._generation_jobs import NoGenerationJobs
+from tests.tools._generation_jobs import InMemoryGenerationJobs
 
 
 class TestGrepPatternCap:
@@ -71,7 +71,7 @@ class TestGrepPatternCap:
         cap = grep_mod.settings.grep_context.max_pattern_chars
         repos = MagicMock()
         repos.context.grep_scan_text_contents = AsyncMock(return_value=([], {}))
-        repos.generation_jobs = NoGenerationJobs()
+        repos.generation_jobs = InMemoryGenerationJobs()
         with patch('app.tools.navigation.grep.ensure_repositories', AsyncMock(return_value=repos)):
             result = await app.tools.grep_context(pattern='x' * cap)
 
@@ -95,7 +95,7 @@ class TestGrepPatternCap:
 
         repos = MagicMock()
         repos.context.grep_scan_text_contents = AsyncMock(return_value=([], {}))
-        repos.generation_jobs = NoGenerationJobs()
+        repos.generation_jobs = InMemoryGenerationJobs()
         with (
             patch('app.tools.navigation.grep.ensure_repositories', AsyncMock(return_value=repos)),
             patch('app.tools.navigation.grep.asyncio.to_thread', side_effect=spy_to_thread),

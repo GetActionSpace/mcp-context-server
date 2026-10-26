@@ -1,10 +1,12 @@
 """Store and update transaction execution for the write tools.
 
 Runs the database writes of one store or update inside an open transaction,
-writes an entry's generated embeddings and node rows for the update path and the
-generation worker alike, keeps that transaction alive with a heartbeat,
-classifies connection faults, re-probes an entry for the compare-and-set retry,
-and defines the control-flow exceptions these paths raise to their callers.
+including the generation job a write that defers generation leaves its entry and the
+generation state the write reports, writes an entry's generated embeddings and node
+rows for the update path and the generation worker alike, keeps that transaction alive
+with a heartbeat, classifies connection faults, re-probes an entry for the
+compare-and-set retry, and defines the control-flow exceptions these paths raise to
+their callers.
 """
 
 import asyncio
@@ -12,6 +14,7 @@ import json
 import logging
 from collections.abc import Collection
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import Literal
@@ -27,6 +30,9 @@ from app.errors import ControlFlowError
 from app.repositories.context_repository.records import EntryProbe
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
+from app.startup import get_embedding_provider
+from app.tools._generation import summary_applies
+from app.types import GenerationStatus
 
 if TYPE_CHECKING:
     from app.backends.base import TransactionContext
@@ -117,6 +123,39 @@ class EntryNotAuthorizedError(ControlFlowError):
         self.context_ids = tuple(context_ids)
         self.action = action
         super().__init__(_REFUSAL_MESSAGES[action].format(ids=', '.join(self.context_ids)))
+
+
+@dataclass(frozen=True, slots=True)
+class StoreOutcome:
+    """What the transaction of one store wrote.
+
+    Attributes:
+        context_id: The id of the stored entry.
+        was_updated: True when deduplication updated an existing entry, False when a new
+            entry was inserted.
+        embedding_stored: Whether embeddings were written.
+        generation_status: The entry's generation state as the transaction leaves it.
+    """
+
+    context_id: str
+    was_updated: bool
+    embedding_stored: bool
+    generation_status: GenerationStatus
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateOutcome:
+    """What the transaction of one update wrote.
+
+    Attributes:
+        updated_fields: The names of the fields the update changed.
+        summary_cleared: Whether the update cleared the entry's summary.
+        generation_status: The entry's generation state as the transaction leaves it.
+    """
+
+    updated_fields: list[str]
+    summary_cleared: bool
+    generation_status: GenerationStatus
 
 
 # ---------------------------------------------------------------------------
@@ -316,13 +355,14 @@ async def execute_store_in_transaction(
     validated_images: list[dict[str, str]],
     images_provided: bool,
     deduplicate: bool,
+    defer_generation: bool,
     chunk_embeddings: list[ChunkEmbedding] | None,
     embedding_model: str,
     embedding_generation_enabled: bool = False,
     index_nodes: list[IndexNodeRow] | None = None,
     nodes_pending: bool = False,
     summary_pending: bool = False,
-) -> tuple[str, bool, bool]:
+) -> StoreOutcome:
     """Execute all store operations within an existing transaction.
 
     Performs the storage of a single context entry:
@@ -332,8 +372,9 @@ async def execute_store_in_transaction(
     2. Store author-group read grants on a fresh INSERT (when configured)
     3. Store/replace tags based on dedup outcome
     4. Store/replace images based on dedup outcome
-    5. Store embeddings (skip if dedup + embeddings already exist)
-    6. Track embedding_stored flag for response message parity
+    5. Store embeddings (skip if dedup + embeddings already exist) and node rows
+    6. Leave the generation job the entry of a deferring store needs
+    7. Read the entry's generation state for the response
 
     Args:
         repos: Repository container with context, tags, images, embeddings repos.
@@ -367,6 +408,13 @@ async def execute_store_in_transaction(
             updates the caller's identical latest entry of the thread and
             source instead of inserting a duplicate; False always inserts one
             new entry owned by the caller through insert_entry.
+        defer_generation: True when the caller generated nothing and leaves the
+            entry's outputs to the generation worker: a new entry receives a job;
+            an entry a retransmit deduplicated into keeps a waiting or running job,
+            has a failed job started over, and receives a job when it lacks
+            embeddings while an embedding provider is active or lacks a summary
+            its text gets. The caller passes True only while a generation provider
+            is active. The reconcile triggers below never fire for such a store.
         chunk_embeddings: Generated embeddings or None.
         embedding_model: Model name for embedding storage.
         embedding_generation_enabled: True when an embedding provider is
@@ -393,17 +441,15 @@ async def execute_store_in_transaction(
             summary outside the transaction and retry. Defaults to False.
 
     Returns:
-        Tuple of (context_id, was_updated, embedding_stored):
-        - context_id: ID of stored/updated entry
-        - was_updated: True if deduplication updated existing entry
-        - embedding_stored: True if embeddings were written to DB
+        The stored entry's id, whether deduplication updated an existing entry,
+        whether embeddings were written, and the entry's generation state.
 
     Raises:
         ToolError: If the store returns no context id.
-        EmbeddingsReconcileRequiredError: If the store inserted a new entry while
-            the caller's pre-check had skipped embedding generation, or (when
-            nodes_pending) node-summary generation; signals the caller to
-            regenerate the skipped legs outside the transaction and retry.
+        EmbeddingsReconcileRequiredError: If a store that does not defer generation
+            inserted a new entry while the caller's pre-check had skipped embedding
+            generation, or (when nodes_pending) node-summary generation; signals the
+            caller to regenerate the skipped legs outside the transaction and retry.
     """
     if deduplicate:
         context_id, was_updated = await repos.context.store_with_deduplication(
@@ -446,11 +492,17 @@ async def execute_store_in_transaction(
     # read happens after the hash check, so a commit between them poisons it).
     # Abort so the caller regenerates the skipped/reused legs OUTSIDE the
     # transaction and retries. The three reconcile triggers are decoupled so
-    # each leg is repaired regardless of which others are active.
+    # each leg is repaired regardless of which others are active. A deferring
+    # store generated nothing and skipped no leg: its new entry lacks every
+    # output until the generation worker writes them.
     needs_embedding_reconcile = embedding_generation_enabled and chunk_embeddings is None
     needs_node_reconcile = nodes_pending and index_nodes is None
     needs_summary_reconcile = summary_pending
-    if not was_updated and (needs_embedding_reconcile or needs_node_reconcile or needs_summary_reconcile):
+    if (
+        not defer_generation
+        and not was_updated
+        and (needs_embedding_reconcile or needs_node_reconcile or needs_summary_reconcile)
+    ):
         raise EmbeddingsReconcileRequiredError(text_content)
 
     # Heartbeat: keep connection alive between sequential operations
@@ -526,7 +578,78 @@ async def execute_store_in_transaction(
     if index_nodes is not None and (not was_updated or index_nodes):
         await repos.index_nodes.replace_nodes_for_context(context_id, index_nodes, txn=txn, scope=scope)
 
-    return context_id, was_updated, embedding_stored
+    if defer_generation:
+        await _leave_deferred_store_job(
+            repos, txn, context_id, inserted=not was_updated, text_content=text_content, scope=scope,
+        )
+
+    return StoreOutcome(
+        context_id=context_id,
+        was_updated=was_updated,
+        embedding_stored=embedding_stored,
+        generation_status=await repos.generation_jobs.state_for(context_id, txn=txn),
+    )
+
+
+async def _leave_deferred_store_job(
+    repos: 'RepositoryContainer',
+    txn: 'TransactionContext',
+    context_id: str,
+    *,
+    inserted: bool,
+    text_content: str,
+    scope: AccessScope,
+) -> None:
+    """Leave the generation job the entry of a deferring store needs.
+
+    A new entry receives a job. An entry a retransmit deduplicated into keeps a waiting
+    or running job, has a failed job replaced so its attempts start over, and receives a
+    job only when it lacks an output generation would produce.
+
+    Args:
+        repos: Repository container.
+        txn: The store's transaction.
+        context_id: The stored entry's id.
+        inserted: Whether the store inserted the entry.
+        text_content: The entry's text.
+        scope: The caller's scope.
+    """
+    jobs = repos.generation_jobs
+    if not inserted:
+        state = await jobs.state_for(context_id, txn=txn)
+        if state == 'pending':
+            return
+        if state == 'failed':
+            await jobs.delete_for_entry(context_id, txn=txn)
+        elif not await _outputs_missing(repos, txn, context_id, text_content=text_content, scope=scope):
+            return
+    await jobs.enqueue(context_id, txn=txn)
+
+
+async def _outputs_missing(
+    repos: 'RepositoryContainer',
+    txn: 'TransactionContext',
+    context_id: str,
+    *,
+    text_content: str,
+    scope: AccessScope,
+) -> bool:
+    """Report whether an entry lacks an output generation would produce for it now.
+
+    Args:
+        repos: Repository container.
+        txn: The open transaction.
+        context_id: The entry's id.
+        text_content: The entry's text.
+        scope: The caller's scope.
+
+    Returns:
+        True when an embedding provider is active and the entry holds no embeddings, or
+        its text gets a summary and the entry holds none.
+    """
+    if get_embedding_provider() is not None and not await repos.embeddings.exists(context_id, txn=txn, scope=scope):
+        return True
+    return summary_applies(text_content) and await repos.context.has_summary(context_id, scope=scope, txn=txn) is False
 
 
 async def execute_update_in_transaction(
@@ -548,7 +671,8 @@ async def execute_update_in_transaction(
     embedding_model: str,
     index_nodes: list[IndexNodeRow] | None = None,
     expected_version: int | None = None,
-) -> tuple[list[str], bool]:
+    defer_generation: bool,
+) -> UpdateOutcome:
     """Execute all update operations within an existing transaction.
 
     Performs a complete update of a single context entry as the caller. Every
@@ -564,6 +688,9 @@ async def execute_update_in_transaction(
        presence, and guarantee updated_at advanced for this update (a tags-only
        change writes no context_entries row of its own)
     6. Delete old + store new embeddings if text changed
+    7. Replace the entry's generation job if text changed: removed when the caller
+       generated the outputs, replaced by a new job when it defers generation
+    8. Read the entry's generation state for the response
 
     Args:
         repos: Repository container.
@@ -589,11 +716,16 @@ async def execute_update_in_transaction(
             rows untouched, an empty list clears them.
         expected_version: Optimistic-concurrency token captured before
             generation; None skips the compare-and-set.
+        defer_generation: True when the caller generated nothing for the new text and
+            leaves its outputs to the generation worker: the entry's job is replaced by
+            a new one, claimable after every job enqueued before it. The caller then
+            clears the summary and the node rows and passes no embeddings, so the stale
+            outputs go with the old text. Ignored when text is None. The caller passes
+            True only while a generation provider is active.
 
     Returns:
-        Tuple of (updated_fields, summary_cleared):
-        - updated_fields: List of field names that were updated
-        - summary_cleared: True if summary was cleared (for response message)
+        The names of the fields the update changed, whether it cleared the summary, and
+        the entry's generation state.
 
     Raises:
         EntryNotFoundError: If the target entry does not exist or the scope may no
@@ -774,7 +906,18 @@ async def execute_update_in_transaction(
     ):
         updated_fields.append('embedding')
 
-    return updated_fields, clear_summary
+    # A job belongs to the text it was enqueued for. New text either brought its outputs
+    # with it, which retires the job, or leaves them to a new job at the end of the queue.
+    if text is not None:
+        await repos.generation_jobs.delete_for_entry(context_id, txn=txn)
+        if defer_generation:
+            await repos.generation_jobs.enqueue(context_id, txn=txn)
+
+    return UpdateOutcome(
+        updated_fields=updated_fields,
+        summary_cleared=clear_summary,
+        generation_status=await repos.generation_jobs.state_for(context_id, txn=txn),
+    )
 
 
 async def write_generation_outputs(

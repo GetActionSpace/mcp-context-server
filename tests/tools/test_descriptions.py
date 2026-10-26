@@ -8,7 +8,9 @@ SQLite score note in the description hybrid_search_context serves,
 and the read-back tests pin that the full-text description and the
 return description of every other entry-carrying search and read tool
 name the visibility, is_owner and generation_status their results report,
-and that the get_statistics description names its generation block.
+and that the get_statistics description names its generation block. The write
+tool tests pin that every store and update tool names defer_generation and the
+generation_status its response reports.
 The sync tests pin what the corpus sync tools' served schemas tell a
 client: how to compute a manifest item's text digest, and no name of
 the server's own modules or constants.
@@ -31,6 +33,10 @@ from app.tools import list_ingest_state
 from app.tools import plan_context_sync
 from app.tools import register_tool
 from app.tools import search_context
+from app.tools import store_context
+from app.tools import store_context_batch
+from app.tools import update_context
+from app.tools import update_context_batch
 from app.tools.descriptions import _FTS_DESCRIPTION_TEMPLATE
 from app.tools.descriptions import _POSTGRESQL_MODE_DESCRIPTIONS
 from app.tools.descriptions import _SQLITE_MODE_DESCRIPTIONS
@@ -274,6 +280,37 @@ class TestDescriptionReadBack:
         assert 'generation (dict with pending' in returns
         assert 'and failed' in returns
         assert 'summary, node and generation figures count only the entries the caller may read' in description
+
+
+class TestWriteToolDescriptions:
+    """Every write tool tells a client how to defer generation and which generation state its response reports."""
+
+    @pytest.mark.parametrize(
+        'tool_function', [store_context, update_context, store_context_batch, update_context_batch],
+        ids=lambda function: function.__name__,
+    )
+    def test_served_description_names_deferral_and_the_generation_state(
+        self, tool_function: Callable[..., Awaitable[object]],
+    ) -> None:
+        tool = Tool.from_function(tool_function)
+        assert tool.description is not None
+        description = ' '.join(tool.description.split())
+        served = ' '.join(json.dumps({'description': tool.description, 'input': tool.parameters}).split())
+        assert 'defer_generation' in served
+        assert 'generation_status' in description
+        for state in ("'ready'", "'pending'", "'failed'"):
+            assert state in description
+
+    @pytest.mark.parametrize('tool_function', [store_context, update_context], ids=lambda function: function.__name__)
+    def test_the_parameter_states_both_modes(self, tool_function: Callable[..., Awaitable[object]]) -> None:
+        """The parameter's served description says what each value does and when pending turns ready or failed."""
+        tool = Tool.from_function(tool_function)
+        description = ' '.join(tool.parameters['properties']['defer_generation']['description'].split())
+        assert 'False (default)' in description
+        assert 'True:' in description
+        assert "'pending'" in description
+        assert "'ready'" in description
+        assert "'failed'" in description
 
 
 _INTERNAL_NAME = re.compile(r'\bapp\.|MAX_PLAN_DELETES|content_hash')

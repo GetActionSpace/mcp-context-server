@@ -393,6 +393,55 @@ class ContextReadMixin(BaseRepository):
             return await _get_content_type_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_read(_get_content_type_postgresql, access_scope=scope)
 
+    async def has_summary(
+        self,
+        context_id: str,
+        *,
+        scope: Scope,
+        txn: 'TransactionContext | None' = None,
+    ) -> bool | None:
+        """Report whether an entry the scope may modify holds a summary.
+
+        Args:
+            context_id: ID of the context entry.
+            scope: The caller's scope; an entry it may not modify reads as missing.
+            txn: Optional transaction context; the read then sees the transaction's own
+                writes, on its connection.
+
+        Returns:
+            True when the entry holds a summary, False when it holds none, or None if the
+            entry does not exist or the scope may not modify it.
+        """
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+        # The id binds first, the WRITE predicate next.
+        write = build_access_predicate(
+            scope, mode=AccessMode.WRITE, backend_type=backend_type, outer='context_entries', start=2,
+        )
+        entries = self._readable('context_entries', alias='context_entries')
+        query = (
+            f'SELECT summary IS NOT NULL AS has_summary FROM {entries} '
+            f'WHERE id = {self._placeholder(1)}{write.and_clause()}'
+        )
+        params: list[object] = [context_id, *write.params]
+
+        if backend_type == 'sqlite':
+
+            def _has_summary_sqlite(conn: sqlite3.Connection) -> bool | None:
+                row = conn.execute(query, tuple(params)).fetchone()
+                return None if row is None else bool(row['has_summary'])
+
+            if txn is not None:
+                return await self._run_sqlite_txn(_has_summary_sqlite, cast(sqlite3.Connection, txn.connection))
+            return await self.backend.execute_read(_has_summary_sqlite, access_scope=scope)
+
+        async def _has_summary_postgresql(conn: 'asyncpg.Connection') -> bool | None:
+            row = await conn.fetchrow(query, *params)
+            return None if row is None else bool(row['has_summary'])
+
+        if txn is not None:
+            return await _has_summary_postgresql(cast('asyncpg.Connection', txn.connection))
+        return await self.backend.execute_read(_has_summary_postgresql, access_scope=scope)
+
     async def find_ids_by_prefix(self, prefix: str, limit: int = 2, *, scope: Scope) -> list[str]:
         """Find the IDs of entries the scope may read that begin with the given prefix.
 

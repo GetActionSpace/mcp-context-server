@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tests.tools._generation_jobs import NoGenerationJobs
+from tests.tools._generation_jobs import InMemoryGenerationJobs
 
 
 class TestSearchModesUsedSemantics:
@@ -333,7 +333,7 @@ class TestHybridPartialDegradationResponse:
         repos = MagicMock()
         repos.tags = MagicMock()
         repos.tags.get_tags_for_context = AsyncMock(return_value=[])
-        repos.generation_jobs = NoGenerationJobs()
+        repos.generation_jobs = InMemoryGenerationJobs()
         return repos
 
     @pytest.mark.asyncio

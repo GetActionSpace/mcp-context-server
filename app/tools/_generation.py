@@ -647,6 +647,32 @@ def node_layer_active() -> bool:
     return settings.index_tree.node_summaries_enabled and get_summary_provider() is not None
 
 
+def generation_active() -> bool:
+    """Whether an embedding or a summary provider is active, so an entry has outputs to generate.
+
+    The generation worker starts on the same condition, so a write that defers generation
+    leaves a job only when a worker will run it.
+
+    Returns:
+        True when an embedding provider or a summary provider is configured.
+    """
+    return get_embedding_provider() is not None or get_summary_provider() is not None
+
+
+def summary_applies(text: str) -> bool:
+    """Whether a summary is generated for ``text``.
+
+    Args:
+        text: The entry's stored text.
+
+    Returns:
+        True when a summary provider is configured and the text is at least
+        ``SUMMARY_MIN_CONTENT_LENGTH`` characters long (a minimum of 0 admits every text).
+    """
+    min_length = settings.summary.min_content_length
+    return get_summary_provider() is not None and not (min_length > 0 and len(text) < min_length)
+
+
 async def embed_then_compress(text: str) -> list[ChunkEmbedding] | None:
     """Generate embeddings then compress them, as ONE abort-mandatory leg.
 

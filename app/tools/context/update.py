@@ -26,6 +26,8 @@ from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
 from app.startup import get_summary_provider
+from app.startup import notify_generation_worker
+from app.tools._generation import generation_active
 from app.tools._generation import run_generation
 from app.tools._responses import build_update_response_message
 from app.tools._transactions import EntryNotAuthorizedError
@@ -87,6 +89,17 @@ async def update_context(
             'may require a configured role.',
         ),
     ] = None,
+    defer_generation: Annotated[
+        bool,
+        Field(
+            description='Applies only when text is given. False (default): embeddings, the summary '
+            'and the section summaries are regenerated before the update is applied, and a '
+            'generation failure changes nothing. True: the new text is stored at once, its old '
+            'embeddings, summary and section summaries are removed, and a background job generates '
+            "new ones; the response's generation_status is 'pending' until the job writes them "
+            "('ready'), or 'failed' once its retries are exhausted.",
+        ),
+    ] = False,
 ) -> UpdateContextSuccessDict:
     """Update an existing context entry.
 
@@ -102,6 +115,15 @@ async def update_context(
 
     Tags and images use REPLACEMENT semantics (not merge).
 
+    Generation: a text change regenerates the entry's embeddings, summary and section
+    summaries before the update is applied, unless defer_generation=True, which stores the
+    new text at once, removes the outputs of the old text, and leaves the new ones to a
+    background job; semantic search finds the entry again once the job has written its
+    embeddings. An update without text generates nothing and leaves any job as it is. The
+    response's generation_status is 'ready' when the entry's generated outputs are complete,
+    'pending' while its generation job waits or runs, and 'failed' once the job exhausted
+    its retries.
+
     Authorization:
     - The owner and any principal holding a write grant on the entry may change
       text, metadata, tags and images.
@@ -112,7 +134,8 @@ async def update_context(
       modify is refused with "Not authorized to modify context entry with ID {id}".
 
     Returns:
-        UpdateContextSuccessDict with success, context_id, updated_fields, message fields.
+        UpdateContextSuccessDict with success, context_id, updated_fields, message and
+        generation_status fields.
 
     Raises:
         ToolError: If validation fails, embedding generation fails, entry not found,
@@ -234,7 +257,12 @@ async def update_context(
 
         # === PHASE 2: Generate Summary + Embedding FIRST (Outside Transaction) ===
         # CRITICAL: All generation happens BEFORE any database modification.
-        # If an abort-mandatory step fails, NO data is modified.
+        # If an abort-mandatory step fails, NO data is modified. A deferring text update
+        # generates nothing: the transaction removes the old text's outputs and replaces the
+        # entry's job, and the generation worker writes the new outputs after the commit.
+        # Without an active provider there is nothing to defer, and the update is the plain
+        # update.
+        defer = defer_generation and text is not None and generation_active()
         chunk_embeddings: list[ChunkEmbedding] | None = None
         embedding_generated = False
         summary_text: str | None = None
@@ -244,7 +272,10 @@ async def update_context(
         # unchanged); recomputed only when text changes (below).
         index_nodes: list[IndexNodeRow] | None = None
 
-        if text is not None:
+        if defer:
+            clear_summary = True
+            index_nodes = []
+        elif text is not None:
             # Text changed -> regenerate embeddings, summary, and node summaries.
             # The embedding->compression leg overlaps the flat-summary->nodes leg
             # (see run_generation); a node-summary failure never aborts the update.
@@ -299,7 +330,6 @@ async def update_context(
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
-        updated_fields: list[str] = []
 
         max_retries = 2
         attempt = 0
@@ -309,7 +339,7 @@ async def update_context(
         while True:
             try:
                 async with backend.begin_transaction(access_scope=scope) as txn:
-                    updated_fields, _ = await execute_update_in_transaction(
+                    outcome = await execute_update_in_transaction(
                         repos, txn,
                         context_id=context_id,
                         scope=scope,
@@ -326,6 +356,7 @@ async def update_context(
                         embedding_model=settings.embedding.model,
                         index_nodes=index_nodes,
                         expected_version=expected_version,
+                        defer_generation=defer,
                     )
 
                 # Transaction committed -- break retry loop
@@ -386,20 +417,25 @@ async def update_context(
                     continue
                 raise  # Non-connection error or max retries exceeded
 
-        logger.info(f'Successfully updated context {context_id}, fields: {updated_fields}')
+        if defer:
+            notify_generation_worker()
+
+        logger.info(f'Successfully updated context {context_id}, fields: {outcome.updated_fields}')
 
         message = build_update_response_message(
-            updated_fields_count=len(updated_fields),
+            updated_fields_count=len(outcome.updated_fields),
             embedding_generated=embedding_generated,
             summary_generated=summary_generated,
             summary_cleared=clear_summary,
+            generation_status=outcome.generation_status,
         )
 
         return UpdateContextSuccessDict(
             success=True,
             context_id=context_id,
-            updated_fields=updated_fields,
+            updated_fields=outcome.updated_fields,
             message=message,
+            generation_status=outcome.generation_status,
         )
 
     except ToolError:

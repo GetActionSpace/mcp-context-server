@@ -52,6 +52,7 @@ from app.repositories import RepositoryContainer
 from app.repositories.context_repository.records import EntryProbe
 from app.repositories.context_repository.records import VersionConflictError
 from app.schemas import load_schema
+from app.tools._transactions import UpdateOutcome
 from app.tools.batch.update import update_context_batch
 from tests.helpers import LOCAL_SCOPE
 
@@ -359,7 +360,7 @@ class TestBatchVersionGuard:
 
         attempts = {'count': 0}
 
-        async def always_conflict(*_args: object, **_kwargs: object) -> tuple[list[str], bool]:
+        async def always_conflict(*_args: object, **_kwargs: object) -> UpdateOutcome:
             attempts['count'] += 1
             raise VersionConflictError(entry_id)
 
@@ -506,11 +507,11 @@ class TestBatchVersionGuard:
                 raise asyncpg.InterfaceError('connection recycled by the pooler')
             return EntryProbe(True, 'agent', 3, 'local', True)
 
-        async def conflict_once(*_args: object, **kwargs: object) -> tuple[list[str], bool]:
+        async def conflict_once(*_args: object, **kwargs: object) -> UpdateOutcome:
             versions_seen.append(cast('int | None', kwargs.get('expected_version')))
             if len(versions_seen) == 1:
                 raise VersionConflictError(entry_id)
-            return ['metadata'], False
+            return UpdateOutcome(['metadata'], False, 'ready')
 
         with (
             patch('app.tools.batch.update.ensure_repositories', return_value=repos),
@@ -560,7 +561,7 @@ class TestBatchVersionGuard:
             repos_arg: RepositoryContainer,
             txn: TransactionContext,
             **_kwargs: object,
-        ) -> tuple[list[str], bool]:
+        ) -> UpdateOutcome:
             await repos_arg.context.delete_by_ids([entry_id], scope=LOCAL_SCOPE, txn=txn)
             raise VersionConflictError(entry_id)
 
@@ -609,7 +610,7 @@ class TestBatchVersionGuard:
             _repos_arg: RepositoryContainer,
             txn: TransactionContext,
             **_kwargs: object,
-        ) -> tuple[list[str], bool]:
+        ) -> UpdateOutcome:
             conn = cast(sqlite3.Connection, txn.connection)
             conn.execute("UPDATE context_entries SET owner_id = 'alice' WHERE id = ?", (entry_id,))
             raise VersionConflictError(entry_id)
