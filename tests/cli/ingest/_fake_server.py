@@ -293,7 +293,9 @@ class FakeServer:
             if error is None:
                 error = self.failing_sources.get(cast('str', cast('Json', block)['source_id']))
             if error is not None:
-                results.append({'index': index, 'success': False, 'context_id': None, 'error': error})
+                results.append({
+                    'index': index, 'success': False, 'context_id': None, 'error': error, 'generation_status': None,
+                })
                 continue
             context_id = self.seed(
                 thread_id=cast('str', entry['thread_id']),
@@ -302,7 +304,9 @@ class FakeServer:
                 visibility=cast('str', entry['visibility']),
                 tags=cast('list[str]', entry['tags']),
             )
-            results.append({'index': index, 'success': True, 'context_id': context_id, 'error': None})
+            results.append({
+                'index': index, 'success': True, 'context_id': context_id, 'error': None, 'generation_status': 'ready',
+            })
         return _batch_response(results, 'Stored', reverse=self.reverse_results)
 
     def _update(self, updates: list[Json]) -> Json:
@@ -318,6 +322,7 @@ class FakeServer:
             if entry is None or error is not None:
                 results.append({
                     'index': index, 'context_id': context_id, 'success': False, 'updated_fields': None, 'error': error,
+                    'generation_status': None,
                 })
                 continue
             if 'text' in update:
@@ -331,6 +336,7 @@ class FakeServer:
             fields = [name for name in ('text', 'metadata', 'tags', 'visibility') if name in update]
             results.append({
                 'index': index, 'context_id': context_id, 'success': True, 'updated_fields': fields, 'error': None,
+                'generation_status': 'ready',
             })
         return _batch_response(results, 'Updated', reverse=self.reverse_results)
 

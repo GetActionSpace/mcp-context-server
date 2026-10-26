@@ -184,7 +184,9 @@ class TestCreates:
         write_document(tmp_path, 'b.md', 'beta')
         server.answer_next(STORE, {
             'success': True, 'total': 2, 'succeeded': 1, 'failed': 0, 'message': 'Stored 1',
-            'results': [{'index': 0, 'success': True, 'context_id': '0190' + '0' * 28, 'error': None}],
+            'results': [{
+                'index': 0, 'success': True, 'context_id': '0190' + '0' * 28, 'error': None, 'generation_status': 'ready',
+            }],
         })
 
         report = await sync_directory(server, tmp_path)
