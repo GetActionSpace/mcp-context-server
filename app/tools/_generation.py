@@ -215,13 +215,11 @@ async def generate_embeddings_with_timeout(text: str) -> list[ChunkEmbedding] | 
             # RecursiveCharacterTextSplitter.create_documents) is pure CPU over
             # unbounded entry text and is EXPENSIVE per character -- roughly a
             # microsecond each, so a plain 1MB document costs the better part of a
-            # second. Gating on a large fixed character threshold left exactly that
-            # case running inline on the event loop. The real cost switch is the
-            # splitter's own fast path: at or below chunk_size split_text returns
-            # immediately (one chunk, no recursion), and above it the recursive
-            # split runs in full. Offload precisely when that recursion happens --
-            # the thread hop is negligible next to the provider round trip this leg
-            # is about to await anyway.
+            # second. The cost switch is the splitter's own fast path: at or below
+            # chunk_size split_text returns immediately (one chunk, no recursion),
+            # and above it the recursive split runs in full. Offload precisely when
+            # that recursion happens -- the thread hop is negligible next to the
+            # provider round trip this leg is about to await anyway.
             if len(text) > chunking_service.chunk_size:
                 chunks = await asyncio.to_thread(chunking_service.split_text, text)
             else:
