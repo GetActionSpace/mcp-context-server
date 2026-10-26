@@ -3,8 +3,9 @@
 Holds the optimistic-concurrency ``VersionConflictError``, the explicit
 ``CONTEXT_ENTRY_COLUMNS`` select list with its ``entry_columns`` renderer, the
 ``EntryProbe``, ``IdAccess`` and ``DuplicateCandidate`` result tuples, the
-``GrepScanRow`` record of the grep pre-filter scan, and the ``IngestRow`` record
-of an ingest-managed entry.
+``GrepScanRow`` record of the grep pre-filter scan, the ``IngestRow`` record of
+an ingest-managed entry, and the ``GenerationSource`` record of an entry whose
+outputs are being generated.
 """
 
 from dataclasses import dataclass
@@ -141,3 +142,26 @@ class IngestRow:
     block: object
     content_hash: str | None
     is_owner: bool
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationSource:
+    """What the generation of one entry reads: its text, and which outputs it already holds.
+
+    Attributes:
+        text_content: The entry's text; an empty string when none is stored.
+        source: The entry's source, 'user' or 'agent'.
+        content_hash: The stored hash of the text, which a completion is guarded on; None
+            for an entry stored before content hashes existed.
+        has_summary: Whether the entry stores a summary.
+        has_embeddings: Whether the entry stores embeddings.
+        node_count: The index-tree node rows the entry stores; 0 when node summaries were
+            never provisioned.
+    """
+
+    text_content: str
+    source: str
+    content_hash: str | None
+    has_summary: bool
+    has_embeddings: bool
+    node_count: int
