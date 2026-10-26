@@ -17,6 +17,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 import app.generation_jobs.executor as executor
+import app.tools._generation as generation_module
 from app.cli._generation_drain import DrainReport
 from app.cli._generation_drain import JobCounts
 from app.cli._generation_drain import count_generation_jobs
@@ -58,7 +59,7 @@ class DrainGeneration:
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Activate the embedding and summary legs and make this recorder the executor's generation."""
         monkeypatch.setattr(executor, 'get_embedding_provider', MagicMock)
-        monkeypatch.setattr(executor, 'get_summary_provider', MagicMock)
+        monkeypatch.setattr(generation_module, 'get_summary_provider', MagicMock)
         monkeypatch.setattr(executor, 'node_layer_active', lambda: False)
         monkeypatch.setattr(executor, 'run_generation', self)
 
