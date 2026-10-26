@@ -297,13 +297,13 @@ Steps:
 
 1. **Stop the server** and **back up the database** (`--re-embed` deletes and rewrites every embedding).
 2. **Set the new `EMBEDDING_MODEL`** in the environment, leaving `EMBEDDING_DIM` unchanged, and ensure `ENABLE_EMBEDDING_GENERATION=true`.
-3. **Preview** with `--dry-run` -- it reports how many entries will be re-embedded and the existing model(s) being replaced, without calling the provider:
+3. **Preview** with `--dry-run` -- it reports how many entries will be re-embedded, the pending and failed generation jobs of deferred writes the command completes first, and the existing model(s) being replaced, without calling a provider:
 
    ```bash
    mcp-context-server-migrate --source-url sqlite:////path/to/db.sqlite --re-embed --dry-run
    ```
 
-4. **Execute** by re-running without `--dry-run`. Each entry's delete + regenerate runs inside one transaction, so an entry is never left without embeddings. On a compressed database the new payloads land in `vec_context_embeddings_compressed`; on an fp32 database they land in `vec_context_embeddings`.
+4. **Execute** by re-running without `--dry-run`. The outstanding generation jobs are completed first (see [Completing deferred generation jobs](embedding-compression.md#completing-deferred-generation-jobs)); an entry whose job remains is not re-embedded. Each entry's delete + regenerate runs inside one transaction, so an entry is never left without embeddings. On a compressed database the new payloads land in `vec_context_embeddings_compressed`; on an fp32 database they land in `vec_context_embeddings`.
 5. **Restart the server** with the new `EMBEDDING_MODEL` (and the same `COMPRESSION_*` values, if compression is enabled).
 
 `--re-embed` requires `ENABLE_EMBEDDING_GENERATION=true`, is mutually exclusive with `--compress` / `--decompress`, and supersedes `--embed-missing`. Related: the `--embed-missing` flag now refuses to backfill into a database whose existing embeddings use a different model or dimension than the configured values (mixing embedding spaces would corrupt semantic search); it points you here when it detects a model change.
