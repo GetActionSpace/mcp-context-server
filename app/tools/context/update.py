@@ -32,9 +32,9 @@ from app.tools._generation import run_generation
 from app.tools._responses import build_update_response_message
 from app.tools._transactions import EntryNotAuthorizedError
 from app.tools._transactions import EntryNotFoundError
-from app.tools._transactions import execute_update_in_transaction
 from app.tools._transactions import is_connection_error
 from app.tools._transactions import reread_entry_version
+from app.tools._update_transaction import execute_update_in_transaction
 from app.tools._validation import reject_invalid_indexed_values
 from app.tools._validation import reject_invalid_ingest_block
 from app.tools._validation import reject_oversized_tags

@@ -30,10 +30,10 @@ from app.tools._generation import generate_summary_with_timeout
 from app.tools._generation import generation_active
 from app.tools._responses import build_batch_update_response_message
 from app.tools._transactions import EntryNotFoundError
-from app.tools._transactions import execute_update_in_transaction
 from app.tools._transactions import is_connection_error
 from app.tools._transactions import reread_entry_version
 from app.tools._transactions import transaction_heartbeat
+from app.tools._update_transaction import execute_update_in_transaction
 from app.tools.batch.entry_validation import validate_update_entry
 from app.tools.batch.update_access import authorize_updates
 from app.tools.batch.update_access import reraise_disambiguated_cas_conflict

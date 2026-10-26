@@ -121,10 +121,10 @@ _GRANTS = _REPO + 'grant_repository:GrantRepository.'
 _JOBS = _REPO + 'generation_job_repository:GenerationJobRepository.'
 _GENERATION = _REPO + 'context_repository.generation:ContextGenerationMixin.'
 
-_STORE_TX = 'tools/_transactions.py:execute_store_in_transaction'
-_UPDATE_TX = 'tools/_transactions.py:execute_update_in_transaction'
+_STORE_TX = 'tools/_store_transaction.py:execute_store_in_transaction'
+_UPDATE_TX = 'tools/_update_transaction.py:execute_update_in_transaction'
 _OUTPUTS = 'tools/_transactions.py:write_generation_outputs'
-_STORE_JOB = 'tools/_transactions.py:_leave_deferred_store_job'
+_STORE_JOB = 'tools/_store_transaction.py:_leave_deferred_store_job'
 _CHUNK_WRITES = 'repositories/embedding_repository/chunk_writes.py:ChunkWriteMixin.'
 _REEMBED = 'cli/migrate_reembed.py:_reembed_async'
 _RESULT_HYDRATORS = (
@@ -246,7 +246,7 @@ REGISTRY: dict[str, Entry] = {
     _INVENTORY + 'exists': _child(
         Seam.CHILD_BY_TRUSTED_ID,
         _STORE_TX, 'tools/batch/store.py:store_context_batch', 'tools/context/store.py:store_context',
-        'tools/_transactions.py:_outputs_missing',
+        'tools/_store_transaction.py:_outputs_missing',
         receiver='embeddings',
     ),
     # Child writers behind the write gate or the owned dedup.

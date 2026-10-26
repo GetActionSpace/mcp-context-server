@@ -34,8 +34,8 @@ from app.tools._generation import generation_active
 from app.tools._generation import node_layer_active
 from app.tools._generation import run_generation
 from app.tools._responses import build_store_response_message
+from app.tools._store_transaction import execute_store_in_transaction
 from app.tools._transactions import EmbeddingsReconcileRequiredError
-from app.tools._transactions import execute_store_in_transaction
 from app.tools._transactions import is_connection_error
 from app.tools._validation import reject_invalid_indexed_values
 from app.tools._validation import reject_invalid_ingest_block

@@ -24,8 +24,8 @@ from app.repositories.context_repository.records import VersionConflictError
 from app.startup import ensure_repositories
 from app.tools import store_context
 from app.tools import update_context
-from app.tools._transactions import UpdateOutcome
-from app.tools._transactions import execute_update_in_transaction
+from app.tools._update_transaction import UpdateOutcome
+from app.tools._update_transaction import execute_update_in_transaction
 from tests.tools._generation_jobs import seed_generation_jobs
 from tests.tools._generation_jobs import stored_jobs
 

@@ -101,11 +101,11 @@ GRANT_INSERT = re.compile(r'INSERT INTO context_entry_grants\s*\((?P<columns>[^)
 SCOPE_CARRYING_HELPERS = (
     'app.tools.search.legs:semantic_search_raw',
     'app.tools.search.legs:fts_search_raw',
-    'app.tools._transactions:execute_store_in_transaction',
-    'app.tools._transactions:execute_update_in_transaction',
+    'app.tools._store_transaction:execute_store_in_transaction',
+    'app.tools._store_transaction:_leave_deferred_store_job',
+    'app.tools._store_transaction:_outputs_missing',
+    'app.tools._update_transaction:execute_update_in_transaction',
     'app.tools._transactions:reread_entry_version',
-    'app.tools._transactions:_leave_deferred_store_job',
-    'app.tools._transactions:_outputs_missing',
     'app.tools._delete_cleanup:delete_entries_with_cleanup',
     'app.tools._delete_cleanup:cleanup_embeddings_for_delete',
     'app.tools.sharing:_run_owned_grant_change',
@@ -489,7 +489,7 @@ def test_child_reader_and_writer_sites_are_pinned(key: str) -> None:
 # the entry of the job it claimed.
 GENERATION_OUTPUT_WRITER = 'write_generation_outputs'
 GENERATION_OUTPUT_WRITER_SITES = (
-    'tools/_transactions.py:execute_update_in_transaction',
+    'tools/_update_transaction.py:execute_update_in_transaction',
     'generation_jobs/executor.py:_complete',
 )
 

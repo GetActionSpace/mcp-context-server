@@ -1,4 +1,4 @@
-"""Tests for execute_store_in_transaction in app.tools._transactions."""
+"""Tests for execute_store_in_transaction in app.tools._store_transaction."""
 
 from typing import cast
 from unittest.mock import AsyncMock
@@ -10,9 +10,9 @@ from fastmcp.exceptions import ToolError
 from app.access_scope import AccessScope
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
+from app.tools._store_transaction import StoreOutcome
+from app.tools._store_transaction import execute_store_in_transaction
 from app.tools._transactions import EmbeddingsReconcileRequiredError
-from app.tools._transactions import StoreOutcome
-from app.tools._transactions import execute_store_in_transaction
 from tests.helpers import LOCAL_SCOPE
 from tests.tools._generation_jobs import InMemoryGenerationJobs
 

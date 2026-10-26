@@ -52,7 +52,7 @@ from app.repositories import RepositoryContainer
 from app.repositories.context_repository.records import EntryProbe
 from app.repositories.context_repository.records import VersionConflictError
 from app.schemas import load_schema
-from app.tools._transactions import UpdateOutcome
+from app.tools._update_transaction import UpdateOutcome
 from app.tools.batch.update import update_context_batch
 from tests.helpers import LOCAL_SCOPE
 

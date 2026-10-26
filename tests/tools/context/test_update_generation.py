@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 import app.tools
-from app.tools._transactions import UpdateOutcome
+from app.tools._update_transaction import UpdateOutcome
 
 if TYPE_CHECKING:
     from app.settings import AppSettings

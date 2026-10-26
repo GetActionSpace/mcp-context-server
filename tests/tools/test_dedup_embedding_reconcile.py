@@ -26,8 +26,8 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 from app.repositories.context_repository.records import DuplicateCandidate
+from app.tools._store_transaction import StoreOutcome
 from app.tools._transactions import EmbeddingsReconcileRequiredError
-from app.tools._transactions import StoreOutcome
 
 
 def _make_mock_txn() -> tuple[MagicMock, object]:
@@ -540,7 +540,7 @@ class TestNoReconcileWithoutDeduplication:
     @pytest.mark.asyncio
     async def test_single_store_inserts_once(self) -> None:
         """store_context runs one transaction that inserts; the reconcile regeneration never runs."""
-        from app.tools._transactions import execute_store_in_transaction
+        from app.tools._store_transaction import execute_store_in_transaction
         from app.tools.context.store import store_context
 
         _, mock_begin_transaction = _make_mock_txn()
@@ -583,7 +583,7 @@ class TestNoReconcileWithoutDeduplication:
     @pytest.mark.parametrize('atomic', [True, False])
     async def test_batch_store_inserts_once(self, atomic: bool) -> None:
         """store_context_batch runs one store per entry that inserts; the reconcile regeneration never runs."""
-        from app.tools._transactions import execute_store_in_transaction
+        from app.tools._store_transaction import execute_store_in_transaction
         from app.tools.batch.store import store_context_batch
 
         _, mock_begin_transaction = _make_mock_txn()

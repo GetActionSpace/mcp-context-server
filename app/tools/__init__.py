@@ -21,8 +21,11 @@ This package contains all MCP tool functions, organized by domain:
   limits, image validation and normalization) (not re-exported)
 - _generation.py: Embedding, compression, summary, and index_tree node generation with timeout,
   run outside the transaction (not re-exported)
-- _transactions.py: Store and update transaction execution, transaction heartbeat, and
-  connection error classification (not re-exported)
+- _store_transaction.py: The database writes of one store inside its transaction (not re-exported)
+- _update_transaction.py: The database writes of one update inside its transaction (not re-exported)
+- _transactions.py: The control-flow exceptions of the write paths, transaction heartbeat, connection
+  error classification, the compare-and-set version re-read, and the writer of generated outputs
+  (not re-exported)
 - _delete_cleanup.py: Entry deletion with the explicit embedding cleanup (not re-exported)
 - _responses.py: Store and update response message builders (not re-exported)
 

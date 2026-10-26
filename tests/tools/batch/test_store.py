@@ -10,7 +10,7 @@ from fastmcp.exceptions import ToolError
 
 from app.access_scope import AccessScope
 from app.repositories.context_repository.records import DuplicateCandidate
-from app.tools._transactions import StoreOutcome
+from app.tools._store_transaction import StoreOutcome
 from app.tools.discovery import get_statistics
 from tests.helpers import as_principal
 from tests.tools._read_only import read_only_caller

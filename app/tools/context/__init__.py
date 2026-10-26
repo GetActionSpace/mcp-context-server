@@ -23,7 +23,9 @@ never aborts the store. Only when both abort-mandatory legs succeed do ALL datab
 operations occur in a SINGLE atomic transaction.
 
 Infrastructure shared with the batch tools in app/tools/batch/ lives in single-purpose modules: embedding/summary generation in
-app.tools._generation, transaction execution, heartbeat, and connection error classification in
-app.tools._transactions, input and image validation in app.tools._validation, delete-path embedding
-cleanup in app.tools._delete_cleanup, and response message builders in app.tools._responses.
+app.tools._generation, the store and update transactions in app.tools._store_transaction and
+app.tools._update_transaction, the heartbeat, connection error classification and control-flow
+exceptions they share in app.tools._transactions, input and image validation in app.tools._validation,
+delete-path embedding cleanup in app.tools._delete_cleanup, and response message builders in
+app.tools._responses.
 """

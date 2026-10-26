@@ -18,7 +18,7 @@ import pytest
 import app.startup
 from app.backends.base import MAINTENANCE
 from app.startup import ensure_repositories
-from app.tools._transactions import execute_update_in_transaction
+from app.tools._update_transaction import execute_update_in_transaction
 from app.tools.batch.update import update_context_batch
 from app.tools.context.store import store_context
 from tests.tools._generation_jobs import seed_generation_jobs

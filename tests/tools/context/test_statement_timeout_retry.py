@@ -15,8 +15,8 @@ import pytest
 
 from app.backends.base import BackendAccess
 from app.repositories.context_repository.records import EntryProbe
-from app.tools._transactions import StoreOutcome
-from app.tools._transactions import UpdateOutcome
+from app.tools._store_transaction import StoreOutcome
+from app.tools._update_transaction import UpdateOutcome
 from app.tools.context.store import store_context
 from app.tools.context.update import update_context
 
