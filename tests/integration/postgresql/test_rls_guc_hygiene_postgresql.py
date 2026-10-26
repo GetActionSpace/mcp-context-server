@@ -35,7 +35,7 @@ from tests.integration.postgresql._rls_matrix import MATRIX_VISIBILITY
 from tests.integration.postgresql._rls_matrix import PUBLIC_ROWS
 from tests.integration.postgresql._rls_matrix import labels
 from tests.integration.postgresql._rls_matrix import rls_matrix_db
-from tests.integration.postgresql.conftest import RlsUrls
+from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import ScopedDb
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]

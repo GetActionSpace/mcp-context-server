@@ -63,7 +63,7 @@ from tests.integration.postgresql._rls_catalog import view_columns
 from tests.integration.postgresql._rls_matrix import POLICY_ROLE
 from tests.integration.postgresql._rls_matrix import REQUEST_ROLE
 from tests.integration.postgresql._rls_matrix import rls_settings
-from tests.integration.postgresql.conftest import RlsUrls
+from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import Layout
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]

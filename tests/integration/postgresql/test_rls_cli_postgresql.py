@@ -44,7 +44,7 @@ from tests.integration.postgresql._rls_catalog import configure_rls_layout
 from tests.integration.postgresql._rls_catalog import maintenance_backend
 from tests.integration.postgresql._rls_catalog import object_oids
 from tests.integration.postgresql._rls_catalog import row_security
-from tests.integration.postgresql.conftest import RlsUrls
+from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import Layout
 from tests.repositories._access_scope_cases import ScopedDb
 

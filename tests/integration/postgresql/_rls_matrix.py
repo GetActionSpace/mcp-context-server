@@ -33,7 +33,7 @@ from app.migrations import apply_request_role_grants
 from app.migrations import apply_rls
 from app.settings import AppSettings
 from app.settings import get_settings
-from tests.integration.postgresql.conftest import RlsUrls
+from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import OWNED
 from tests.repositories._access_scope_cases import READABLE
 from tests.repositories._access_scope_cases import SCOPES

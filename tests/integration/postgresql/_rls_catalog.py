@@ -28,7 +28,7 @@ from app.backends import StorageBackend
 from app.backends import create_maintenance_backend
 from app.settings import AppSettings
 from tests.integration.postgresql._rls_matrix import rls_settings
-from tests.integration.postgresql.conftest import RlsUrls
+from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import Layout
 from tests.repositories._access_scope_layouts import configure_postgresql_layout
 

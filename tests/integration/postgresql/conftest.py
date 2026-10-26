@@ -46,6 +46,7 @@ import pytest
 import pytest_asyncio
 
 from tests.helpers import RlsCredentials
+from tests.integration.postgresql._rls_urls import RlsUrls
 
 COMPOSE_FILE = Path(__file__).parent / 'docker-compose.test.yml'
 
@@ -366,26 +367,6 @@ async def pg_non_default_schema_db(pg_test_url: str) -> AsyncIterator[str]:
             await admin.execute(f'DROP DATABASE IF EXISTS {db_name}')
     finally:
         await admin.close()
-
-
-@dataclass(frozen=True, slots=True)
-class RlsUrls:
-    """Connection strings of one row-level security test database, one per role.
-
-    Attributes:
-        admin: ``mcp_test``, the bootstrap superuser: database administration and the
-            oracle channel that reads every row whatever the policies say.
-        maintenance: ``mcp_owner``, the non-superuser login role that owns the database
-            and therefore every table the maintenance backend creates in it.
-        app: ``mcp_app``, the request login role, an inheriting member of the policy role
-            ``mcp_context_request``.
-        outsider: ``mcp_outsider``, a login role that is a member of no role.
-    """
-
-    admin: str
-    maintenance: str
-    app: str
-    outsider: str
 
 
 _RLS_DATABASE = 'mcp_rls'

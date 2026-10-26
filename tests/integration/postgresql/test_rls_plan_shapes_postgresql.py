@@ -57,7 +57,7 @@ from tests.helpers import rebind_package_settings
 from tests.integration.postgresql._rls_matrix import REQUEST_ROLE
 from tests.integration.postgresql._rls_matrix import rls_matrix_db
 from tests.integration.postgresql._rls_profiles import PinnedIdentityProfile
-from tests.integration.postgresql.conftest import RlsUrls
+from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import ScopedDb
 from tests.repositories._access_scope_cases import Visibility
 from tests.repositories._access_scope_cases import vector_at

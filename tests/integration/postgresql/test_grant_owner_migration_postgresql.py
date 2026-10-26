@@ -40,7 +40,7 @@ from tests.integration.postgresql._rls_catalog import ddl_log
 from tests.integration.postgresql._rls_catalog import install_ddl_log
 from tests.integration.postgresql._rls_catalog import maintenance_backend
 from tests.integration.postgresql._rls_matrix import REQUEST_ROLE
-from tests.integration.postgresql.conftest import RlsUrls
+from tests.integration.postgresql._rls_urls import RlsUrls
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 

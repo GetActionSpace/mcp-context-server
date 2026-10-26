@@ -43,8 +43,8 @@ from tests.integration._http_jwt import wait_for_health
 from tests.integration.postgresql._rls_catalog import configure_rls_layout
 from tests.integration.postgresql._rls_catalog import maintenance_backend
 from tests.integration.postgresql._rls_catalog import view_acl
+from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.integration.postgresql.conftest import RLS_CREDENTIALS
-from tests.integration.postgresql.conftest import RlsUrls
 from tests.integration.postgresql.conftest import login_url
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]

@@ -40,8 +40,8 @@ from tests.integration._ollama_stub import OllamaStub
 from tests.integration._ollama_stub import serve_ollama_embeddings
 from tests.integration._ollama_stub import stub_generation_env
 from tests.integration.postgresql._rls_catalog import assert_served_with_row_level_security
+from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.integration.postgresql.conftest import RLS_CREDENTIALS
-from tests.integration.postgresql.conftest import RlsUrls
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 

@@ -43,7 +43,7 @@ from tests.integration.postgresql._rls_matrix import labels
 from tests.integration.postgresql._rls_matrix import policy_visibility
 from tests.integration.postgresql._rls_matrix import rls_matrix_db
 from tests.integration.postgresql._rls_matrix import scoped_transaction
-from tests.integration.postgresql.conftest import RlsUrls
+from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import SCOPES
 from tests.repositories._access_scope_cases import SEED_ROWS
 from tests.repositories._access_scope_cases import Grant

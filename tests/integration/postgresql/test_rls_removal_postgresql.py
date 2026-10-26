@@ -34,7 +34,7 @@ from tests.integration.postgresql._rls_catalog import object_oids
 from tests.integration.postgresql._rls_catalog import policies
 from tests.integration.postgresql._rls_catalog import row_security
 from tests.integration.postgresql._rls_matrix import rls_settings
-from tests.integration.postgresql.conftest import RlsUrls
+from tests.integration.postgresql._rls_urls import RlsUrls
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
