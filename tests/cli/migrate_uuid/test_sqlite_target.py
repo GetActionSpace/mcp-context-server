@@ -1,4 +1,4 @@
-"""Tests for the SQLite target initialization: the embedding dimension and the FTS rebuild."""
+"""Tests for the SQLite target initialization: the embedding dimension, the FTS rebuild and the base schema objects."""
 
 import sqlite3
 from pathlib import Path
@@ -275,3 +275,28 @@ class TestFtsRebuild:
         finally:
             # Restore the cached singleton so the override does not leak into later tests.
             get_settings.cache_clear()
+
+
+class TestBaseSchemaObjects:
+    """The target holds every object the base schema declares before any server starts on it."""
+
+    def test_the_target_holds_an_empty_generation_jobs_table_and_its_queue_index(
+        self,
+        source_with_fts: Path,
+        new_target_db_path: Path,
+    ) -> None:
+        stats = run_migration_sqlite_to_sqlite(build_sqlite_options(source_with_fts, new_target_db_path))
+
+        conn = sqlite3.connect(str(new_target_db_path))
+        try:
+            objects = conn.execute(
+                "SELECT type, name FROM sqlite_master WHERE tbl_name = 'generation_jobs' "
+                "AND name NOT LIKE 'sqlite_autoindex_%' ORDER BY type, name",
+            ).fetchall()
+            jobs = conn.execute('SELECT count(*) FROM generation_jobs').fetchone()[0]
+        finally:
+            conn.close()
+
+        assert stats.rows_migrated == 2
+        assert objects == [('index', 'idx_generation_jobs_queue'), ('table', 'generation_jobs')]
+        assert jobs == 0

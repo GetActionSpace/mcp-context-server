@@ -12,11 +12,13 @@ from which a pending job may be claimed or a running job's lease ends. The queue
 oldest claimable job and the counts per status. Both backends take every timestamp from
 the database clock.
 
-No base schema declares the table or the index: the migration creates them on every
-database that lacks them, fresh or upgraded, and runs after every other provisioning
+Both base schema files declare the table and the queue index with the statements below,
+and the startup preparation runs the base schema before any migration, so a fresh
+database, an upgraded one and a UUID migration CLI target all hold them, and on those
+this migration finds both and writes nothing. It creates whichever of the two a database
+lacks when it runs, with the same statements, and runs after every other provisioning
 migration and before the request role's grants and the row-level security migration, so
-those cover the table on the start that creates it. A database the UUID migration CLI
-builds gets them at the server's first start on it.
+those cover a table it creates on the same start.
 
 Both backends first read, without a lock, whether the table exists and whether the index
 exists on it, under the names the bare identifiers resolve to: ``sqlite_master`` on
@@ -49,6 +51,7 @@ settings = get_settings()
 GENERATION_JOBS_TABLE = 'generation_jobs'
 GENERATION_JOBS_QUEUE_INDEX = 'idx_generation_jobs_queue'
 
+# The statements both base schema files declare; a test keeps the declarations identical to them.
 _CREATE_TABLE_SQLITE = f'''
 CREATE TABLE IF NOT EXISTS {GENERATION_JOBS_TABLE} (
     context_entry_id TEXT PRIMARY KEY NOT NULL REFERENCES context_entries(id) ON DELETE CASCADE,

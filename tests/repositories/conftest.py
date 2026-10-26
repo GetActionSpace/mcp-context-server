@@ -10,7 +10,6 @@ import pytest_asyncio
 from app.backends import StorageBackend
 from app.backends import create_backend
 from app.backends.base import MAINTENANCE
-from app.migrations.generation_jobs import apply_generation_jobs_migration
 from app.repositories import RepositoryContainer
 from app.repositories.statistics_repository import StatisticsRepository
 from app.schemas import load_schema
@@ -61,7 +60,7 @@ async def backend_with_repos(temp_db_path: Path) -> 'AsyncGenerator[tuple[Storag
 
 @pytest_asyncio.fixture
 async def stats_test_db(tmp_path: Path) -> AsyncGenerator[StorageBackend, None]:
-    """Create a SQLite database with the base schema and the generation jobs table the statistics count."""
+    """Create a test database with the statistics repository."""
     db_path = tmp_path / 'stats_test.db'
 
     backend = create_backend(backend_type='sqlite', db_path=str(db_path))
@@ -74,7 +73,6 @@ async def stats_test_db(tmp_path: Path) -> AsyncGenerator[StorageBackend, None]:
         conn.executescript(schema_sql)
 
     await backend.execute_write(_init_schema, access_scope=MAINTENANCE)
-    await apply_generation_jobs_migration(backend)
 
     yield backend
 

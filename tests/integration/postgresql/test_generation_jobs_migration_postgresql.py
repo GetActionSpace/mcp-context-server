@@ -1,15 +1,17 @@
-"""The generation jobs migration against a real PostgreSQL server.
+"""The generation jobs table and its migration against a real PostgreSQL server.
 
 Every database here is ``pg_rls_db``, owned by the non-superuser ``mcp_owner``, and every
 boot prepares it through ``prepare_database`` on a maintenance backend logged in as that
-owner, with row-level security off or on. The tests prove that a fresh database ends with
-the jobs table, owned by ``mcp_owner``, its constraints and its queue index; that a
-database prepared before the table existed gets both at its next boot, its entries left
-as they were and none of them holding a job; that a current database takes no lock and
-issues no DDL, while a dropped index is built again alone; and that the table holds at
-most one job per stored entry, accepts the three statuses alone, starts a job pending and
-claimable, and loses the job with its entry. Every assertion reads the catalog or the rows
-through a superuser or owner connection.
+owner, with row-level security off or on. The base schema declares the table and its
+queue index, so the tests prove that a fresh database ends with the jobs table, owned by
+``mcp_owner``, its constraints and its queue index, with no work left for the migration;
+that a database prepared before the table existed gets both at its next boot, its entries
+left as they were and none of them holding a job; that a current database takes no lock
+and issues no DDL in the migration, while the migration builds a dropped table with its
+index, and a dropped index alone; and that the table holds at most one job per stored
+entry, accepts the three statuses alone, starts a job pending and claimable, and loses
+the job with its entry. Every assertion reads the catalog or the rows through a superuser
+or owner connection.
 """
 
 import asyncio
@@ -40,6 +42,7 @@ pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
 _MIGRATION_LOGGER: Final = 'app.migrations.generation_jobs'
 _APPLIED: Final = 'Generation jobs migration applied'
+_SKIPPED: Final = f'Generation jobs table and index {GENERATION_JOBS_QUEUE_INDEX} present, skipping'
 
 _COLUMNS_SQL: Final = '''
     SELECT attribute.attname, format_type(attribute.atttypid, attribute.atttypmod), attribute.attnotnull,
@@ -158,11 +161,14 @@ def _applied_messages(caplog: pytest.LogCaptureFixture) -> list[str]:
 
 
 class TestPreparedDatabases:
-    """A fresh database and one prepared before the table existed both end with the table and its index."""
+    """A fresh database and one prepared before the table existed both end with the table and its index.
+
+    The base schema creates both at every boot, so the migration that follows it finds them and writes nothing.
+    """
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('rls', [False, True], ids=['rls-off', 'rls-on'])
-    async def test_a_fresh_database_gets_the_table_and_its_queue_index(
+    async def test_a_fresh_database_gets_the_table_and_its_queue_index_from_the_base_schema(
         self,
         pg_rls_db: RlsUrls,
         monkeypatch: pytest.MonkeyPatch,
@@ -170,17 +176,16 @@ class TestPreparedDatabases:
         caplog: pytest.LogCaptureFixture,
         rls: bool,
     ) -> None:
-        with caplog.at_level(logging.INFO, logger=_MIGRATION_LOGGER):
+        with caplog.at_level(logging.DEBUG, logger=_MIGRATION_LOGGER):
             await _boot(pg_rls_db, monkeypatch, rls=rls)
 
         assert await _jobs_objects(admin) == _PREPARED
-        assert _applied_messages(caplog) == [
-            f'{_APPLIED}: created table {GENERATION_JOBS_TABLE}, index {GENERATION_JOBS_QUEUE_INDEX}',
-        ]
+        assert _applied_messages(caplog) == []
+        assert _SKIPPED in caplog.messages
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('rls', [False, True], ids=['rls-off', 'rls-on'])
-    async def test_a_database_prepared_before_the_table_existed_gets_it_and_keeps_its_entries(
+    async def test_a_database_prepared_before_the_table_existed_gets_it_at_its_next_boot_and_keeps_its_entries(
         self,
         pg_rls_db: RlsUrls,
         monkeypatch: pytest.MonkeyPatch,
@@ -195,19 +200,18 @@ class TestPreparedDatabases:
         entries = await admin.fetch('SELECT id, owner_id, version, updated_at FROM context_entries ORDER BY id')
         caplog.clear()
 
-        with caplog.at_level(logging.INFO, logger=_MIGRATION_LOGGER):
+        with caplog.at_level(logging.DEBUG, logger=_MIGRATION_LOGGER):
             await _boot(pg_rls_db, monkeypatch, rls=rls)
 
         assert await _jobs_objects(admin) == _PREPARED
-        assert _applied_messages(caplog) == [
-            f'{_APPLIED}: created table {GENERATION_JOBS_TABLE}, index {GENERATION_JOBS_QUEUE_INDEX}',
-        ]
+        assert _applied_messages(caplog) == []
+        assert _SKIPPED in caplog.messages
         assert await admin.fetch('SELECT id, owner_id, version, updated_at FROM context_entries ORDER BY id') == entries
         assert await admin.fetchval(f'SELECT count(*) FROM {GENERATION_JOBS_TABLE}') == 0
 
 
 class TestLaterBoots:
-    """A boot over a current database changes nothing; a missing index is rebuilt alone under the lock."""
+    """The migration changes nothing on a current database and rebuilds what is missing under the lock."""
 
     @pytest_asyncio.fixture
     async def booted(self, pg_rls_db: RlsUrls, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[StorageBackend]:
@@ -241,6 +245,27 @@ class TestLaterBoots:
 
         assert await ddl_log(admin) == []
         assert _applied_messages(caplog) == []
+
+    @pytest.mark.asyncio
+    async def test_a_dropped_table_is_built_again_with_its_queue_index(
+        self,
+        booted: StorageBackend,
+        admin: asyncpg.Connection,
+        owner: asyncpg.Connection,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        await owner.execute(f'DROP TABLE {GENERATION_JOBS_TABLE}')
+        await install_ddl_log(admin)
+        caplog.clear()
+
+        with caplog.at_level(logging.INFO, logger=_MIGRATION_LOGGER):
+            await apply_generation_jobs_migration(booted)
+
+        assert await _jobs_objects(admin) == _PREPARED
+        assert await ddl_log(admin) == ['CREATE TABLE', 'CREATE INDEX']
+        assert _applied_messages(caplog) == [
+            f'{_APPLIED}: created table {GENERATION_JOBS_TABLE}, index {GENERATION_JOBS_QUEUE_INDEX}',
+        ]
 
     @pytest.mark.asyncio
     async def test_a_dropped_queue_index_is_built_again_alone(

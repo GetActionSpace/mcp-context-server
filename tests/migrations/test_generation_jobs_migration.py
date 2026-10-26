@@ -1,15 +1,16 @@
-"""Tests for the generation jobs migration.
+"""Tests for the generation jobs table and its migration.
 
-The migration provisions ``generation_jobs``, one row per context entry whose generation
-is outstanding or has failed, and its queue index. No base schema declares either, so the
-startup preparation creates both on a fresh database and on an upgraded one. The SQLite
-tests run the preparation and the migration on real databases and pin the table's
-constraints; the PostgreSQL tests pin the statements and drive every branch through a
-recording backend, and ``tests/integration/postgresql/test_generation_jobs_migration_postgresql.py``
-runs the migration on a live server.
+``generation_jobs`` holds one row per context entry whose generation is outstanding or has
+failed, and its queue index serves the claim scan and the counts. Both base schema files
+declare the two with the statements the migration runs, so every database the base schema
+initializes holds them, and the migration creates whichever a database lacks. The SQLite
+tests run the base schema, the startup preparation and the migration on real databases and
+pin the table's constraints; the PostgreSQL tests pin the statements and drive every branch
+of the migration through a recording backend, and
+``tests/integration/postgresql/test_generation_jobs_migration_postgresql.py`` runs both on a
+live server.
 """
 
-import asyncio
 import contextlib
 import logging
 import sqlite3
@@ -21,7 +22,6 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-import pytest_asyncio
 
 import app.migrations.generation_jobs as generation_jobs_module
 from app.backends import StorageBackend
@@ -49,6 +49,20 @@ _SQLITE_COLUMNS = [
     ('created_at', 'TIMESTAMP', 1, 'CURRENT_TIMESTAMP', 0),
     ('available_at', 'TIMESTAMP', 1, 'CURRENT_TIMESTAMP', 0),
 ]
+# PRAGMA foreign_key_list rows: (parent table, column, parent column, on delete).
+_SQLITE_FOREIGN_KEYS = [('context_entries', 'context_entry_id', 'id', 'CASCADE')]
+_QUEUE_INDEX_COLUMNS = ['status', 'available_at', 'created_at']
+_SQLITE_SHAPE = (_SQLITE_COLUMNS, _SQLITE_FOREIGN_KEYS, _QUEUE_INDEX_COLUMNS)
+# The schema objects of the jobs table as (type, name): the queue index, the primary key's index, the table.
+_SQLITE_OBJECTS = [
+    ('index', GENERATION_JOBS_QUEUE_INDEX),
+    ('index', f'sqlite_autoindex_{GENERATION_JOBS_TABLE}_1'),
+    ('table', GENERATION_JOBS_TABLE),
+]
+_CREATE_TABLE = {
+    'sqlite': generation_jobs_module._CREATE_TABLE_SQLITE,
+    'postgresql': generation_jobs_module._CREATE_TABLE_POSTGRESQL,
+}
 _ENTRY_ID = '0190abcdef1234567890abcdef123456'
 _INSERT_ENTRY = (
     'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id) '
@@ -60,14 +74,33 @@ def _normalized(statement: str) -> str:
     return ' '.join(statement.split())
 
 
-async def _schema_objects(backend: StorageBackend) -> list[tuple[str, str, str | None]]:
-    """Return the type, name and stored definition of every schema object of the jobs table."""
+def _compact(statement: str) -> str:
+    """Return ``statement`` with every whitespace character removed, so layout never decides a comparison."""
+    return ''.join(statement.split())
 
-    def _read(conn: sqlite3.Connection) -> list[tuple[str, str, str | None]]:
+
+def _declared(schema: str, head: str) -> list[str]:
+    """Return every statement of ``schema`` that starts with ``head``, comment lines and whitespace removed.
+
+    Args:
+        schema: The text of a base schema file.
+        head: The opening words of the statements to return.
+
+    Returns:
+        The matching statements, compacted, in the order the file declares them.
+    """
+    code = '\n'.join(line for line in schema.splitlines() if not line.strip().startswith('--'))
+    return [_compact(statement) for statement in code.split(';') if _compact(statement).startswith(_compact(head))]
+
+
+async def _schema_objects(backend: StorageBackend) -> list[tuple[str, str]]:
+    """Return the type and name of every schema object of the jobs table."""
+
+    def _read(conn: sqlite3.Connection) -> list[tuple[str, str]]:
         cursor = conn.execute(
-            'SELECT type, name, sql FROM sqlite_master WHERE tbl_name = ? ORDER BY type, name', (GENERATION_JOBS_TABLE,),
+            'SELECT type, name FROM sqlite_master WHERE tbl_name = ? ORDER BY type, name', (GENERATION_JOBS_TABLE,),
         )
-        return [(str(row[0]), str(row[1]), None if row[2] is None else str(row[2])) for row in cursor.fetchall()]
+        return [(str(row[0]), str(row[1])) for row in cursor.fetchall()]
 
     return await backend.execute_read(_read, access_scope=MAINTENANCE)
 
@@ -99,26 +132,51 @@ async def _table_shape(backend: StorageBackend) -> tuple[list[tuple[object, ...]
     return await backend.execute_read(_read, access_scope=MAINTENANCE)
 
 
+async def _drop(backend: StorageBackend, statement: str) -> None:
+    """Run one ``DROP`` statement on the writer connection, as an older release's database lacks the object."""
+
+    def _run(conn: sqlite3.Connection) -> None:
+        conn.execute(statement)
+
+    await backend.execute_write(_run, access_scope=MAINTENANCE)
+
+
+def _record_writes(monkeypatch: pytest.MonkeyPatch, backend: StorageBackend) -> list[tuple[object, ...]]:
+    """Replace the backend's writes with a recorder and return the list the recorder fills."""
+    writes: list[tuple[object, ...]] = []
+
+    async def _record_write(*args: object, **_kwargs: object) -> None:
+        writes.append(args)
+
+    monkeypatch.setattr(backend, 'execute_write', _record_write)
+    return writes
+
+
 def _applied_messages(caplog: pytest.LogCaptureFixture) -> list[str]:
     return [record.getMessage() for record in caplog.records if record.getMessage().startswith(_APPLIED)]
 
 
 @pytest.mark.parametrize('backend_type', ['sqlite', 'postgresql'])
-def test_no_base_schema_declares_the_generation_jobs_table(backend_type: str) -> None:
+def test_each_base_schema_declares_the_table_and_the_queue_index_as_the_migration_creates_them(backend_type: str) -> None:
     schema = load_schema(backend_type)
 
-    assert GENERATION_JOBS_TABLE not in schema
-    assert GENERATION_JOBS_QUEUE_INDEX not in schema
+    assert _declared(schema, f'CREATE TABLE IF NOT EXISTS {GENERATION_JOBS_TABLE} (') == [
+        _compact(_CREATE_TABLE[backend_type]),
+    ]
+    assert _declared(schema, f'CREATE INDEX IF NOT EXISTS {GENERATION_JOBS_QUEUE_INDEX} ON') == [
+        _compact(generation_jobs_module._CREATE_QUEUE_INDEX),
+    ]
 
 
 @pytest.mark.asyncio
-async def test_init_database_alone_creates_no_generation_jobs_table(tmp_path: Path) -> None:
+async def test_init_database_alone_creates_the_table_and_the_queue_index(tmp_path: Path) -> None:
     backend = create_backend(backend_type='sqlite', db_path=str(tmp_path / 'base_schema_only.db'))
     await backend.initialize()
     try:
         await init_database(backend=backend)
 
-        assert await _schema_objects(backend) == []
+        assert await _table_shape(backend) == _SQLITE_SHAPE
+        assert await _schema_objects(backend) == _SQLITE_OBJECTS
     finally:
         await backend.shutdown()
 
@@ -128,11 +186,7 @@ async def test_prepare_database_creates_the_table_and_the_queue_index(
     async_db_initialized: StorageBackend, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async with sqlite_scoped_db(async_db_initialized, 'fp32', monkeypatch) as db:
-        columns, foreign_keys, index_columns = await _table_shape(db.backend)
-
-    assert columns == _SQLITE_COLUMNS
-    assert foreign_keys == [('context_entries', 'context_entry_id', 'id', 'CASCADE')]
-    assert index_columns == ['status', 'available_at', 'created_at']
+        assert await _table_shape(db.backend) == _SQLITE_SHAPE
 
 
 @pytest.mark.asyncio
@@ -140,91 +194,85 @@ async def test_a_database_predating_the_access_columns_boots_with_the_table(
     backend_pre_migration: StorageBackend, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async with sqlite_scoped_db(backend_pre_migration, 'fp32', monkeypatch) as db:
-        columns, _foreign_keys, index_columns = await _table_shape(db.backend)
-
-    assert columns == _SQLITE_COLUMNS
-    assert index_columns == ['status', 'available_at', 'created_at']
+        assert await _table_shape(db.backend) == _SQLITE_SHAPE
 
 
 @pytest.mark.asyncio
-async def test_a_first_application_creates_both_objects_and_reports_them(
+async def test_on_a_database_the_base_schema_initialized_the_migration_writes_nothing_and_reports_nothing(
+    backend: StorageBackend, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    version = await _schema_version(backend)
+    writes = _record_writes(monkeypatch, backend)
+
+    with caplog.at_level(logging.DEBUG, logger=_MIGRATION_LOGGER):
+        await apply_generation_jobs_migration(backend)
+
+    assert writes == []
+    assert await _schema_version(backend) == version
+    assert _applied_messages(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_a_database_without_the_table_gets_it_and_its_queue_index_from_the_migration(
     backend: StorageBackend, caplog: pytest.LogCaptureFixture,
 ) -> None:
+    await _drop(backend, f'DROP TABLE {GENERATION_JOBS_TABLE}')
+    assert await _schema_objects(backend) == []
+
     with caplog.at_level(logging.INFO, logger=_MIGRATION_LOGGER):
         await apply_generation_jobs_migration(backend)
 
-    assert [(kind, name) for kind, name, _sql in await _schema_objects(backend)] == [
-        ('index', GENERATION_JOBS_QUEUE_INDEX),
-        ('index', f'sqlite_autoindex_{GENERATION_JOBS_TABLE}_1'),
-        ('table', GENERATION_JOBS_TABLE),
-    ]
+    assert await _table_shape(backend) == _SQLITE_SHAPE
+    assert await _schema_objects(backend) == _SQLITE_OBJECTS
     assert _applied_messages(caplog) == [_CREATED_BOTH]
 
 
 @pytest.mark.asyncio
-async def test_a_second_application_writes_nothing_and_reports_nothing(
+async def test_a_second_application_after_the_migration_built_the_table_writes_nothing(
     backend: StorageBackend, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    await _drop(backend, f'DROP TABLE {GENERATION_JOBS_TABLE}')
     await apply_generation_jobs_migration(backend)
-    objects = await _schema_objects(backend)
     version = await _schema_version(backend)
-    writes: list[tuple[object, ...]] = []
-
-    async def _record_write(*args: object, **_kwargs: object) -> None:
-        writes.append(args)
-
-    monkeypatch.setattr(backend, 'execute_write', _record_write)
+    writes = _record_writes(monkeypatch, backend)
     caplog.clear()
 
     with caplog.at_level(logging.DEBUG, logger=_MIGRATION_LOGGER):
         await apply_generation_jobs_migration(backend)
 
     assert writes == []
-    assert await _schema_objects(backend) == objects
+    assert await _schema_objects(backend) == _SQLITE_OBJECTS
     assert await _schema_version(backend) == version
     assert _applied_messages(caplog) == []
 
 
 @pytest.mark.asyncio
 async def test_a_dropped_queue_index_is_built_again_alone(backend: StorageBackend, caplog: pytest.LogCaptureFixture) -> None:
-    await apply_generation_jobs_migration(backend)
-    objects = await _schema_objects(backend)
-
-    def _drop_index(conn: sqlite3.Connection) -> None:
-        conn.execute(f'DROP INDEX {GENERATION_JOBS_QUEUE_INDEX}')
-
-    await backend.execute_write(_drop_index, access_scope=MAINTENANCE)
-    caplog.clear()
+    await _drop(backend, f'DROP INDEX {GENERATION_JOBS_QUEUE_INDEX}')
 
     with caplog.at_level(logging.INFO, logger=_MIGRATION_LOGGER):
         await apply_generation_jobs_migration(backend)
 
-    assert await _schema_objects(backend) == objects
+    assert await _table_shape(backend) == _SQLITE_SHAPE
+    assert await _schema_objects(backend) == _SQLITE_OBJECTS
     assert _applied_messages(caplog) == [f'{_APPLIED}: created index {GENERATION_JOBS_QUEUE_INDEX}']
 
 
 class TestSqliteTable:
-    """The constraints of the jobs table on a migrated SQLite database, read through a plain connection."""
+    """The constraints of the jobs table the base schema declares, read through a plain connection."""
 
-    @pytest_asyncio.fixture
-    async def migrated_db(self, tmp_path: Path) -> Path:
-        """A database file holding the base schema, one entry and the migrated jobs table.
+    @pytest.fixture
+    def prepared_db(self, tmp_path: Path) -> Path:
+        """A database file holding the base schema and one entry.
 
         Returns:
-            The database file, with no backend open on it.
+            The database file, with no connection open on it.
         """
         db_path = tmp_path / 'generation_jobs.db'
         with contextlib.closing(sqlite3.connect(db_path)) as conn:
             conn.executescript(load_schema('sqlite'))
             conn.execute(_INSERT_ENTRY, (_ENTRY_ID,))
             conn.commit()
-        backend = create_backend(backend_type='sqlite', db_path=str(db_path))
-        await backend.initialize()
-        try:
-            await apply_generation_jobs_migration(backend)
-        finally:
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(backend.shutdown(), timeout=5.0)
         return db_path
 
     @staticmethod
@@ -233,8 +281,8 @@ class TestSqliteTable:
         conn.execute('PRAGMA foreign_keys = ON')
         return conn
 
-    def test_a_job_named_by_its_entry_alone_starts_pending_and_claimable(self, migrated_db: Path) -> None:
-        with contextlib.closing(self._connect(migrated_db)) as conn:
+    def test_a_job_named_by_its_entry_alone_starts_pending_and_claimable(self, prepared_db: Path) -> None:
+        with contextlib.closing(self._connect(prepared_db)) as conn:
             conn.execute(f'INSERT INTO {GENERATION_JOBS_TABLE} (context_entry_id) VALUES (?)', (_ENTRY_ID,))
             row = conn.execute(
                 'SELECT status, attempts, last_error, claim_token, created_at IS NOT NULL, available_at <= CURRENT_TIMESTAMP '
@@ -244,33 +292,33 @@ class TestSqliteTable:
         assert row == ('pending', 0, None, None, 1, 1)
 
     @pytest.mark.parametrize('status', ['pending', 'running', 'failed'])
-    def test_each_job_status_is_accepted(self, migrated_db: Path, status: str) -> None:
-        with contextlib.closing(self._connect(migrated_db)) as conn:
+    def test_each_job_status_is_accepted(self, prepared_db: Path, status: str) -> None:
+        with contextlib.closing(self._connect(prepared_db)) as conn:
             conn.execute(f'INSERT INTO {GENERATION_JOBS_TABLE} (context_entry_id, status) VALUES (?, ?)', (_ENTRY_ID, status))
 
             assert conn.execute(f'SELECT status FROM {GENERATION_JOBS_TABLE}').fetchall() == [(status,)]
 
     @pytest.mark.parametrize('status', ['ready', 'done', 'PENDING'])
-    def test_any_other_status_is_refused(self, migrated_db: Path, status: str) -> None:
-        with contextlib.closing(self._connect(migrated_db)) as conn, pytest.raises(sqlite3.IntegrityError, match='CHECK'):
+    def test_any_other_status_is_refused(self, prepared_db: Path, status: str) -> None:
+        with contextlib.closing(self._connect(prepared_db)) as conn, pytest.raises(sqlite3.IntegrityError, match='CHECK'):
             conn.execute(f'INSERT INTO {GENERATION_JOBS_TABLE} (context_entry_id, status) VALUES (?, ?)', (_ENTRY_ID, status))
 
-    def test_an_entry_holds_at_most_one_job(self, migrated_db: Path) -> None:
-        with contextlib.closing(self._connect(migrated_db)) as conn:
+    def test_an_entry_holds_at_most_one_job(self, prepared_db: Path) -> None:
+        with contextlib.closing(self._connect(prepared_db)) as conn:
             conn.execute(f'INSERT INTO {GENERATION_JOBS_TABLE} (context_entry_id) VALUES (?)', (_ENTRY_ID,))
 
             with pytest.raises(sqlite3.IntegrityError, match='UNIQUE'):
                 conn.execute(f'INSERT INTO {GENERATION_JOBS_TABLE} (context_entry_id) VALUES (?)', (_ENTRY_ID,))
 
-    def test_a_job_for_a_missing_entry_is_refused(self, migrated_db: Path) -> None:
+    def test_a_job_for_a_missing_entry_is_refused(self, prepared_db: Path) -> None:
         with (
-            contextlib.closing(self._connect(migrated_db)) as conn,
+            contextlib.closing(self._connect(prepared_db)) as conn,
             pytest.raises(sqlite3.IntegrityError, match='FOREIGN KEY'),
         ):
             conn.execute(f'INSERT INTO {GENERATION_JOBS_TABLE} (context_entry_id) VALUES (?)', ('f' * 32,))
 
-    def test_deleting_the_entry_deletes_its_job(self, migrated_db: Path) -> None:
-        with contextlib.closing(self._connect(migrated_db)) as conn:
+    def test_deleting_the_entry_deletes_its_job(self, prepared_db: Path) -> None:
+        with contextlib.closing(self._connect(prepared_db)) as conn:
             conn.execute(f'INSERT INTO {GENERATION_JOBS_TABLE} (context_entry_id) VALUES (?)', (_ENTRY_ID,))
 
             conn.execute('DELETE FROM context_entries WHERE id = ?', (_ENTRY_ID,))

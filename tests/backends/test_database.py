@@ -48,7 +48,9 @@ class TestDatabaseInitialization:
                 ORDER BY name
             ''')
             tables = [row[0] for row in cursor.fetchall()]
-            assert set(tables) == {'context_entries', 'context_entry_grants', 'image_attachments', 'tags'}
+            assert set(tables) == {
+                'context_entries', 'context_entry_grants', 'generation_jobs', 'image_attachments', 'tags',
+            }
 
             # Check indexes exist
             cursor.execute('''
@@ -80,6 +82,8 @@ class TestDatabaseInitialization:
                 # that migration can run.
                 'idx_grants_entry_principal',
                 'idx_grants_principal',
+                # The generation jobs queue index rides the base schema with its table.
+                'idx_generation_jobs_queue',
             }
             # The base schema no longer declares any metadata expression index.
             # handle_metadata_indexes (run separately at server startup) is the
