@@ -277,12 +277,13 @@ async def execute_update_in_transaction(
         and text is not None
         and await repos.embeddings.embedding_tables_exist(txn=txn, scope=scope)
     ):
-        # Text changed but embeddings were NOT regenerated (no embedding provider at
-        # update time -- generation disabled/absent). The stored chunks describe the
-        # REPLACED text, so DELETE them rather than leave stale vectors that semantic
-        # search would match against the old content. Guarded by embedding_tables_exist
-        # so a database that never provisioned embeddings is a safe no-op. (Mirrors the
-        # stale-summary clear on this same text-change path.)
+        # The text changed and no new embeddings came with it: either no embedding
+        # provider is active, or the caller deferred generation to the entry's
+        # generation job. The stored chunks describe the replaced text, so they are
+        # deleted, and semantic search never matches the new text through the old
+        # vectors. Guarded by embedding_tables_exist, so a database that never
+        # provisioned embeddings is a no-op. (Mirrors the stale-summary clear on this
+        # same text-change path.)
         await transaction_heartbeat(txn)
         if await repos.embeddings.delete_all_chunks(context_id, txn=txn, scope=scope):
             updated_fields.append('embedding')
