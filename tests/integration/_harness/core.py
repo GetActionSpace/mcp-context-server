@@ -12,17 +12,25 @@ Every PostgreSQL server the harness starts gets its environment from
 configuration of the parent environment, never its PostgreSQL routing, and
 carries the row-level security credentials of the run when it has them, so
 every server on the run's database starts the way the primary did.
+
+A check that must keep its rows and its generation jobs away from every other
+server of the run asks for an isolated database (``_isolated_database``) and
+starts its second servers on it.
 """
 
 import base64
 import contextlib
 import os
+import secrets
 import tempfile
 import time
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from typing import Literal
+from urllib.parse import urlsplit
+from urllib.parse import urlunsplit
 
 from anyio import Path as AsyncPath
 from fastmcp import Client
@@ -88,6 +96,46 @@ def server_transport(env: dict[str, str]) -> PythonStdioTransport:
         The transport.
     """
     return PythonStdioTransport(script_path=str(WRAPPER_SCRIPT), env=env, keep_alive=False)
+
+
+@dataclass(frozen=True, slots=True)
+class IsolatedDatabase:
+    """A database of the run's backend that only the servers given it serve.
+
+    Attributes:
+        location: The database file on SQLite; the request connection string on PostgreSQL.
+    """
+
+    location: str
+
+
+def _with_database(url: str, database: str) -> str:
+    """Return a PostgreSQL connection string pointing at another database on the same server.
+
+    Args:
+        url: A connection string.
+        database: The database to connect to.
+
+    Returns:
+        ``url`` with its database replaced.
+    """
+    parts = urlsplit(url)
+    return urlunsplit((parts.scheme, parts.netloc, f'/{database}', parts.query, parts.fragment))
+
+
+async def _remove_sqlite_database(path: Path) -> None:
+    """Remove a SQLite database file with its write-ahead log and shared-memory files, then its directory.
+
+    Args:
+        path: The database file, alone in a temporary directory.
+    """
+    for suffix in ('-wal', '-shm', ''):
+        candidate = AsyncPath(str(path) + suffix)
+        with contextlib.suppress(Exception):
+            if await candidate.exists():
+                await candidate.unlink()
+    with contextlib.suppress(Exception):
+        await AsyncPath(path.parent).rmdir()
 
 
 class HarnessCore:
@@ -335,8 +383,61 @@ class HarnessCore:
         return not problems
 
     @contextlib.asynccontextmanager
+    async def _isolated_database(self) -> AsyncGenerator[IsolatedDatabase]:
+        """Provide a fresh database of the run's backend, removed when the block exits.
+
+        A second server started on it (``_second_server(..., isolated_database=...)``)
+        serves rows no other server of the run reaches, and no other server's generation
+        worker claims its jobs. Successive servers given the same database serve the same
+        rows, so a check can stop one server and start another on what it left. On SQLite
+        the database is a file in a fresh temporary directory. On PostgreSQL the superuser
+        of ``pg_admin_url`` creates a database holding the ``vector`` extension, owned by
+        the run's migration role when the run has row-level security credentials, and
+        drops it, with every connection still open to it, when the block exits.
+
+        Yields:
+            The database.
+        """
+        if self.backend != 'postgresql':
+            path = Path(tempfile.mkdtemp(prefix='mcp_harness_isolated_')) / 'isolated.db'
+            try:
+                yield IsolatedDatabase(location=str(path))
+            finally:
+                await _remove_sqlite_database(path)
+            return
+
+        import asyncpg
+
+        assert self.pg_url is not None  # __init__ requires it on PostgreSQL
+        assert self.pg_admin_url is not None  # __init__ requires it on PostgreSQL
+        name = f'mcp_harness_isolated_{secrets.token_hex(4)}'
+        owner = f' OWNER {self.rls.migration_user}' if self.rls is not None else ''
+        admin = await asyncpg.connect(self.pg_admin_url)
+        try:
+            await admin.execute(f'CREATE DATABASE {name}{owner}')
+        finally:
+            await admin.close()
+        try:
+            setup = await asyncpg.connect(_with_database(self.pg_admin_url, name))
+            try:
+                await setup.execute('CREATE EXTENSION IF NOT EXISTS vector')
+            finally:
+                await setup.close()
+            yield IsolatedDatabase(location=_with_database(self.pg_url, name))
+        finally:
+            admin = await asyncpg.connect(self.pg_admin_url)
+            try:
+                await admin.execute(f'DROP DATABASE IF EXISTS {name} WITH (FORCE)')
+            finally:
+                await admin.close()
+
+    @contextlib.asynccontextmanager
     async def _second_server(
-        self, extra_env: dict[str, str], *, share_primary_database: bool = False,
+        self,
+        extra_env: dict[str, str],
+        *,
+        share_primary_database: bool = False,
+        isolated_database: IsolatedDatabase | None = None,
     ) -> AsyncGenerator[Client[Any]]:
         """Run a SECOND server subprocess carrying extra environment overrides.
 
@@ -356,6 +457,10 @@ class HarnessCore:
         the startup guard refuses a compression setting that disagrees with the
         database -- and differs only by the overrides.
 
+        With ``isolated_database`` the second server starts on the harness defaults, as
+        in the default case, but serves that database (see ``_isolated_database``) on
+        both backends; the database outlives the server.
+
         The server stops when the block exits (see :func:`server_transport`).
 
         Args:
@@ -363,29 +468,40 @@ class HarnessCore:
                 other value.
             share_primary_database: Start from the primary server's environment and
                 serve its database.
+            isolated_database: Serve this database instead of the run's or a
+                throwaway one.
 
         Yields:
             A connected client for the second server.
 
         Raises:
             RuntimeError: If sharing is requested before the primary server started.
+            ValueError: If both ``share_primary_database`` and ``isolated_database`` are given.
         """
         second_db_path: Path | None = None
+        if share_primary_database and isolated_database is not None:
+            raise ValueError('A second server either shares the primary database or serves an isolated one')
         if share_primary_database:
             if self.server_env is None:
                 raise RuntimeError('The primary server must be started before a second server can share its database')
             server_env = {**self.server_env, **extra_env}
         elif self.backend == 'postgresql':
-            server_env = self._postgresql_env(**{**SERVER_FEATURES, **extra_env})
+            pg_url = self.pg_url if isolated_database is None else isolated_database.location
+            assert pg_url is not None  # __init__ requires it on PostgreSQL
+            server_env = postgresql_subprocess_env(pg_url, rls=self.rls, **{**SERVER_FEATURES, **extra_env})
         else:
-            second_db_path = Path(tempfile.mkdtemp(prefix='mcp_harness_second_')) / 'second_server.db'
+            if isolated_database is None:
+                second_db_path = Path(tempfile.mkdtemp(prefix='mcp_harness_second_')) / 'second_server.db'
+                db_path = second_db_path
+            else:
+                db_path = Path(isolated_database.location)
             server_env = {
                 **os.environ,
                 'MCP_TEST_MODE': '1',
                 'DISABLED_TOOLS': '',
                 **SERVER_FEATURES,
                 'STORAGE_BACKEND': 'sqlite',
-                'DB_PATH': str(second_db_path),
+                'DB_PATH': str(db_path),
                 **extra_env,
             }
 
@@ -398,13 +514,7 @@ class HarnessCore:
             with contextlib.suppress(Exception):
                 await second_client.__aexit__(None, None, None)
             if second_db_path is not None:
-                for suffix in ('-wal', '-shm', ''):
-                    candidate = AsyncPath(str(second_db_path) + suffix)
-                    with contextlib.suppress(Exception):
-                        if await candidate.exists():
-                            await candidate.unlink()
-                with contextlib.suppress(Exception):
-                    await AsyncPath(second_db_path.parent).rmdir()
+                await _remove_sqlite_database(second_db_path)
 
     async def cleanup(self) -> None:
         """Clean up server and resources."""
