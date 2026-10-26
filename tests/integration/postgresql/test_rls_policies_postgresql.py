@@ -45,6 +45,7 @@ from tests.integration.postgresql._rls_matrix import rls_matrix_db
 from tests.integration.postgresql._rls_matrix import scoped_transaction
 from tests.integration.postgresql.conftest import RlsUrls
 from tests.repositories._access_scope_cases import SCOPES
+from tests.repositories._access_scope_cases import SEED_LABELS
 from tests.repositories._access_scope_cases import SEED_ROWS
 from tests.repositories._access_scope_cases import Grant
 from tests.repositories._access_scope_cases import ScopedDb
@@ -92,6 +93,15 @@ DELETE_DAVE_GRANT = (
 SHARED_LABEL = 'alice_private_shared'
 # The grants of alice's shared entry: a read grant to dave, a write grant to bob and a read grant to carol's group.
 SHARED_GRANTS = (Grant('user', 'dave', 'read'), Grant('user', 'bob', 'write'), Grant('group', 'team-x', 'read'))
+# A pending job on one entry ($1), as a deferred write enqueues it.
+INSERT_JOB = 'INSERT INTO generation_jobs (context_entry_id) VALUES ($1)'
+SELECT_JOB = 'SELECT status, attempts, claim_token FROM generation_jobs WHERE context_entry_id = $1'
+DELETE_JOB = 'DELETE FROM generation_jobs WHERE context_entry_id = $1'
+# What a worker writes to every job: a claim, a failure and a release each change these columns.
+UPDATE_JOBS = (
+    "UPDATE generation_jobs SET status = 'running', attempts = attempts + 1, claim_token = 'probe', "
+    "last_error = 'probe', available_at = now()"
+)
 
 # The comment on one installed object, by its anchor ($1) and name ($2).
 _COMMENT_SQL = {
@@ -122,6 +132,7 @@ CHILD_INSERTS = {
         'INSERT INTO context_index_nodes (context_id, node_id, level, ordinal, title, char_start, char_end) '
         "VALUES ($1, 'policy-probe', 1, 9, 'probe', 0, 0)"
     ),
+    'generation_jobs': INSERT_JOB,
 }
 
 
@@ -314,7 +325,9 @@ class TestChildTables:
     ) -> None:
         """Every child table shows each scope the children of the entries it may read, and no others."""
         tables = await _child_tables(matrix_db)
-        assert {table for table, _ in tables} >= {'tags', 'image_attachments', 'embedding_metadata', 'context_index_nodes'}
+        assert {table for table, _ in tables} >= {
+            'tags', 'image_attachments', 'embedding_metadata', 'context_index_nodes', 'generation_jobs',
+        }
         for table, key in tables:
             parents = set(await _child_counts(matrix_db, table, key))
             assert parents, table
@@ -392,6 +405,121 @@ class TestChildTables:
 
         after = {table: (await _child_counts(matrix_db, table, key)).get('alice_private', 0) for table, key in tables}
         assert after == dict.fromkeys(before, 0)
+
+
+async def _without_job(db: ScopedDb, label: str) -> uuid.UUID:
+    """Delete the job of the entry ``label`` through the owner channel, so an insert of its job would otherwise pass.
+
+    Returns:
+        The entry's id.
+    """
+    await db.execute('DELETE FROM generation_jobs WHERE context_entry_id = ?', (db.ids[label],))
+    return entry_uuid(db, label)
+
+
+async def _job(conn: asyncpg.Connection, entry: uuid.UUID) -> tuple[object, ...] | None:
+    """Return the status, attempts and claim token of the job of ``entry`` that ``conn`` reads, or None."""
+    row = await conn.fetchrow(SELECT_JOB, entry)
+    return None if row is None else tuple(row)
+
+
+async def _job_count(db: ScopedDb, label: str) -> int:
+    """Return how many jobs the entry ``label`` holds, read as the owner."""
+    rows = await db.fetch_all('SELECT count(*) FROM generation_jobs WHERE context_entry_id = ?', (db.ids[label],))
+    return int(str(rows[0][0]))
+
+
+class TestGenerationJobs:
+    """A job follows its entry: a writer replaces it, a reader only reads it, and only the table owner updates it."""
+
+    @pytest.mark.asyncio
+    async def test_a_writer_replaces_the_job_of_an_entry_it_may_modify(
+        self, app_conn: asyncpg.Connection, matrix_db: ScopedDb,
+    ) -> None:
+        """The owner and each write grantee delete the job and enqueue a new one in one transaction, as a text update does."""
+        cases = [
+            (ALICE, 'alice_private'),
+            (BOB, 'bob_private'),
+            (BOB, 'alice_private_bob_write'),
+            (CAROL, 'alice_public_carol_write'),
+        ]
+        for scope, label in cases:
+            entry = entry_uuid(matrix_db, label)
+            async with scoped_transaction(app_conn, scope):
+                assert await app_conn.execute(DELETE_JOB, entry) == 'DELETE 1', label
+                assert await app_conn.execute(INSERT_JOB, entry) == 'INSERT 0 1', label
+                assert await _job(app_conn, entry) == ('pending', 0, None), label
+
+    @pytest.mark.asyncio
+    async def test_a_reader_sees_the_job_but_neither_enqueues_nor_removes_one(
+        self, app_conn: asyncpg.Connection, matrix_db: ScopedDb,
+    ) -> None:
+        """A user read grant, a group read grant and a public row each show the job and refuse every write to it."""
+        cases = [
+            (BOB, 'alice_private_bob_read'),
+            (CAROL, 'alice_private_team_read'),
+            (DAVE, 'alice_public_dave_read'),
+            (MATRIX_SCOPES['mallory'], 'alice_public'),
+        ]
+        for scope, label in cases:
+            entry = entry_uuid(matrix_db, label)
+            async with scoped_transaction(app_conn, scope):
+                assert await _job(app_conn, entry) == ('pending', 0, None), label
+                assert await app_conn.execute(DELETE_JOB, entry) == 'DELETE 0', label
+            assert await _job_count(matrix_db, label) == 1, label
+
+            entry = await _without_job(matrix_db, label)
+            async with scoped_transaction(app_conn, scope):
+                with pytest.raises(REFUSED, match='row-level security policy for table "generation_jobs"'):
+                    await app_conn.execute(INSERT_JOB, entry)
+            assert await _job_count(matrix_db, label) == 0, label
+
+    @pytest.mark.parametrize('matrix_db', ['fp32', 'compressed'], indirect=True)
+    @pytest.mark.asyncio
+    async def test_no_request_identity_updates_a_job_and_the_table_owner_does(
+        self, app_conn: asyncpg.Connection, matrix_db: ScopedDb,
+    ) -> None:
+        """No identity, the owner of every entry included, updates a job it reads; the table owner updates them all."""
+        for name, scope in MATRIX_SCOPES.items():
+            async with scoped_transaction(app_conn, scope):
+                assert await app_conn.fetchval('SELECT count(*) FROM generation_jobs') > 0, name
+                assert await app_conn.execute(UPDATE_JOBS) == 'UPDATE 0', name
+
+        await matrix_db.execute(UPDATE_JOBS)
+
+        rows = await matrix_db.fetch_all('SELECT context_entry_id, status, attempts, claim_token FROM generation_jobs')
+        assert {matrix_db.labels_of([str(row[0])])[0]: row[1:] for row in rows} == dict.fromkeys(
+            SEED_LABELS, ('running', 1, 'probe'),
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_outsider_reaches_no_job_under_any_identity(
+        self, matrix_db: ScopedDb, pg_rls_db: RlsUrls,
+    ) -> None:
+        """Every privilege on the table, granted out of band to a role outside the policy role, reads and writes no job."""
+        target = await _without_job(matrix_db, 'alice_public')
+        admin = await asyncpg.connect(pg_rls_db.admin)
+        try:
+            await admin.execute('GRANT ALL ON generation_jobs TO mcp_outsider')
+        finally:
+            await admin.close()
+
+        conn = await asyncpg.connect(pg_rls_db.outsider)
+        try:
+            for name, scope in MATRIX_SCOPES.items():
+                async with scoped_transaction(conn, scope):
+                    assert await conn.fetchval('SELECT count(*) FROM generation_jobs') == 0, name
+                    assert await conn.execute(UPDATE_JOBS) == 'UPDATE 0', name
+                    assert await conn.execute('DELETE FROM generation_jobs') == 'DELETE 0', name
+                async with scoped_transaction(conn, scope):
+                    with pytest.raises(REFUSED, match='row-level security policy for table "generation_jobs"'):
+                        await conn.execute(INSERT_JOB, target)
+        finally:
+            await conn.close()
+
+        rows = await matrix_db.fetch_all('SELECT context_entry_id, status FROM generation_jobs')
+        assert sorted(matrix_db.labels_of(str(row[0]) for row in rows)) == sorted(set(SEED_LABELS) - {'alice_public'})
+        assert {row[1] for row in rows} == {'pending'}
 
 
 async def _add_shared_entry(db: ScopedDb) -> uuid.UUID:
@@ -573,7 +701,9 @@ class TestInstalledObjects:
         finally:
             await conn.close()
 
-        assert {str(row[0]) for row in tables} >= {'context_entries', 'context_entry_grants', 'tags', 'image_attachments'}
+        assert {str(row[0]) for row in tables} >= {
+            'context_entries', 'context_entry_grants', 'tags', 'image_attachments', 'generation_jobs',
+        }
         assert all(row[1] and not row[2] for row in tables), [tuple(row) for row in tables]
         assert [str(row[0]) for row in roles] == [POLICY_ROLE]
         assert f'{POLICY_ROLE}=X/' in helper_acl

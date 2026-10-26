@@ -13,7 +13,8 @@ the objects that do it:
   on the caller's entries; inserts and deletes by the entry's owner; no update policy,
   because no grant is ever updated) and on every child table (reads follow the parent's
   read policy; inserts and deletes need WRITE on the parent; no update policy, because no
-  child row is ever updated);
+  request updates a child row: a request replaces a generation job by deleting it and
+  inserting another, and only the table owner updates a job's state);
 - the guard trigger that keeps ``owner_id`` immutable, visibility changes owner-only and
   publishing gated, which a policy cannot express because WITH CHECK does not see the old
   row;
@@ -72,6 +73,7 @@ CHILD_PARENT_KEYS: Final[Mapping[str, str]] = MappingProxyType({
     'vec_context_embeddings': 'context_id',
     'vec_context_embeddings_compressed': 'context_id',
     'context_index_nodes': 'context_id',
+    'generation_jobs': 'context_entry_id',
 })
 # The tables row-level security governs; each layout and feature set provisions a subset.
 MANAGED_TABLES: Final[tuple[str, ...]] = (CONTEXT_TABLE, GRANTS_TABLE, *CHILD_PARENT_KEYS)

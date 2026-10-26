@@ -121,12 +121,14 @@ class TestRemoveRls:
         tables = [table for table in MANAGED_TABLES if table in await row_security(admin, SCHEMA_NAME)]
         before = await object_oids(admin, SCHEMA_NAME)
         assert ('context_entry_grants', 'context_entry_grants_delete') in await policies(admin, SCHEMA_NAME)
+        assert ('generation_jobs', 'generation_jobs_read') in await policies(admin, SCHEMA_NAME)
         assert await _our_functions(admin) == sorted(OUR_FUNCTIONS)
 
         dry = await remove_rls(installed, rls_settings(), dry_run=True, force=False)
 
         assert await object_oids(admin, SCHEMA_NAME) == before
         assert dry.disabled == [table for table in tables if table != 'tags']
+        assert 'generation_jobs' in dry.disabled
         assert dry.left_enabled == {'tags': 'preenabled=true'}
         assert any('DROP VIEW' in statement for statement in dry.statements)
 

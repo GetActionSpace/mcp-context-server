@@ -76,7 +76,7 @@ def test_managed_tables_are_the_context_table_the_grants_table_and_every_child_i
     """Every table whose rows belong to an entry is managed, the context table first."""
     assert MANAGED_TABLES == (
         'context_entries', 'context_entry_grants', 'tags', 'image_attachments', 'embedding_metadata',
-        'vec_context_embeddings', 'vec_context_embeddings_compressed', 'context_index_nodes',
+        'vec_context_embeddings', 'vec_context_embeddings_compressed', 'context_index_nodes', 'generation_jobs',
     )
     assert dict(CHILD_PARENT_KEYS) == {
         'tags': 'context_entry_id',
@@ -85,6 +85,7 @@ def test_managed_tables_are_the_context_table_the_grants_table_and_every_child_i
         'vec_context_embeddings': 'context_id',
         'vec_context_embeddings_compressed': 'context_id',
         'context_index_nodes': 'context_id',
+        'generation_jobs': 'context_entry_id',
     }
 
 

@@ -131,6 +131,7 @@ async def test_the_policy_role_receives_exactly_the_needed_privileges(
     assert report.locked
     assert report.statements
     assert held == expected
+    assert held['generation_jobs'] == DML
     assert held['unrelated_notes'] == held['unrelated_notes_id_seq'] == held['unrelated_counter'] == frozenset()
     assert ('compression_metadata' in held) is (owner_db.layout == 'compressed')
     assert await admin_conn.fetchval("SELECT has_schema_privilege($1, 'public', 'USAGE')", POLICY_ROLE)

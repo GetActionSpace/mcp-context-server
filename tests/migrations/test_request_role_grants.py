@@ -67,7 +67,7 @@ class TestPlan:
         held = _held(
             schema_usage=False,
             tables={
-                'tags': NONE_HELD, 'compression_metadata': NONE_HELD,
+                'generation_jobs': NONE_HELD, 'tags': NONE_HELD, 'compression_metadata': NONE_HELD,
                 'context_entry_grants': NONE_HELD, 'context_entries': NONE_HELD,
             },
             sequences={TAGS_SEQUENCE: NONE_HELD, NODES_SEQUENCE: NONE_HELD},
@@ -79,6 +79,7 @@ class TestPlan:
             f'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {SCHEMA}.context_entries TO {ROLE}',
             f'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {SCHEMA}.context_entry_grants TO {ROLE}',
             f'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {SCHEMA}.tags TO {ROLE}',
+            f'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {SCHEMA}.generation_jobs TO {ROLE}',
             f'GRANT SELECT ON TABLE {SCHEMA}.compression_metadata TO {ROLE}',
             f'GRANT USAGE, SELECT ON SEQUENCE {TAGS_SEQUENCE} TO {ROLE}',
             f'GRANT USAGE, SELECT ON SEQUENCE {NODES_SEQUENCE} TO {ROLE}',
