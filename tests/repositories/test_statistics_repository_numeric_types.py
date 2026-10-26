@@ -67,6 +67,8 @@ class _PgStubConnection:
             return [{'thread_id': 't1', 'count': 12}, {'thread_id': 't2', 'count': 8}]
         if 'GROUP BY t.tag' in normalized:
             return [{'tag': 'python', 'count': 5}, {'tag': 'sqlite', 'count': 3}]
+        if 'GROUP BY gj.status' in normalized:
+            return [{'status': 'pending', 'count': 2}, {'status': 'failed', 'count': 1}]
         raise AssertionError(f'Unexpected fetch query: {normalized}')
 
 

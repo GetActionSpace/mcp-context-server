@@ -66,6 +66,7 @@ _SCOPED_FIGURE_MARKERS = (
     'FROM embedding_metadata em',
     'FROM context_entries_fts',
     'FROM context_index_nodes n',
+    'FROM generation_jobs gj',
     _SUMMARY_COUNT,
 )
 

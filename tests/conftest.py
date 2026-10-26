@@ -710,6 +710,7 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
     app.startup.set_repositories(RepositoryContainer(backend))
 
     # Initialize the database schema using the backend
+    from app.migrations.generation_jobs import apply_generation_jobs_migration
     from app.schemas import load_schema
 
     schema_sql = load_schema('sqlite')
@@ -718,6 +719,8 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
         conn.executescript(schema_sql)
 
     await backend.execute_write(_init_schema, access_scope=MAINTENANCE)
+    # Startup creates the generation jobs table on every database; the statistics count its rows.
+    await apply_generation_jobs_migration(backend)
 
     # Ensure the fixture dependency is satisfied
     assert mock_server_dependencies is None
