@@ -106,10 +106,10 @@ class EmbeddingSettings(CommonSettings):
         alias='EMBEDDING_MAX_CONCURRENT',
         ge=1,
         le=20,
-        description='Maximum concurrent embedding requests on the store/update path. '
-                    'A chunked document holds one slot per batch and releases it between batches. '
-                    'Limits parallel Ollama/provider requests to prevent overload. '
-                    'Default 3 balances throughput vs resource contention.',
+        description='Maximum concurrent document embedding requests per process, shared by synchronous stores '
+                    'and updates and by deferred generation jobs; a chunked document holds one slot per batch '
+                    'and releases it between batches, and while an embedding provider is active the generation '
+                    'worker also runs at most this many jobs at once',
     )
 
     # Document batching: a chunked document is embedded in batches, one provider
