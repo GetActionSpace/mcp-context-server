@@ -905,7 +905,7 @@ One attempt of a job runs every step the job needs, with the providers' own retr
 
 The worker counts an attempt when it claims the job. After a failed attempt the job waits before the next one: 30 seconds after the first, 120 seconds after the second, and 480 seconds after any later one. Once the job has failed `GENERATION_JOB_MAX_ATTEMPTS` attempts (3 by default, at most 10), it stays `failed`: the entry stays readable and full-text searchable, semantic search does not return it, and every read reports `generation_status` `failed`. A server that stops gives its running jobs back without counting their attempts. The attempt a dying server was in does count, and a job that has none left after it fails with the error `the process running this job stopped before it finished`.
 
-A failed job runs again in two ways. Every start of a server whose worker runs returns the failed jobs to the queue with no attempts counted, and `mcp-context-server-migrate --embed-missing` and `--re-embed` attempt every waiting and failed job once before their own pass (see [Completing deferred generation jobs](embedding-compression.md#completing-deferred-generation-jobs)).
+A failed job runs again in two ways. Every start of a server whose worker runs returns the failed jobs to the queue with no attempts counted, and before their own pass `mcp-context-server-migrate --embed-missing` and `--re-embed` return every failed job to the queue with its attempts reset, then run claimable jobs until none is left. A job still in its backoff, or held by a running server, stays for later, and their pass leaves its entry out (see [Completing deferred generation jobs](embedding-compression.md#completing-deferred-generation-jobs)).
 
 ### Monitoring Deferred Generation
 
