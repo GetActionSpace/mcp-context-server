@@ -155,26 +155,15 @@ def _get_batch_sizer() -> BatchSizer:
     return _batch_sizer
 
 
-def _reset_batch_sizer() -> None:
-    """Drop the batch sizer so the next document builds one from the current settings.
-
-    Test fixtures that mutate ``settings.embedding.batch_size`` or
-    ``settings.embedding.batch_target_s`` between cases call this.
-    """
-    global _batch_sizer
-    _batch_sizer = None
-
-
 # Explicit re-export so type checkers do NOT flag the reset helpers as unused.
 # These are called only by test fixtures that need to rebind the module-level
-# semaphores and the batch sizer against patched ``settings`` values between
-# cases; production code uses them directly without rebinding.
+# semaphores against patched ``settings`` values between cases; production code
+# uses them directly without rebinding.
 _RESET_HELPERS_EXPORT = (
     _reset_embedding_semaphore,
     _reset_summary_model_semaphore,
     _reset_compression_semaphore,
     _reset_node_summary_semaphore,
-    _reset_batch_sizer,
 )
 
 

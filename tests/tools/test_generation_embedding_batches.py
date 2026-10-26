@@ -178,17 +178,17 @@ async def test_single_embedding_path_holds_one_semaphore_slot() -> None:
     assert result == [ChunkEmbedding(embedding=[0.5], start_index=0, end_index=10)]
 
 
-def test_reset_batch_sizer_rebuilds_from_settings() -> None:
+def test_the_batch_sizer_is_built_from_the_settings_on_first_use() -> None:
     mock_settings = MagicMock()
-    try:
-        with patch.object(generation_module, 'settings', mock_settings):
-            mock_settings.embedding.batch_size = 7
-            generation_module._reset_batch_sizer()
-            assert generation_module._get_batch_sizer().mode == '7'
+    with patch.object(generation_module, 'settings', mock_settings):
+        mock_settings.embedding.batch_size = 7
+        with patch.object(generation_module, '_batch_sizer', None):
+            sizer = generation_module._get_batch_sizer()
+            assert isinstance(sizer, FixedBatchSizer)
+            assert sizer.mode == '7'
+            assert generation_module._get_batch_sizer() is sizer
 
-            mock_settings.embedding.batch_size = 'auto'
-            mock_settings.embedding.batch_target_s = 5.0
-            generation_module._reset_batch_sizer()
+        mock_settings.embedding.batch_size = 'auto'
+        mock_settings.embedding.batch_target_s = 5.0
+        with patch.object(generation_module, '_batch_sizer', None):
             assert isinstance(generation_module._get_batch_sizer(), AdaptiveBatchSizer)
-    finally:
-        generation_module._reset_batch_sizer()
