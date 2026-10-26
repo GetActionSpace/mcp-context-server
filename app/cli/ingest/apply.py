@@ -41,6 +41,8 @@ from datetime import UTC
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
+from typing import NotRequired
+from typing import TypedDict
 from typing import cast
 
 import httpx2
@@ -70,8 +72,7 @@ from app.cli.ingest.sessions import send_over
 from app.cli.ingest.sessions import session_auth
 from app.ingest import PlanContextSyncDict
 from app.ingest import SyncDeleteDict
-from app.types import BulkStoreResponseDict
-from app.types import BulkUpdateResponseDict
+from app.types import GenerationStatus
 
 THREAD_PREFIX = 'kb:'
 DEFAULT_INCLUDES = ('**/*.md',)
@@ -92,9 +93,29 @@ STORE_TOOL = 'store_context_batch'
 UPDATE_TOOL = 'update_context_batch'
 DELETE_TOOL = 'delete_context_batch'
 
+
+class _BatchResultItem(TypedDict):
+    """One per-entry result of ``store_context_batch`` or ``update_context_batch``, as far as a sync reads it.
+
+    A server that cannot defer generation answers without ``generation_status``;
+    the field is None for an entry the batch did not write.
+    """
+
+    index: int
+    success: bool
+    context_id: str | None
+    error: str | None
+    generation_status: NotRequired[GenerationStatus | None]
+
+
+class _BatchResponse(TypedDict):
+    """The response of ``store_context_batch`` or ``update_context_batch``, as far as a sync reads it."""
+
+    results: list[_BatchResultItem]
+
+
 _PLAN = TypeAdapter(PlanContextSyncDict)
-_STORE_RESPONSE = TypeAdapter(BulkStoreResponseDict)
-_UPDATE_RESPONSE = TypeAdapter(BulkUpdateResponseDict)
+_BATCH_RESPONSE = TypeAdapter(_BatchResponse)
 # How many validation problems a message about an unexpected response names.
 _NAMED_PROBLEMS = 3
 _NOT_DELETED = 'the server kept the entry when asked to delete it'
@@ -506,9 +527,8 @@ class _Run:
                 for source_id in batch_sources
             ]
             return _BatchOutcome(outcomes=failed, pending=0)
-        adapter = _STORE_RESPONSE if key == 'entries' else _UPDATE_RESPONSE
         try:
-            response = adapter.validate_python(result)
+            response = _BATCH_RESPONSE.validate_python(result)
         except ValidationError as error:
             raise IngestExitError(EXIT_CONFIG, _unexpected(tool, error)) from error
         results = {item['index']: item for item in response['results']}
@@ -527,7 +547,7 @@ class _Run:
                 context_id=item['context_id'],
                 error=None if applied else item['error'],
             ))
-            if applied and item['generation_status'] == 'pending':
+            if applied and item.get('generation_status') == 'pending':
                 pending += 1
         return _BatchOutcome(outcomes=outcomes, pending=pending)
 
