@@ -58,8 +58,8 @@ get_context_by_ids(context_ids=[
 Every tool call runs as one principal: the verified token subject under `MCP_AUTH_PROVIDER=jwt`, and `ACCESS_CONTROL_DEFAULT_PRINCIPAL` for STDIO, `none` and `simple_token`. Each entry has an owner (the principal that stored it), a `visibility` of `private` (owner plus every grantee) or `public` (everyone), and optional read or write grants for users or groups. The tools apply these rules on SQLite and PostgreSQL alike, and with `ENABLE_POSTGRESQL_RLS=true` PostgreSQL also enforces them in the database; the [Access Model](authentication.md#access-model) explains them in full.
 
 - **Reads**: `get_context_by_ids` omits an ID the caller may not read exactly as it omits a missing one. `search_context`, `semantic_search_context`, `fts_search_context`, `hybrid_search_context` and `grep_context` match, return and count only readable entries, so hidden entries never add to `count`, `total_matches`, `truncated` or the `rows_returned` explain statistic, never consume `grep_context`'s `max_entries_scanned` budget, and never take a slot on a page. With `explain_query=True` on PostgreSQL, the returned query plan still carries row estimates from table-wide planner statistics. With `ENABLE_POSTGRESQL_RLS=true`, these plans also show the read view's copy of the access condition beside the tool's own, the view's role gate in `InitPlan` subplans, and the row-level security policy conditions on the base tables the query reads, such as `tags` (see [Row-level security (PostgreSQL)](database-backends.md#row-level-security-postgresql)). `navigate_context` and `read_context_range` report an unreadable entry as `Context entry not found: {id}`. ID prefixes resolve over readable entries only.
-- **Read-back**: every entry a read tool returns carries its `visibility` (`private` or `public`) and `is_owner`, a boolean that is true when the caller owns the entry: each entry of `get_context_by_ids` and of the four search tools, each `grep_context` result, and the top level of the `navigate_context` and `read_context_range` responses. `is_owner` is false for another principal's `public` entry and for an entry reached through a read or write grant, so it tells a client which entries it may share, publish or delete. No response reports the owner's identity, `granted_by` or the grants of an entry, except `list_context_grants` for the owner. The sync tools carry neither field: they list only the caller's own entries, and the visibility is part of each entry's `meta_digest`.
-- **Discovery**: `list_threads` lists a thread only when the caller may read at least one of its entries, and computes every figure from those entries. `get_statistics` counts only readable entries in every entry, thread, image, tag, embedding, index, summary and node figure; `database_size_mb`, `embeddings_size_mb`, `embeddings_size_estimated`, `connection_metrics` and the configuration fields describe the whole deployment and are the same for every caller.
+- **Read-back**: every entry a read tool returns carries its `visibility` (`private` or `public`) and `is_owner`, a boolean that is true when the caller owns the entry: each entry of `get_context_by_ids` and of the four search tools, each `grep_context` result, and the top level of the `navigate_context` and `read_context_range` responses. `is_owner` is false for another principal's `public` entry and for an entry reached through a read or write grant, so it tells a client which entries it may share, publish or delete. No response reports the owner's identity, `granted_by` or the grants of an entry, except `list_context_grants` for the owner. The sync tools carry neither field: they list only the caller's own entries, and the visibility is part of each entry's `meta_digest`. The same entries and results also carry `generation_status` (see [Generation Status](#generation-status)), which every principal that may read the entry sees.
+- **Discovery**: `list_threads` lists a thread only when the caller may read at least one of its entries, and computes every figure from those entries. `get_statistics` counts only readable entries in every entry, thread, image, tag, embedding, index, summary, node and generation figure; `database_size_mb`, `embeddings_size_mb`, `embeddings_size_estimated`, `connection_metrics` and the configuration fields describe the whole deployment and are the same for every caller.
 - **Updates**: the owner and principals holding a write grant may change text, metadata, tags and images; only the owner may change `visibility`. An entry the caller may not read is reported as not found (`Context entry with ID {id} not found`; in `update_context_batch`, `Context entry {id} not found`). An entry the caller may read but not modify (through a read grant, or a `public` entry it does not own) is refused with `Not authorized to modify context entry with ID {id}` (in `update_context_batch`, `Not authorized to modify context entry {id}`) for every change, a visibility change included. A visibility change by a write grantee who is not the owner is refused with `Only the owner may change the visibility of context {id}`. In atomic mode the not-found and not-authorized batch messages end with "at index {i}" and the whole batch fails.
 - **Deletes**: only the owner may delete an entry. A delete that names IDs (`delete_context` with `context_ids`, `delete_context_batch` with `context_ids`) is refused with `Not authorized to delete context entries: {ids}` and deletes nothing when a named entry the caller may read is not its own; a named ID the caller may not read is skipped and not counted. A thread or criteria delete (`delete_context` with `thread_id`, `delete_context_batch` without `context_ids`) deletes only the caller's own matching entries and leaves the rest in place without an error. Deleting an entry deletes its grants.
 - **Sharing**: only the owner of an entry may share it, unshare it or list its grants, with `share_context`, `unshare_context` and `list_context_grants`; a write grant never allows sharing. An entry the caller may not read is reported as `Context entry with ID {id} not found`, and one it may read but does not own is refused explicitly (see [Sharing Tools](#sharing-tools)). Grants change neither an entry's `updated_at` nor the version `update_context` checks, and no update tool adds or removes grants.
@@ -67,6 +67,23 @@ Every tool call runs as one principal: the verified token subject under `MCP_AUT
 - **Sync**: `plan_context_sync` plans only the caller's own managed entries. A managed entry another principal owns that the caller may read is never planned for an update or a delete and only adds to `foreign_count`; one the caller may not read is not counted, so a manifest item for its source plans a create. `list_ingest_state` lists only the caller's own managed entries, and another principal's entries never take a slot on a page.
 - **Deduplication**: when `deduplicate` is true (the default), `store_context` and `store_context_batch` take as the candidate the latest entry of the same thread and source among the entries the caller may read, and merge into it only when the caller owns it and its text is identical; otherwise they insert a new entry owned by the caller. Only opposite-source entries the caller may read mark a new conversational turn. With `deduplicate` false they look for no candidate and always insert a new entry owned by the caller.
 - **Full-text scores on SQLite**: `fts_score` comes from FTS5 `bm25()`, which uses statistics of the whole index, entries the caller cannot read included, so the scores of readable entries and their relative order can shift as other principals' entries change; the matching set and page sizes depend only on readable entries. The same score feeds the full-text leg of `hybrid_search_context`. PostgreSQL's `ts_rank_cd` scores each entry on its own.
+
+## Generation Status
+
+The write tools generate each entry's embeddings, its summary and the summaries of its Markdown sections (see [Semantic Search](semantic-search.md#generation-modes) and [Summary Generation](summary-generation.md)). By default a write generates them before it commits, and a generation failure stores nothing. A write that sets `defer_generation` to true (the parameter of `store_context` and `update_context`, or the key of the same name on an entry of `store_context_batch` or `update_context_batch`) commits the entry at once together with a generation job, and the server's generation worker generates the outputs afterward. You can read the entry as soon as the write returns, and `search_context`, `fts_search_context`, `grep_context` and the full-text leg of `hybrid_search_context` find it from then on; `semantic_search_context` and the semantic leg of `hybrid_search_context` find it once the job has stored its embeddings. A server with neither an embedding nor a summary provider has nothing to generate, so a deferring write there is an ordinary write and reports `ready`.
+
+Every store and update response, every entry the read tools return and every `grep_context` result carries `generation_status`:
+
+| Value     | Meaning                                                                                                                                                                                                                                                |
+|-----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `ready`   | The entry has no outstanding generation job: its outputs are complete, or the server's settings call for none                                                                                                                                          |
+| `pending` | The entry's generation job waits or runs; the outputs it generates are absent until it completes                                                                                                                                                       |
+| `failed`  | The job used all of its `GENERATION_JOB_MAX_ATTEMPTS` attempts (3 by default). The entry stays readable and full-text searchable, and the job runs again at the server's next start or in `mcp-context-server-migrate --embed-missing` or `--re-embed` |
+
+- A write tool reports the entry's state after its write. A store that deduplicates into an existing entry reports that entry's state, a text update without deferral generates the new text's outputs and reports `ready`, and an update without `text` leaves the state as it was.
+- No tool reports why a job failed. The server logs every failed attempt, the last one at ERROR, and keeps the last error with the job (see [Monitoring Deferred Generation](semantic-search.md#monitoring-deferred-generation)).
+- A completing job stores its outputs and advances the entry's `updated_at`; the version `update_context` checks stays as it was. A text update made while the job runs supersedes it: the worker discards what it generated for the old text, and a deferring update queues a new job.
+- `get_statistics` counts the caller's readable entries whose generation is pending or failed in its `generation` block.
 
 ## Core Tools
 
@@ -83,6 +100,7 @@ Store a context entry with optional images and flexible metadata.
 - `tags` (list, optional): Tags for organization (automatically normalized). At most 100 tags, each at most 128 characters.
 - `visibility` (str, optional): `private` (readable by the owner and every grantee) or `public` (readable by everyone). Omitted uses `ACCESS_CONTROL_DEFAULT_VISIBILITY` (default `private`). Publishing as `public` may require the role named by `ACCESS_CONTROL_PUBLISH_ROLE`. Applies only when the store inserts a new entry: a deduplication update never changes the existing entry's owner or visibility.
 - `deduplicate` (bool, optional, default `true`): `true` updates the caller's own latest entry of the same thread and source instead of inserting a duplicate when its text is identical, which protects against client retransmits (see [Access Scoping](#access-scoping)). `false` skips that lookup and always inserts a new entry owned by the caller, with `visibility` applied and every generation step run as for any new entry. Corpus sync clients pass `false`; see [Storing Without Deduplication](knowledge-base.md#storing-without-deduplication).
+- `defer_generation` (bool, optional, default `false`): `false` generates the entry's embeddings, summary and section summaries before the entry is stored, and a generation failure stores nothing. `true` stores the entry at once with a generation job that generates them in the background (see [Generation Status](#generation-status)). A deferring store skips the deduplication pre-check that lets a likely duplicate reuse its summary; when it deduplicates into an existing entry, that entry keeps a pending job, gets a fresh job in place of a failed one, and gets a job otherwise only when it lacks embeddings or a summary that the server would generate.
 
 **Write-path length caps:** `thread_id` (256 characters), each tag (128 characters) and the value stored under any *indexed* metadata field (512 characters) are bounded at the tool boundary. Each of those values lands in a PostgreSQL btree index whose index-tuple ceiling would otherwise reject the write inside the store transaction while SQLite accepted the identical value, so the cap is what keeps the two backends accepting and rejecting the same input. Values under non-indexed metadata keys are not length-capped. The indexed-value cap is measured on the text the index actually stores, so a list or object under an indexed field is measured as its whole serialized JSON, not skipped.
 
@@ -107,7 +125,7 @@ The metadata field accepts any JSON-serializable structure, making the server ad
 
 Indexed fields are configurable via `METADATA_INDEXED_FIELDS` environment variable. See [Metadata Guide](metadata-addition-updating-and-filtering.md#environment-variables) for details.
 
-**Returns:** Dictionary with success status, `thread_id`, a message, and a 32-character lowercase hex `context_id` identifying the stored entry. Example: `{"success": true, "context_id": "0190abcdef1234567890abcdef123456", "thread_id": "project-123", "message": "..."}`
+**Returns:** Dictionary with success status, `thread_id`, a message, a 32-character lowercase hex `context_id` identifying the stored entry, and the entry's `generation_status` after the store (see [Generation Status](#generation-status)). The message names `generation pending` or `generation failed` when the entry is in that state. Example: `{"success": true, "context_id": "0190abcdef1234567890abcdef123456", "thread_id": "project-123", "message": "Context stored (generation pending)", "generation_status": "pending"}`
 
 ### search_context
 
@@ -131,7 +149,7 @@ Search context entries with powerful filtering including metadata queries and da
 
 **Date Filtering:** Supports ISO 8601 date filtering. See [Date Filtering](#date-filtering) section below.
 
-**Returns:** List of matching context entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, and `is_owner` (true when the caller owns the entry), plus optional query statistics
+**Returns:** List of matching context entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry) and `generation_status` (see [Generation Status](#generation-status)), plus optional query statistics
 
 ### get_context_by_ids
 
@@ -141,11 +159,11 @@ Fetch specific context entries by their IDs.
 - `context_ids` (list[str], required): List of context-entry IDs in canonical 32-character hex or 36-character hyphenated UUID form (at most 100 IDs per call). Both forms are accepted at the tool boundary; storage canonicalizes to 32-character lowercase hex. An 8-31 character hex prefix is also accepted for each ID and resolved independently (zero matches or an ambiguous prefix returns an error).
 - `include_images` (bool, optional): Include image data (default: True)
 
-**Returns:** List of the requested entries the caller may read, with full untruncated `text_content`; an ID that does not exist and an ID of an entry the caller may not read are both omitted. Each entry contains `id`, `thread_id`, `source`, `text_content`, `metadata`, `tags`, `images`, `created_at`, `updated_at`, `visibility` (`private` or `public`), and `is_owner` (true when the caller owns the entry; the owner itself is never returned). The `summary` field follows a tri-state contract controlled by the `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` environment variable:
+**Returns:** List of the requested entries the caller may read, with full untruncated `text_content`; an ID that does not exist and an ID of an entry the caller may not read are both omitted. Each entry contains `id`, `thread_id`, `source`, `text_content`, `metadata`, `tags`, `images`, `created_at`, `updated_at`, `visibility` (`private` or `public`), `is_owner` (true when the caller owns the entry; the owner itself is never returned), and `generation_status` (see [Generation Status](#generation-status)). The `summary` field follows a tri-state contract controlled by the `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` environment variable:
 
 - When disabled (the default), the `summary` key is omitted entirely; consumers reading `entry.get('summary')` will receive `None`, which is the conventional Python signal for "feature disabled, no value to surface".
 - When enabled and the stored summary is a non-empty string, the value is returned verbatim.
-- When enabled but the stored summary is `NULL` or empty (e.g., generation was skipped because text was shorter than `SUMMARY_MIN_CONTENT_LENGTH`, or no provider is configured), the value is normalized to an empty string `''`. This mirrors the search-tool contract (search tools always emit `summary` as a string, never `None`) and provides an explicit "feature on, no data yet" signal distinct from the "feature disabled" `None`.
+- When enabled but the stored summary is `NULL` or empty (e.g., generation was skipped because text was shorter than `SUMMARY_MIN_CONTENT_LENGTH`, no provider is configured, or the entry's generation job has not stored it yet), the value is normalized to an empty string `''`. This mirrors the search-tool contract (search tools always emit `summary` as a string, never `None`) and provides an explicit "feature on, no data yet" signal distinct from the "feature disabled" `None`.
 
 ### delete_context
 
@@ -181,23 +199,24 @@ Threads are ordered by `last_entry` descending, tie-broken by the latest entry i
 
 Get database statistics, usage metrics, and feature status.
 
-The entry, thread, image, tag, embedding, index, summary and node figures count only the entries the caller may read. `database_size_mb`, `embeddings_size_mb`, `embeddings_size_estimated`, `connection_metrics` and the configuration fields describe the whole deployment and are the same for every caller.
+The entry, thread, image, tag, embedding, index, summary, node and generation figures count only the entries the caller may read. `database_size_mb`, `embeddings_size_mb`, `embeddings_size_estimated`, `connection_metrics` and the configuration fields describe the whole deployment and are the same for every caller.
 
 **Returns:** Dictionary with:
 - Total entries count
 - Breakdown by source and content type
 - Total images count
 - Unique tags count
-- Database size in MB (`database_size_mb`) — whole database via `pg_database_size(current_database())` on PostgreSQL; on-disk database file size on SQLite (excludes the `-wal`/`-shm` sidecars, so it can transiently under-report under WAL mode). Omitted for in-memory or missing-file SQLite databases.
-- Embeddings storage size in MB (`embeddings_size_mb`, with the boolean `embeddings_size_estimated`) — size of the active vector payload table (`vec_context_embeddings_compressed` when compression is enabled, otherwise `vec_context_embeddings`). Present when embedding generation or compression is enabled. NOT byte-comparable across backends: on PostgreSQL it is the on-disk relation size including indexes (`pg_total_relation_size`); on SQLite it is the exact compressed payload bytes when compression is enabled, or a deterministic fp32 estimate when it is not. `embeddings_size_estimated` is `true` only for the SQLite fp32 estimate.
+- Database size in MB (`database_size_mb`): whole database via `pg_database_size(current_database())` on PostgreSQL; on-disk database file size on SQLite (excludes the `-wal`/`-shm` sidecars, so it can transiently under-report under WAL mode). Omitted for in-memory or missing-file SQLite databases.
+- Embeddings storage size in MB (`embeddings_size_mb`, with the boolean `embeddings_size_estimated`): size of the active vector payload table (`vec_context_embeddings_compressed` when compression is enabled, otherwise `vec_context_embeddings`). Present when embedding generation or compression is enabled. NOT byte-comparable across backends: on PostgreSQL it is the on-disk relation size including indexes (`pg_total_relation_size`); on SQLite it is the exact compressed payload bytes when compression is enabled, or a deterministic fp32 estimate when it is not. `embeddings_size_estimated` is `true` only for the SQLite fp32 estimate.
 - Connection metrics
 - Semantic search status (enabled, available, model, dimensions, embedding count, coverage)
 - Full-text search status (enabled, available, language, backend, engine, indexed entries, coverage)
 - Chunking configuration (enabled, available, chunk size, overlap, aggregation)
 - Reranking status (enabled, available, provider, model)
 - Summary generation status (enabled, available, provider, model, summary count, coverage, min content length)
-- Compression status (enabled, available, provider, bits, variant, seed, dim, max_concurrent) — present when `ENABLE_EMBEDDING_COMPRESSION=true`; reduced to `{enabled: false, available: false}` shape when disabled.
-- Index-tree node-summary status (`index_tree` with `enabled`, `node_count`) — `enabled` reflects `ENABLE_INDEX_TREE_NODE_SUMMARIES`; `node_count` is the total stored per-node summaries (0 when disabled or the table is absent).
+- Compression status (enabled, available, provider, bits, variant, seed, dim, max_concurrent): present when `ENABLE_EMBEDDING_COMPRESSION=true`; reduced to `{enabled: false, available: false}` shape when disabled.
+- Index-tree node-summary status (`index_tree` with `enabled`, `node_count`): `enabled` reflects `ENABLE_INDEX_TREE_NODE_SUMMARIES`; `node_count` is the total stored per-node summaries (0 when disabled or the table is absent).
+- Generation state (`generation` with `pending` and `failed`), always present: the readable entries whose generation job waits or runs, and those whose job used all of its attempts (see [Generation Status](#generation-status)). An entry whose outputs are complete is in neither count.
 
 ### update_context
 
@@ -211,6 +230,7 @@ Update specific fields of an existing context entry.
 - `tags` (list, optional): New tags (full replacement). At most 100 tags, each at most 128 characters.
 - `images` (list, optional): New images (full replacement). Each image's own `metadata` crosses the boundary as a JSON-encoded **string**, not an object.
 - `visibility` (str, optional): New visibility, `private` or `public`. Only the entry owner may change it, and publishing as `public` may require the role named by `ACCESS_CONTROL_PUBLISH_ROLE`.
+- `defer_generation` (bool, optional, default `false`): applies only when `text` is given; any other update ignores it and generates nothing. `false` regenerates the embeddings, summary and section summaries before the update is applied, and a generation failure changes nothing. `true` stores the new text at once, removes the old text's embeddings, summary and section summaries in the same transaction, and leaves the new ones to a generation job (see [Generation Status](#generation-status)).
 
 The same write-path length caps as `store_context` apply: each tag is limited to 128 characters, and the value under any indexed metadata field to 512 characters, in both the `metadata` and the `metadata_patch` form.
 
@@ -250,7 +270,8 @@ update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"r
 - Success status
 - Context ID
 - List of updated fields
-- Success/error message
+- Success/error message, which names `generation pending` or `generation failed` when the entry is in that state
+- `generation_status`: the entry's state after the update (see [Generation Status](#generation-status))
 
 ## Search Tools
 
@@ -281,7 +302,7 @@ Note: This tool is available by default (`ENABLE_SEMANTIC_SEARCH=auto`) whenever
 
 **Returns:** Dictionary with:
 - Query string
-- List of semantically similar context entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry), and similarity scores
+- List of semantically similar context entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry), `generation_status`, and similarity scores. An entry without embeddings is never a result, so an entry whose deferred generation has not stored its embeddings yet is absent (see [Generation Status](#generation-status))
 - Result count
 - Model name used for embeddings
 - Query execution statistics (only when `explain_query=True`)
@@ -339,7 +360,7 @@ Note: This tool is available by default (`ENABLE_FTS=auto`); set `ENABLE_FTS=fal
 
 **Returns:** Dictionary with:
 - Query string and search mode
-- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry), relevance scores, and highlighted snippets
+- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry), `generation_status`, relevance scores, and highlighted snippets. The full-text index covers an entry as soon as it is stored, whatever its generation state
 - Result count
 - FTS availability status
 
@@ -389,7 +410,7 @@ Note: This tool is available by default (`ENABLE_HYBRID_SEARCH=auto`) when at le
 
 **Returns:** Dictionary with:
 - Query string and fusion method
-- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry), combined RRF scores, and individual search rankings
+- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry), `generation_status`, combined RRF scores, and individual search rankings. An entry without embeddings yet is found by the full-text leg only
 - Result count and counts from each search method
 - List of search modes actually used
 - Query execution statistics (only when `explain_query=True`)
@@ -477,11 +498,12 @@ All search tools return consistent response structures with common fields and to
 | `metadata`, `tags`, `created_at`, `updated_at` | Yes                   | Yes                        | Yes                        | Yes                        |
 | `visibility`                                   | Yes                   | Yes                        | Yes                        | Yes                        |
 | `is_owner`                                     | Yes                   | Yes                        | Yes                        | Yes                        |
+| `generation_status`                            | Yes                   | Yes                        | Yes                        | Yes                        |
 | `images`                                       | include_images=True   | include_images=True        | include_images=True        | include_images=True        |
 | `scores`                                       | No                    | Yes                        | Yes                        | Yes                        |
 | `highlighted`                                  | No                    | No                         | highlight=True             | No                         |
 
-**`summary` field**: Present in all search tool results. Populated by automatic LLM-based summary generation (enabled by default with Ollama). Contains a dense summary (token limit controlled by `SUMMARY_MAX_TOKENS`, default 4000) that is more informative than the truncated `text_content`. Empty string when summary generation is disabled or the summary has not yet been generated. See [Summary Generation Guide](summary-generation.md) for configuration.
+**`summary` field**: Present in all search tool results. Populated by automatic LLM-based summary generation (enabled by default with Ollama). Contains a dense summary (token limit controlled by `SUMMARY_MAX_TOKENS`, default 4000) that is more informative than the truncated `text_content`. Empty string when summary generation is disabled or the summary has not yet been generated, as for an entry whose deferred generation is still `pending`. See [Summary Generation Guide](summary-generation.md) for configuration.
 
 **Scores Object Structure:**
 
@@ -501,7 +523,8 @@ All search tools (except `search_context`) return a unified `scores` object with
 **Notes:**
 - `stats` is only included when `explain_query=True` for all search tools
 - All search tools return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 300 chars) with `summary` and `is_text_content_truncated` flag; use `get_context_by_ids` for full content
-- Every result of every search tool reports the entry's `visibility` (`private` or `public`) and `is_owner` (a boolean, true when the caller owns the entry); the owner itself is never returned
+- Every result of every search tool reports the entry's `visibility` (`private` or `public`), `is_owner` (a boolean, true when the caller owns the entry) and `generation_status` (`ready`, `pending` or `failed`; see [Generation Status](#generation-status)); the owner itself is never returned
+- `semantic_search_context` and the semantic leg of `hybrid_search_context` return only entries that have embeddings; `search_context`, `fts_search_context` and the full-text leg of `hybrid_search_context` find an entry as soon as it is stored
 - For standalone FTS and semantic searches, rank fields are always `null` (no cross-method ranking)
 
 ## Navigation Tools (locate / navigate / extract)
@@ -522,7 +545,7 @@ Server-side grep: literal or regular-expression, line-oriented, UNRANKED pattern
 - `max_entries_scanned` (int, optional): Maximum entries the scan visits (clamped to the server cap)
 - `thread_id` / `source` / `tags` / `metadata_filters` / `content_type` (optional): Reuse the store's filters to scope the scan (the ripgrep glob/type analog); scoping with `thread_id` is recommended; `tags` accepts at most 100 tags and `metadata_filters` at most 100 filters per request
 
-**Returns:** `{mode, total_matches, truncated, results}`. In `content` mode each result carries `context_id`, `line_number`, `line`, `match_start`/`match_end` (code-point offsets into `text_content`), and `before`/`after` context lines; in `files_with_matches` mode `context_id` + `match_count`; in `count` mode `context_id` + `count`. Every result also carries its entry's `visibility` (`private` or `public`) and `is_owner` (true when the caller owns the entry). `truncated` is True when matches or the scan were capped.
+**Returns:** `{mode, total_matches, truncated, results}`. In `content` mode each result carries `context_id`, `line_number`, `line`, `match_start`/`match_end` (code-point offsets into `text_content`), and `before`/`after` context lines; in `files_with_matches` mode `context_id` + `match_count`; in `count` mode `context_id` + `count`. Every result, each `content` match included, also carries its entry's `visibility` (`private` or `public`), `is_owner` (true when the caller owns the entry) and `generation_status` (see [Generation Status](#generation-status)). Grep reads the stored text, so it finds an entry as soon as it is stored, whatever its generation state. `truncated` is True when matches or the scan were capped.
 
 ### navigate_context
 
@@ -533,7 +556,7 @@ Build a navigable Markdown-heading outline (index_tree) for one record, computed
 - `max_depth` (int, optional): Deepest Markdown heading level to include (1-6, default 6; deeper headings fold into their section)
 - `include_node_summaries` (bool, optional): Attach stored per-node LLM summaries to descendant nodes when that layer is enabled (default: False)
 
-**Returns:** `{context_id, total_chars, node_count, root, visibility, is_owner}` where `root` is a recursive node `{node_id, level, ordinal, title, char_start, char_end, summary, children}`. `node_id` is a heading-path slug with a sibling ordinal (e.g. `setup/install`, `notes-2`); the root's `summary` mirrors the entry summary by reference. `visibility` and `is_owner` describe the entry (its visibility, and whether the caller owns it) and appear at the top level only, never on a node.
+**Returns:** `{context_id, total_chars, node_count, root, visibility, is_owner, generation_status}` where `root` is a recursive node `{node_id, level, ordinal, title, char_start, char_end, summary, children}`. `node_id` is a heading-path slug with a sibling ordinal (e.g. `setup/install`, `notes-2`); the root's `summary` mirrors the entry summary by reference and is null while the entry has none. `visibility`, `is_owner` and `generation_status` describe the entry (its visibility, whether the caller owns it, and its [generation state](#generation-status)) and appear at the top level only, never on a node. The outline itself never depends on generation, but after a deferred store or text update the nodes carry no stored summaries until the entry's generation job completes.
 
 ### read_context_range
 
@@ -547,7 +570,7 @@ Read part of one record by character range, line range, or outline `node_id`. Sl
 
 Provide exactly ONE addressing mode. Pair with `grep_context` (content mode) by feeding `match_start`/`match_end` into `start_char`/`end_char`, or with `navigate_context` by passing a section's `node_id`.
 
-**Returns:** `{context_id, start_char, end_char, start_line, end_line, text, visibility, is_owner}` echoing the RESOLVED span, with the entry's visibility and whether the caller owns it. Out-of-range offsets are clamped to `[0, len(text)]`, so a stale offset or node_id from a prior turn degrades gracefully.
+**Returns:** `{context_id, start_char, end_char, start_line, end_line, text, visibility, is_owner, generation_status}` echoing the RESOLVED span, with the entry's visibility, whether the caller owns it, and its [generation state](#generation-status). Out-of-range offsets are clamped to `[0, len(text)]`, so a stale offset or node_id from a prior turn degrades gracefully.
 
 ## Sync Tools
 
@@ -652,13 +675,14 @@ Store multiple context entries in a single batch operation.
   - `metadata` (dict, optional), `tags` (list, optional), `images` (list, optional)
   - `visibility` (str, optional): `private` or `public`, as for `store_context`
   - `deduplicate` (bool, optional, default `true`): as for `store_context`, per entry. It accepts the values the `store_context` parameter accepts (`true`/`false`, `1`/`0`, and strings such as `"false"` or `"off"`); any other value fails the entry with `deduplicate must be a boolean`.
+  - `defer_generation` (bool, optional, default `false`): as for `store_context`, per entry, accepting the same values as `deduplicate`; any other value fails the entry with `defer_generation must be a boolean`. A deferring entry skips the batch's generation pass and is stored with a generation job; in a batch that mixes both kinds, the other entries generate as usual.
 - `atomic` (bool, optional): If true, all succeed or all fail (default: true)
 
 Entries are stored in order, so the deduplication candidate of a deduplicating entry can be an entry stored earlier in the same batch: an entry with `deduplicate` true that follows an identical `deduplicate=false` entry of the same thread and source merges into the entry just inserted.
 
 Each entry is subject to the same write-path length caps as `store_context`: `thread_id` at most 256 characters, at most 100 tags of at most 128 characters each, and at most 512 characters in the value under any indexed metadata field. A breach is reported as a per-entry validation error, so `atomic=false` still stores the remaining entries.
 
-**Returns:** Dictionary with success, total, succeeded, failed, results array, message
+**Returns:** Dictionary with success, total, succeeded, failed, results array, message. Each result carries `index`, `success`, `context_id`, `error` and `generation_status`, the stored entry's state after the store (null for an entry that was not stored; see [Generation Status](#generation-status)). The message counts the stored entries whose generation is pending or failed, as in `generation pending for 2 entries`.
 
 ### update_context_batch
 
@@ -670,6 +694,7 @@ Update multiple context entries in a single batch operation.
   - `text` (str, optional), `metadata` (dict, optional), `metadata_patch` (dict, optional)
   - `tags` (list, optional), `images` (list, optional)
   - `visibility` (str, optional): `private` or `public`; owner-only, as for `update_context`
+  - `defer_generation` (bool, optional, default `false`): as for `update_context`, per update, applying only to an update that sends `text`; it accepts the values the `update_context` parameter accepts, and any other value fails the update with `defer_generation must be a boolean`
 - `atomic` (bool, optional): If true, all succeed or all fail (default: true)
 
 Each update is subject to the same write-path length caps as `update_context`: at most 100 tags of at most 128 characters each, and at most 512 characters in the value under any indexed metadata field (in both the `metadata` and the `metadata_patch` form). A breach is reported as a per-entry validation error.
@@ -678,7 +703,7 @@ Each update is subject to the same write-path length caps as `update_context`: a
 
 An entry the caller may not read is reported as `Context entry {id} not found`, and one it may read but not modify as `Not authorized to modify context entry {id}`; atomic mode ends the message with "at index {i}" and fails the whole batch, while non-atomic mode records the message in that entry's result.
 
-**Returns:** Dictionary with success, total, succeeded, failed, results array, message
+**Returns:** Dictionary with success, total, succeeded, failed, results array, message. Each result carries `index`, `context_id`, `success`, `updated_fields`, `error` and `generation_status`, the entry's state after the update (null for an update that failed; see [Generation Status](#generation-status)). The message counts the updated entries whose generation is pending or failed.
 
 ### delete_context_batch
 

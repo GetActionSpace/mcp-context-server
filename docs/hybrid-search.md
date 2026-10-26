@@ -266,6 +266,7 @@ When hybrid search is enabled and at least one underlying search method is avail
       "is_text_content_truncated": true,
       "visibility": "private",
       "is_owner": true,
+      "generation_status": "ready",
       "metadata": {"status": "completed", "priority": 8},
       "created_at": "2025-12-01T10:00:00Z",
       "updated_at": "2025-12-01T10:00:00Z",
@@ -315,6 +316,8 @@ When hybrid search is enabled and at least one underlying search method is avail
 ```
 
 **Note:** The `stats` field is only included when `explain_query=True`.
+
+Each result reports `visibility`, `is_owner` (true when the caller owns the entry) and `generation_status` (`ready`, `pending` or `failed`; see [Generation Status](api-reference.md#generation-status)).
 
 ### Understanding the Stats Field
 
@@ -390,6 +393,10 @@ Hybrid search automatically adapts when search methods are unavailable:
 - FTS unavailable: FTS migration in progress, database corruption
 
 The `search_modes_used` field in the response indicates which modes were actually executed.
+
+### Entries Whose Generation Is Pending
+
+With both modes available, a single entry can still be visible to only one of them. The full-text index covers an entry as soon as a write stores it, while the semantic leg ranks only entries that have embeddings. An entry stored with `defer_generation=true`, or whose text a deferred update replaced, therefore appears with `semantic_rank: null` and a rank from the full-text leg alone until its generation job stores the new embeddings, and so does an entry whose job `failed`. A deferred text update deletes the old text's embeddings in the same transaction, so the semantic leg never ranks the new text through the old vectors. See [Deferred Generation](semantic-search.md#deferred-generation).
 
 ### Example Use Cases
 
@@ -570,7 +577,7 @@ Both FTS and semantic search should show as available for full hybrid functional
 3. **Tune k parameter**:
    - Lower k (30) for more top-heavy ranking
    - Higher k (100) for more uniform treatment
-4. **Verify data has embeddings**: Check `get_statistics` for embedding coverage
+4. **Verify data has embeddings**: Check `get_statistics` for embedding coverage and its `generation` block for entries whose embeddings are still pending or failed
 
 ### Issue 4: Slow Hybrid Search
 
