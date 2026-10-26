@@ -92,7 +92,7 @@ type Setup = Callable[[ScopedDb], Awaitable[None]]
 
 # Case ids of the two-principal suite: context reads and probes (S), ranked search (R),
 # dedup and the fresh insert (K), updates (W), deletes and owner-scoped listings (X),
-# aggregates (A) and the grant seams (G).
+# aggregates (A), the grant seams (G) and the generation job seams (J).
 KNOWN_CASE_IDS = frozenset({
     'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8',
     'R1', 'R2', 'R3', 'R4',
@@ -101,6 +101,7 @@ KNOWN_CASE_IDS = frozenset({
     'X1', 'X2', 'X3',
     'A1', 'A2', 'A3', 'A4', 'A5', 'A6',
     'G1', 'G2', 'G3', 'G4', 'G5',
+    'J1', 'J2', 'J3', 'J4',
 })
 
 EMBEDDING_DIM = 128

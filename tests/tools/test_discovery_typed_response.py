@@ -38,6 +38,7 @@ from app.backends.postgresql_backend.session_profiles import UnboundProfile
 from app.compression.provenance import insert_compression_metadata
 from app.compression.types import CompressionMetadata
 from app.migrations.compression import apply_compression_migration
+from app.migrations.generation_jobs import apply_generation_jobs_migration
 from app.settings import get_settings
 from app.startup import set_backend
 from app.startup import set_repositories
@@ -108,6 +109,7 @@ async def fresh_backend(
     backend = create_backend(backend_type='sqlite', db_path=str(db_path))
     await backend.initialize()
     await apply_compression_migration(backend=backend)
+    await apply_generation_jobs_migration(backend)
     await insert_compression_metadata(
         backend,
         CompressionMetadata(

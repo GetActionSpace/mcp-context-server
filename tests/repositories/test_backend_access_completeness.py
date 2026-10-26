@@ -9,7 +9,7 @@ Eight rules hold:
 2. A repository method that calls an entry point takes a required keyword-only ``scope``
    and hands that same ``scope`` to every such call.
 3. Such a method is typed by its class: a guarded method keeps the scope type its
-   predicate needs, and a child or system method takes the wider ``BackendAccess``.
+   predicate needs, and a child, worker or system method takes the wider ``BackendAccess``.
 4. No repository method carries a ``scope`` it neither hands to a call nor reads, and no
    guarded ``scope`` admits the maintenance identity.
 5. The maintenance identity never appears under ``app/tools`` or ``app/repositories``:
@@ -147,7 +147,7 @@ def test_backend_calling_method_forwards_its_scope(key: str) -> None:
 
 @pytest.mark.parametrize('key', [key for key in _backend_callers() if key not in registry_keys(*GUARDED)])
 def test_child_and_system_backend_callers_take_the_backend_access(key: str) -> None:
-    """A child or system method renders no predicate, so it accepts every identity the backend binds."""
+    """A child, worker or system method renders no predicate, so it accepts every identity the backend binds."""
     _parameter, annotation = scope_parameter(key)
 
     assert annotation is BackendAccess

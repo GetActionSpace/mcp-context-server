@@ -5,7 +5,9 @@ module of ``app/repositories``, with every closure nested inside it counted as p
 :data:`REGISTRY` assigns every repository method that runs SQL against ``context_entries`` or
 one of its child tables a :class:`Seam`, whether the statement names the table itself or reads
 it through the read seam ``_readable``, and the helpers below parse ``app/`` once and answer
-the structural questions the completeness tests ask of it.
+the structural questions the completeness tests ask of it, among them where each child reader,
+child writer and worker method is referenced (:func:`qualified_references`,
+:func:`worker_site_violations`).
 """
 
 import ast
@@ -15,6 +17,7 @@ import inspect
 import re
 import typing
 from collections.abc import Callable
+from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -29,7 +32,7 @@ APP = ROOT / 'app'
 CONTEXT_TABLE_SQL = re.compile(
     r'\b(FROM|JOIN|INTO|UPDATE|TABLE)\s+(context_entries|context_entries_fts|context_entries_fts_docsize'
     r'|context_entry_grants|tags|image_attachments|context_index_nodes|embedding_chunks|embedding_metadata'
-    r'|vec_context_embeddings|vec_context_embeddings_compressed)\b',
+    r'|vec_context_embeddings|vec_context_embeddings_compressed|generation_jobs)\b',
     re.IGNORECASE,
 )
 
@@ -49,6 +52,10 @@ class Seam(StrEnum):
     OWNER_STAMPED = 'owner_stamped'  # an insert whose owner_id is bound from the scope; no predicate
     CHILD_BY_TRUSTED_ID = 'child_by_trusted_id'  # id-keyed child read; its call sites are pinned
     CHILD_WRITER = 'child_writer'  # child write behind the write gate or the owned dedup; sites pinned
+    # a job-queue or generated-output statement that runs under the identity its caller passes, with no
+    # predicate: outputs are generated for whichever entry holds a job, and enqueuing the job was authorized;
+    # only the generation worker, the CLI and other worker methods reference it
+    WORKER = 'worker'
     SYSTEM = 'system'  # schema maintenance or a deployment-level figure
     COMPUTE = 'compute'  # a ranked-search closure that runs no SQL
 
@@ -60,6 +67,10 @@ CHILD = frozenset({Seam.CHILD_BY_TRUSTED_ID, Seam.CHILD_WRITER})
 
 # The statement builders an owner-stamped method may insert through instead of holding the INSERT itself.
 OWNER_STAMPED_BUILDERS = frozenset({'_insert_entry_sql'})
+
+# The top-level directories of app/ whose code may call a worker method: the generation worker
+# and the command-line tools, which drain the job queue outside any request.
+WORKER_CALLER_HOMES = frozenset({'generation_jobs', 'cli'})
 
 
 @dataclass(frozen=True)
@@ -76,7 +87,7 @@ class Entry:
         sites: For a child reader or writer, every function of ``app/`` that references it,
             as ``<path under app>:<qualified function name>``, once per reference.
         receiver: Counts only references through this attribute or name, for a method whose
-            name other objects share (``Path.exists``).
+            name other objects share (``Path.exists``, a circuit breaker's ``record_failure``).
     """
 
     seam: Seam
@@ -107,6 +118,8 @@ _NODES = _REPO + 'index_node_repository:IndexNodeRepository.'
 _TAGS = _REPO + 'tag_repository:TagRepository.'
 _IMAGES = _REPO + 'image_repository:ImageRepository.'
 _GRANTS = _REPO + 'grant_repository:GrantRepository.'
+_JOBS = _REPO + 'generation_job_repository:GenerationJobRepository.'
+_GENERATION = _REPO + 'context_repository.generation:ContextGenerationMixin.'
 
 _STORE_TX = 'tools/_transactions.py:execute_store_in_transaction'
 _UPDATE_TX = 'tools/_transactions.py:execute_update_in_transaction'
@@ -134,9 +147,14 @@ def _guarded(
     return Entry(seam, cases=cases, closures=closures or {}, forwards_to=forwards_to, spies=spies)
 
 
-def _child(seam: Seam, *sites: str, receiver: str | None = None) -> Entry:
-    """Build the entry of a child reader or writer referenced from ``sites``."""
-    return Entry(seam, sites=sites, receiver=receiver)
+def _child(seam: Seam, *sites: str, receiver: str | None = None, cases: tuple[str, ...] = ()) -> Entry:
+    """Build the entry of a child reader or writer referenced from ``sites`` and proven by ``cases``."""
+    return Entry(seam, cases=cases, sites=sites, receiver=receiver)
+
+
+def _worker(*, receiver: str | None = None) -> Entry:
+    """Build the entry of a worker method, whose references :func:`worker_site_violations` checks."""
+    return Entry(Seam.WORKER, receiver=receiver)
 
 
 REGISTRY: dict[str, Entry] = {
@@ -179,7 +197,7 @@ REGISTRY: dict[str, Entry] = {
     _FTS_MAINTENANCE + 'get_statistics': _guarded(Seam.SCOPED, 'A5'),
     _INVENTORY + 'get_statistics': _guarded(Seam.SCOPED, 'A4'),
     _STATISTICS + 'get_thread_list': _guarded(Seam.SCOPED, 'A1'),
-    _STATISTICS + 'get_database_statistics': _guarded(Seam.SCOPED, 'A2'),
+    _STATISTICS + 'get_database_statistics': _guarded(Seam.SCOPED, 'A2', 'J1'),
     _STATISTICS + 'get_summary_statistics': _guarded(Seam.SCOPED, 'A3'),
     _NODES + 'count_all_nodes': _guarded(Seam.SCOPED, 'A6'),
     _INGEST + 'ingest_rows_in_range': _guarded(Seam.SCOPED, 'S8'),
@@ -214,6 +232,14 @@ REGISTRY: dict[str, Entry] = {
     _IMAGES + 'get_images_for_context': _child(Seam.CHILD_BY_TRUSTED_ID, *_RESULT_HYDRATORS),
     _IMAGES + 'count_images_for_context': _child(Seam.CHILD_BY_TRUSTED_ID, _UPDATE_TX),
     _NODES + 'get_nodes_for_context': _child(Seam.CHILD_BY_TRUSTED_ID, 'tools/navigation/navigate.py:navigate_context'),
+    _JOBS + 'states_for_ids': _child(Seam.CHILD_BY_TRUSTED_ID, cases=('J2',)),
+    _JOBS + 'state_for': _child(Seam.CHILD_BY_TRUSTED_ID),
+    _JOBS + '_states_sql': _child(
+        Seam.CHILD_BY_TRUSTED_ID,
+        'repositories/generation_job_repository.py:GenerationJobRepository.state_for',
+        'repositories/generation_job_repository.py:GenerationJobRepository.states_for_ids._read_sqlite',
+        'repositories/generation_job_repository.py:GenerationJobRepository.states_for_ids._read_postgresql',
+    ),
     _INVENTORY + 'exists': _child(
         Seam.CHILD_BY_TRUSTED_ID,
         _STORE_TX, 'tools/batch/store.py:store_context_batch', 'tools/context/store.py:store_context',
@@ -232,6 +258,8 @@ REGISTRY: dict[str, Entry] = {
     _IMAGES + 'store_images': _child(Seam.CHILD_WRITER, _STORE_TX),
     _IMAGES + 'replace_images_for_context': _child(Seam.CHILD_WRITER, _STORE_TX, _UPDATE_TX, _UPDATE_TX),
     _NODES + 'replace_nodes_for_context': _child(Seam.CHILD_WRITER, _STORE_TX, _UPDATE_TX),
+    _JOBS + 'enqueue': _child(Seam.CHILD_WRITER, cases=('J3',)),
+    _JOBS + 'delete_for_entry': _child(Seam.CHILD_WRITER, cases=('J4',)),
     # The embedding CLI commands run outside any request and write by the ids they read.
     _CHUNKS + 'store_chunked': _child(
         Seam.CHILD_WRITER, _STORE_TX, _UPDATE_TX, 'cli/migrate_embeddings.py:_embed_missing_async', _REEMBED,
@@ -247,6 +275,17 @@ REGISTRY: dict[str, Entry] = {
     # The delete path hands over only the ids its in-transaction owner probe cleared.
     _CHUNKS + 'delete_all_chunks_bulk': _child(Seam.CHILD_WRITER, 'tools/_delete_cleanup.py:cleanup_embeddings_for_delete'),
     _CHUNKS + '_delete_all_chunks_compressed_bulk': _child(Seam.CHILD_WRITER, _CHUNK_WRITES + 'delete_all_chunks_bulk'),
+    # Worker: the job queue and the generated outputs, written for whichever entry holds a job.
+    _JOBS + 'claim_next': _worker(),
+    _JOBS + 'renew_lease': _worker(),
+    _JOBS + 'record_failure': _worker(receiver='generation_jobs'),
+    _JOBS + 'delete_claimed': _worker(),
+    _JOBS + 'delete_job': _worker(),
+    _JOBS + 'release_claims': _worker(),
+    _JOBS + 'reset_failed': _worker(),
+    _GENERATION + 'read_generation_source': _worker(),
+    _GENERATION + '_generation_source_sql': _worker(),
+    _GENERATION + 'write_generation_summary': _worker(),
     # System: schema maintenance and deployment-level figures.
     _FTS_MAINTENANCE + 'is_available': Entry(Seam.SYSTEM),
     _FTS_MAINTENANCE + 'get_current_tokenizer': Entry(Seam.SYSTEM),
@@ -332,6 +371,70 @@ def repository_methods() -> dict[str, tuple[FunctionNode, ParsedModule]]:
                     if isinstance(member, ast.FunctionDef | ast.AsyncFunctionDef):
                         methods[f'{module.dotted}:{node.name}.{member.name}'] = (member, module)
     return methods
+
+
+def qualified_references(module: ParsedModule) -> Iterator[tuple[str, ast.Attribute]]:
+    """Yield every attribute read of ``module`` with the qualified name of its enclosing function."""
+
+    def visit(node: ast.AST, scope: tuple[str, ...]) -> Iterator[tuple[str, ast.Attribute]]:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                yield from visit(child, (*scope, child.name))
+                continue
+            if isinstance(child, ast.Attribute) and isinstance(child.ctx, ast.Load):
+                yield '.'.join(scope), child
+            yield from visit(child, scope)
+
+    yield from visit(module.tree, ())
+
+
+def receiver_name(node: ast.expr) -> str | None:
+    """The last name of the object an attribute is read from: ``repos.embeddings`` gives ``embeddings``."""
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Name):
+        return node.id
+    return None
+
+
+def method_name(key: str) -> str:
+    """The bare name of the method a registry key names: ``module:Class.method`` gives ``method``."""
+    return key.split(':', 1)[1].rsplit('.', 1)[-1]
+
+
+def _within_worker_method(module: ParsedModule, function: str) -> bool:
+    """Whether ``function``, qualified within ``module``, is a worker method or a closure inside one."""
+    parts = function.split('.')
+    candidates = {f'{module.dotted}:{".".join(parts[:2])}', f'{module.dotted}:{parts[0]}'}
+    return any(key in REGISTRY and REGISTRY[key].seam is Seam.WORKER for key in candidates)
+
+
+def worker_site_violations(modules: Iterable[ParsedModule]) -> list[str]:
+    """List every reference to a worker method from code that may not call one.
+
+    A worker method runs under whatever identity its caller passes and renders no access
+    predicate, so only code that runs outside any request references it: the generation
+    worker and the CLI (:data:`WORKER_CALLER_HOMES`), and other worker methods. A worker
+    method nothing references yet passes.
+
+    Args:
+        modules: The parsed modules to search.
+
+    Returns:
+        ``<path under app>:<qualified function name>`` of every offending reference, sorted.
+    """
+    workers = {method_name(key): REGISTRY[key] for key in registry_keys(Seam.WORKER)}
+    violations: list[str] = []
+    for module in modules:
+        if module.path.split('/')[0] in WORKER_CALLER_HOMES:
+            continue
+        for function, attribute in qualified_references(module):
+            entry = workers.get(attribute.attr)
+            if entry is None or (entry.receiver is not None and receiver_name(attribute.value) != entry.receiver):
+                continue
+            if not _within_worker_method(module, function):
+                violations.append(f'{module.path}:{function}')
+    return sorted(violations)
 
 
 def callee_name(call: ast.Call) -> str | None:

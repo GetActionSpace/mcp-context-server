@@ -23,6 +23,10 @@ type MetadataDict = dict[str, JsonValue]
 # The stored visibility of an entry, as every entry read reports it.
 type EntryVisibility = Literal['private', 'public']
 
+# The state of an entry's generated outputs: 'ready' when the entry holds no generation job,
+# 'pending' while its job waits or runs, 'failed' when its job spent every attempt.
+type GenerationStatus = Literal['ready', 'pending', 'failed']
+
 
 class EntryAccessFields(TypedDict):
     """The access fields every entry-carrying read response reports for one entry.
