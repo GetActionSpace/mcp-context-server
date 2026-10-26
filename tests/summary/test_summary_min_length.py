@@ -29,6 +29,7 @@ from app.repositories.context_repository.records import EntryProbe
 from app.settings.summary import SummarySettings
 from app.startup import ensure_repositories
 from tests.helpers import LOCAL_SCOPE
+from tests.tools._generation_jobs import InMemoryGenerationJobs
 
 store_context = app.tools.store_context
 update_context = app.tools.update_context
@@ -133,6 +134,8 @@ def _make_mock_repos() -> MagicMock:
     repos.index_nodes.replace_nodes_for_context = AsyncMock()
     repos.index_nodes.get_nodes_for_context = AsyncMock(return_value={})
     repos.index_nodes.count_all_nodes = AsyncMock(return_value=0)
+
+    repos.generation_jobs = InMemoryGenerationJobs()
 
     return repos
 
