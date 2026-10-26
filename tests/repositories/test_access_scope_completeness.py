@@ -108,6 +108,7 @@ SCOPE_CARRYING_HELPERS = (
     'app.tools.sharing:_run_owned_grant_change',
     'app.tools._responses:generation_statuses',
     'app.tools._responses:attach_generation_status',
+    'app.tools.search.ranking:apply_search_display_format',
     'app.ids:resolve_prefix',
     'app.ids:resolve_or_normalize_id',
     'app.ids:resolve_or_normalize_ids',

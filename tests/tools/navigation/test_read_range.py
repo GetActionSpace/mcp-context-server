@@ -11,6 +11,7 @@ from app.backends import StorageBackend
 from app.backends.base import MAINTENANCE
 from app.tools.navigation.read_range import read_context_range
 from tests.helpers import as_principal
+from tests.tools._generation_jobs import seed_generation_jobs
 from tests.tools.navigation._navigation import grep_as_dict
 from tests.tools.navigation._navigation import navigate_as_dict
 from tests.tools.navigation._navigation import store_entry
@@ -119,6 +120,21 @@ class TestReadContextRangeReadBack:
         for result in (owned, read):
             assert type(result['is_owner']) is bool
             assert 'owner_id' not in result
+
+    @pytest.mark.asyncio
+    async def test_response_carries_generation_state(self, nav_backend: StorageBackend) -> None:
+        """An entry without a job reads ready, one with a waiting job pending, one with a failed job failed."""
+        ready = await store_entry(nav_backend, 'ready text')
+        pending = await store_entry(nav_backend, 'pending text', offset_seconds=1)
+        failed = await store_entry(nav_backend, 'failed text', offset_seconds=2)
+        await seed_generation_jobs(nav_backend, {pending: 'pending', failed: 'failed'})
+
+        states = {
+            context_id: (await read_context_range(context_id=context_id, start_char=0, end_char=4))['generation_status']
+            for context_id in (ready, pending, failed)
+        }
+
+        assert states == {ready: 'ready', pending: 'pending', failed: 'failed'}
 
 
 class TestLocateThenExtract:

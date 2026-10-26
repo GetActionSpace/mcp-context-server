@@ -326,9 +326,8 @@ async def fts_search_context(
             else:
                 result['tags'] = []
 
-        # Apply unified search display formatting
-        for result in final_results:
-            apply_search_display_format(result)
+        # Apply unified search display formatting, the results' generation states included
+        await apply_search_display_format(final_results, repos, scope=scope)
 
         logger.info(f'FTS search found {len(final_results)} results for query: "{query[:50]}..."')
 

@@ -113,7 +113,10 @@ async def semantic_search_context(
         Dict with query (str), results (list with id, thread_id, source,
         text_content (truncated), summary, is_text_content_truncated,
         metadata, scores, tags, visibility, is_owner (whether the caller owns
-        the entry)), count (int), model (str), stats (only when
+        the entry), generation_status ('ready' once the entry's embeddings and
+        summaries are generated, 'pending' while their generation waits or runs,
+        'failed' when it gave up after its retries; an entry without embeddings
+        yet is never a result)), count (int), model (str), stats (only when
         explain_query=True), and rank_depth_limit (only when the requested window
         reaches past the ranked depth).
 
@@ -262,9 +265,8 @@ async def semantic_search_context(
             else:
                 result['tags'] = []
 
-        # Apply unified search display formatting
-        for result in final_results:
-            apply_search_display_format(result)
+        # Apply unified search display formatting, the results' generation states included
+        await apply_search_display_format(final_results, repos, scope=scope)
 
         logger.info(f'Semantic search found {len(final_results)} results for query: "{query[:50]}..."')
 

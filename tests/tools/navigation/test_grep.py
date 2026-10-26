@@ -20,6 +20,8 @@ from app.services.grep_service import GrepEntryResult
 from app.startup import ensure_repositories
 from app.tools.navigation.grep import grep_context
 from tests.helpers import as_principal
+from tests.tools._generation_jobs import record_state_reads
+from tests.tools._generation_jobs import seed_generation_jobs
 from tests.tools.navigation._navigation import grep_as_dict
 from tests.tools.navigation._navigation import store_entry
 
@@ -354,6 +356,28 @@ class TestGrepContextReadBack:
             assert (row['visibility'], row['is_owner']) == expected[row['context_id']]
             assert type(row['is_owner']) is bool
             assert 'owner_id' not in row
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('output_mode', ['files_with_matches', 'count', 'content'])
+    async def test_rows_carry_generation_state(
+        self, nav_backend: StorageBackend, output_mode: str, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Every row reports its entry's generation state, read once for the matched entries only."""
+        ready = await store_entry(nav_backend, 'ready needle\nanother needle', offset_seconds=1)
+        pending = await store_entry(nav_backend, 'pending needle', offset_seconds=2)
+        failed = await store_entry(nav_backend, 'failed needle', offset_seconds=3)
+        unmatched = await store_entry(nav_backend, 'only hay', offset_seconds=4)
+        await seed_generation_jobs(nav_backend, {pending: 'running', failed: 'failed', unmatched: 'pending'})
+        reads = record_state_reads(monkeypatch, await ensure_repositories())
+
+        payload = await grep_as_dict(pattern='needle', thread_id='t', output_mode=output_mode)
+
+        expected = {ready: 'ready', pending: 'pending', failed: 'failed'}
+        rows = payload['results']
+        assert len(rows) == (4 if output_mode == 'content' else 3)
+        for row in rows:
+            assert row['generation_status'] == expected[row['context_id']]
+        assert [sorted(read) for read in reads] == [sorted(expected)]
 
 
 class TestGrepContextScoping:

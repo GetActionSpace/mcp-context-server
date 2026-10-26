@@ -19,6 +19,7 @@ from app.startup import ensure_repositories
 from app.tools.sharing import unshare_context
 from tests.helpers import as_principal
 from tests.helpers import insert_grant
+from tests.tools._generation_jobs import seed_generation_jobs
 from tests.tools.navigation._navigation import navigate_as_dict
 from tests.tools.navigation._navigation import store_entry
 
@@ -107,7 +108,24 @@ async def _publish(backend: StorageBackend, context_id: str) -> None:
 
 
 class TestNavigateContextReadBack:
-    """The response reports the entry's visibility and whether the caller owns it at its top level only."""
+    """The response reports the entry's visibility, ownership and generation state at its top level only."""
+
+    @pytest.mark.asyncio
+    async def test_top_level_carries_generation_state(self, nav_backend: StorageBackend) -> None:
+        """The response reports the entry's generation state at the top level, never on an outline node."""
+        ready = await store_entry(nav_backend, '# Ready\nbody')
+        pending = await store_entry(nav_backend, '# Pending\nbody', offset_seconds=1)
+        failed = await store_entry(nav_backend, '# Failed\nbody', offset_seconds=2)
+        await seed_generation_jobs(nav_backend, {pending: 'running', failed: 'failed'})
+
+        results = {context_id: await navigate_as_dict(context_id=context_id) for context_id in (ready, pending, failed)}
+
+        assert {context_id: result['generation_status'] for context_id, result in results.items()} == {
+            ready: 'ready', pending: 'pending', failed: 'failed',
+        }
+        for result in results.values():
+            assert 'generation_status' not in result['root']
+            assert all('generation_status' not in child for child in result['root']['children'])
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('include_node_summaries', [False, True])

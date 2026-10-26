@@ -91,10 +91,11 @@ async def get_statistics() -> StatisticsResponseDict:
 
     Use for: capacity planning, debugging performance issues, verifying search status.
 
-    Entry, thread, image, tag, embedding, index, summary and node figures count
-    only the entries the caller may read. database_size_mb, embeddings_size_mb,
-    embeddings_size_estimated, connection_metrics and the configuration fields
-    describe the whole deployment and are the same for every caller.
+    Entry, thread, image, tag, embedding, index, summary, node and generation
+    figures count only the entries the caller may read. database_size_mb,
+    embeddings_size_mb, embeddings_size_estimated, connection_metrics and the
+    configuration fields describe the whole deployment and are the same for
+    every caller.
 
     Returns:
         StatisticsResponseDict with total_entries (int), total_threads (int),
@@ -109,7 +110,9 @@ async def get_statistics() -> StatisticsResponseDict:
         available, provider, model, summary_count, coverage_percentage,
         min_content_length), compression (dict with enabled, available,
         provider, bits, variant, seed, dim, max_concurrent), index_tree
-        (dict with enabled, node_count).
+        (dict with enabled, node_count), generation (dict with pending: entries
+        whose embeddings and summaries are still being generated, and failed:
+        entries whose generation gave up after its retries).
 
     Raises:
         ToolError: If retrieving statistics fails.

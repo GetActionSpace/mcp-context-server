@@ -14,6 +14,7 @@ import pytest
 
 from app.access_scope import AccessScope
 from tests.helpers import as_principal
+from tests.tools._generation_jobs import NoGenerationJobs
 
 
 @pytest.mark.asyncio
@@ -23,6 +24,7 @@ async def test_both_legs_receive_the_same_scope_object() -> None:
 
     repos = MagicMock()
     repos.tags.get_tags_for_context = AsyncMock(return_value=[])
+    repos.generation_jobs = NoGenerationJobs()
     fts_rows: list[dict[str, Any]] = [
         {
             'id': 'a' * 32, 'thread_id': 't', 'source': 'agent', 'content_type': 'text',
