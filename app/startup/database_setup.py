@@ -19,6 +19,7 @@ from app.migrations import apply_compression_migration
 from app.migrations import apply_content_hash_migration
 from app.migrations import apply_fts_migration
 from app.migrations import apply_function_search_path_migration
+from app.migrations import apply_generation_jobs_migration
 from app.migrations import apply_grant_owner_migration
 from app.migrations import apply_index_tree_migration
 from app.migrations import apply_ingest_index_migration
@@ -109,6 +110,10 @@ async def prepare_database(backend: StorageBackend, settings: AppSettings, *, re
     # per-node summaries are enabled (ENABLE_INDEX_TREE_NODE_SUMMARIES=true);
     # no-op otherwise. The on-demand outline itself never needs the table.
     await apply_index_tree_migration(backend=backend)
+    # The table of entries whose generated outputs are outstanding or failed. It precedes
+    # the request role's grants and the row-level security migration below, so they cover
+    # it on the start that creates it.
+    await apply_generation_jobs_migration(backend=backend)
     # Validate the connection-pool acquire timeout (PostgreSQL only)
     if backend.backend_type == 'postgresql':
         validate_pool_acquire_timeout()

@@ -15,6 +15,7 @@ This package contains migration orchestration and all migration implementations:
 - grant_owner.py: Each PostgreSQL grant's entry owner column, kept exact by a composite foreign key onto the entry
 - tag_uniqueness.py: Duplicate tag repair and the unique tag index
 - index_tree.py: The per-node summary table of the index tree
+- generation_jobs.py: The table of entries whose generated outputs are outstanding or failed, and its queue index
 - compression.py: Embedding compression migration (vec_context_embeddings_compressed + compression_metadata)
 - rls_ddl.py: Rendering of the PostgreSQL row-level security helpers, policies, guard trigger and read view
 - rls_state.py: Reading the installed PostgreSQL row-level security objects and planning what differs
@@ -56,6 +57,7 @@ from app.migrations.fts import apply_fts_migration
 from app.migrations.fts import estimate_migration_time
 from app.migrations.fts import get_fts_migration_status
 from app.migrations.fts import reset_fts_migration_status
+from app.migrations.generation_jobs import apply_generation_jobs_migration
 from app.migrations.grant_owner import apply_grant_owner_migration
 from app.migrations.index_tree import apply_index_tree_migration
 from app.migrations.ingest import apply_ingest_index_migration
@@ -96,6 +98,8 @@ __all__ = [
     'apply_chunking_migration',
     # Index tree
     'apply_index_tree_migration',
+    # Generation jobs
+    'apply_generation_jobs_migration',
     # Summary
     'apply_summary_migration',
     'check_summary_provider_dependencies',
