@@ -68,12 +68,15 @@ asyncio.run(main(sys.argv[1]))
 
 @pytest_asyncio.fixture
 async def scoped_db(async_db_initialized: StorageBackend, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[ScopedDb]:
-    """A seeded SQLite database prepared as the server prepares one.
+    """A seeded SQLite database prepared as the server prepares one, with an empty job queue.
+
+    The seed gives some entries a job; the cases see only the jobs they create.
 
     Yields:
         The seeded database.
     """
     async with sqlite_scoped_db(async_db_initialized, 'compressed', monkeypatch) as db:
+        await db.execute('DELETE FROM generation_jobs')
         yield db
 
 

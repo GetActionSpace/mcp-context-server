@@ -18,11 +18,13 @@ share. Six rules hold:
    system or the maintenance identity.
 4. Closure list: the closures of the two ranked searches are classified one by one.
 5. Signatures and cases: a guarded method takes a required keyword-only ``scope``; every
-   guarded entry names two-principal cases that exist in the case registry and run on
-   both backends, with a filtered variant when the method accepts client filters; each
-   dispatcher names the spy tests that prove it forwards the scope on every branch.
+   guarded entry, and every child entry that names cases, names two-principal cases that
+   exist in the case registry and run on both backends, with a filtered variant when the
+   method accepts client filters; each dispatcher names the spy tests that prove it
+   forwards the scope on every branch.
 6. Call sites and sweeps: every attribute reference to a child reader or writer is a
-   pinned site; no context-table SQL exists outside the repositories, migrations, CLI and
+   pinned site; every reference to a worker method sits in the generation worker, the CLI
+   or another worker method; no context-table SQL exists outside the repositories, migrations, CLI and
    schemas; only the FTS migration uses the system scope; no tool exposes ``scope`` or
    ``owner_id``; every tool resolves its caller exactly once; no string constant names
    the ``shared`` visibility.
@@ -37,7 +39,6 @@ import inspect
 import re
 import textwrap
 from collections import Counter
-from collections.abc import Iterator
 
 import pytest
 
@@ -58,12 +59,15 @@ from tests.repositories._access_scope_completeness_model import app_modules
 from tests.repositories._access_scope_completeness_model import callee_name
 from tests.repositories._access_scope_completeness_model import direct_closures
 from tests.repositories._access_scope_completeness_model import hands_over_scope
+from tests.repositories._access_scope_completeness_model import qualified_references
+from tests.repositories._access_scope_completeness_model import receiver_name
 from tests.repositories._access_scope_completeness_model import registry_keys
 from tests.repositories._access_scope_completeness_model import repository_methods
 from tests.repositories._access_scope_completeness_model import resolve_target
 from tests.repositories._access_scope_completeness_model import runs_context_sql
 from tests.repositories._access_scope_completeness_model import scope_parameter
 from tests.repositories._access_scope_completeness_model import string_constants
+from tests.repositories._access_scope_completeness_model import worker_site_violations
 from tests.repositories._access_scope_registry import CASES
 
 # Top-level directories of app/ whose SQL is reviewed by classification or is system-level by
@@ -431,9 +435,13 @@ def test_dispatcher_names_its_spy_tests(key: str) -> None:
         assert name in {node.name for node in tree.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)}, spy
 
 
-@pytest.mark.parametrize('key', registry_keys(*GUARDED))
+# The methods two-principal cases prove: every guarded method, and each child method that names cases.
+CASE_PROVEN_KEYS = sorted({*registry_keys(*GUARDED), *(key for key, entry in REGISTRY.items() if entry.cases)})
+
+
+@pytest.mark.parametrize('key', CASE_PROVEN_KEYS)
 def test_guarded_method_names_registered_cases(key: str) -> None:
-    """A guarded method names cases that run on both backends, filtered when it accepts filters."""
+    """A case-proven method names cases that run on both backends, filtered when it accepts filters."""
     names = REGISTRY[key].cases
     accepts_filters = 'metadata_filters' in inspect.signature(resolve_target(key)[1]).parameters
 
@@ -455,30 +463,6 @@ def test_every_registered_case_proves_a_classified_method() -> None:
 # Part 6: call sites and sweeps.
 
 
-def _qualified_references(module: ParsedModule) -> Iterator[tuple[str, ast.Attribute]]:
-    """Yield every attribute read of ``module`` with the qualified name of its enclosing function."""
-
-    def visit(node: ast.AST, scope: tuple[str, ...]) -> Iterator[tuple[str, ast.Attribute]]:
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-                yield from visit(child, (*scope, child.name))
-                continue
-            if isinstance(child, ast.Attribute) and isinstance(child.ctx, ast.Load):
-                yield '.'.join(scope), child
-            yield from visit(child, scope)
-
-    yield from visit(module.tree, ())
-
-
-def _receiver_name(node: ast.expr) -> str | None:
-    """The last name of the object an attribute is read from: ``repos.embeddings`` gives ``embeddings``."""
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    if isinstance(node, ast.Name):
-        return node.id
-    return None
-
-
 @pytest.mark.parametrize('key', registry_keys(*CHILD))
 def test_child_reader_and_writer_sites_are_pinned(key: str) -> None:
     """A new reference to a child reader or writer fails until its id source is reviewed."""
@@ -487,11 +471,75 @@ def test_child_reader_and_writer_sites_are_pinned(key: str) -> None:
     sites = Counter(
         f'{module.path}:{function}'
         for module in app_modules()
-        for function, attribute in _qualified_references(module)
-        if attribute.attr == name and (entry.receiver is None or _receiver_name(attribute.value) == entry.receiver)
+        for function, attribute in qualified_references(module)
+        if attribute.attr == name and (entry.receiver is None or receiver_name(attribute.value) == entry.receiver)
     )
 
     assert sites == Counter(entry.sites)
+
+
+def test_worker_methods_are_referenced_only_outside_requests() -> None:
+    """A worker method is referenced only by the generation worker, the CLI and other worker methods."""
+    assert worker_site_violations(app_modules()) == []
+
+
+def _module(path: str, source: str) -> ParsedModule:
+    """Parse ``source`` as the module of ``app/`` at ``path``, as the worker site rule reads it."""
+    tree = ast.parse(textwrap.dedent(source))
+    return ParsedModule(path, 'app.' + path.removesuffix('.py').replace('/', '.'), tree, frozenset())
+
+
+_CLAIMING_FUNCTION = '''
+async def drain(repos, scope):
+    return await repos.generation_jobs.claim_next(max_attempts=3, lease_s=120, scope=scope)
+'''
+
+
+@pytest.mark.parametrize(
+    ('path', 'violations'),
+    [
+        pytest.param('tools/context/store.py', ['tools/context/store.py:drain'], id='tool'),
+        pytest.param('startup/generation_worker.py', ['startup/generation_worker.py:drain'], id='startup'),
+        pytest.param('generation_jobs/worker.py', [], id='worker'),
+        pytest.param('cli/migrate_embeddings.py', [], id='cli'),
+    ],
+)
+def test_worker_site_rule_admits_only_the_worker_and_the_cli(path: str, violations: list[str]) -> None:
+    """A worker method referenced from a tool or any other request-side module is reported."""
+    assert worker_site_violations([_module(path, _CLAIMING_FUNCTION)]) == violations
+
+
+def test_worker_site_rule_admits_only_worker_methods_inside_the_repositories() -> None:
+    """Inside the repositories one worker method may reference another; any other method is reported."""
+    module = _module(
+        'repositories/generation_job_repository.py',
+        '''
+        class GenerationJobRepository:
+            async def delete_job(self, context_id, claim_token, *, scope):
+                return await self.delete_claimed(context_id, claim_token, txn=None)
+
+            async def states_for_ids(self, context_ids, *, scope):
+                return await self.reset_failed(scope=scope)
+        ''',
+    )
+
+    assert worker_site_violations([module]) == [
+        'repositories/generation_job_repository.py:GenerationJobRepository.states_for_ids',
+    ]
+
+
+def test_worker_site_rule_counts_record_failure_only_through_the_job_repository() -> None:
+    """A circuit breaker's own ``record_failure`` is no worker call; the job repository's is."""
+    module = _module(
+        'tools/context/store.py',
+        '''
+        async def store(self, repos, scope):
+            self.circuit_breaker.record_failure()
+            await repos.generation_jobs.record_failure('id', 'token', 'error', max_attempts=3, scope=scope)
+        ''',
+    )
+
+    assert worker_site_violations([module]) == ['tools/context/store.py:store']
 
 
 def test_no_context_sql_outside_the_repositories() -> None:

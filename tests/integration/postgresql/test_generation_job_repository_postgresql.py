@@ -34,12 +34,15 @@ _CLAIM_DEADLINE_S = 15.0
 
 @pytest_asyncio.fixture
 async def scoped_db(pg_test_url: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[ScopedDb]:
-    """A seeded isolated database prepared as the server prepares one.
+    """A seeded isolated database prepared as the server prepares one, with an empty job queue.
+
+    The seed gives some entries a job; the cases see only the jobs they create.
 
     Yields:
         The seeded database.
     """
     async with postgresql_scoped_db(pg_test_url, 'compressed', monkeypatch) as db:
+        await db.execute('DELETE FROM generation_jobs')
         yield db
 
 
