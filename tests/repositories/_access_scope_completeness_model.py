@@ -123,6 +123,7 @@ _GENERATION = _REPO + 'context_repository.generation:ContextGenerationMixin.'
 
 _STORE_TX = 'tools/_transactions.py:execute_store_in_transaction'
 _UPDATE_TX = 'tools/_transactions.py:execute_update_in_transaction'
+_OUTPUTS = 'tools/_transactions.py:write_generation_outputs'
 _CHUNK_WRITES = 'repositories/embedding_repository/chunk_writes.py:ChunkWriteMixin.'
 _REEMBED = 'cli/migrate_reembed.py:_reembed_async'
 _RESULT_HYDRATORS = (
@@ -257,17 +258,17 @@ REGISTRY: dict[str, Entry] = {
     ),
     _IMAGES + 'store_images': _child(Seam.CHILD_WRITER, _STORE_TX),
     _IMAGES + 'replace_images_for_context': _child(Seam.CHILD_WRITER, _STORE_TX, _UPDATE_TX, _UPDATE_TX),
-    _NODES + 'replace_nodes_for_context': _child(Seam.CHILD_WRITER, _STORE_TX, _UPDATE_TX),
+    _NODES + 'replace_nodes_for_context': _child(Seam.CHILD_WRITER, _STORE_TX, _OUTPUTS),
     _JOBS + 'enqueue': _child(Seam.CHILD_WRITER, cases=('J3',)),
     _JOBS + 'delete_for_entry': _child(Seam.CHILD_WRITER, cases=('J4',)),
     # The embedding CLI commands run outside any request and write by the ids they read.
     _CHUNKS + 'store_chunked': _child(
-        Seam.CHILD_WRITER, _STORE_TX, _UPDATE_TX, 'cli/migrate_embeddings.py:_embed_missing_async', _REEMBED,
+        Seam.CHILD_WRITER, _STORE_TX, _OUTPUTS, 'cli/migrate_embeddings.py:_embed_missing_async', _REEMBED,
     ),
     _CHUNKS + '_store_chunked_compressed': _child(Seam.CHILD_WRITER, _CHUNK_WRITES + 'store_chunked'),
     _CHUNKS + 'delete_all_chunks': _child(
         Seam.CHILD_WRITER,
-        _CHUNK_WRITES + 'store_chunked', _CHUNK_WRITES + 'delete_all_chunks_bulk', _UPDATE_TX, _UPDATE_TX, _REEMBED,
+        _CHUNK_WRITES + 'store_chunked', _CHUNK_WRITES + 'delete_all_chunks_bulk', _UPDATE_TX, _OUTPUTS, _REEMBED,
     ),
     _CHUNKS + '_delete_all_chunks_compressed': _child(
         Seam.CHILD_WRITER, _CHUNK_WRITES + '_store_chunked_compressed', _CHUNK_WRITES + 'delete_all_chunks',

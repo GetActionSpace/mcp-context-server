@@ -69,6 +69,8 @@ from app.startup import set_summary_provider
 
 # Import the lifespan startup phases
 from app.startup.database_setup import prepare_database
+from app.startup.generation_worker import start_generation_worker
+from app.startup.generation_worker import stop_generation_worker
 from app.startup.providers import initialize_providers
 from app.startup.rls_posture import discover_request_role
 from app.startup.rls_posture import read_login_role
@@ -180,6 +182,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         await initialize_providers(settings, backend.backend_type)
         await register_search_tools(mcp, settings, backend.backend_type, repos)
         await install_json_string_middleware(mcp)
+        await start_generation_worker(settings, backend)
 
         logger.info(f'MCP Context Server initialized (backend: {backend.backend_type})')
     except Exception as e:
@@ -214,6 +217,8 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
     # At this point, startup succeeded and _backend must be set
     shutdown_backend = get_backend()
     assert shutdown_backend is not None
+    # The worker gives its claims back through the backend, so it stops first.
+    await stop_generation_worker()
     try:
         await shutdown_backend.shutdown()
     except Exception as e:

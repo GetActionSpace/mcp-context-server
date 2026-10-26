@@ -15,6 +15,7 @@ from app.startup import set_repositories
 from app.startup import set_reranking_provider
 from app.startup import set_summary_provider
 from tests.helpers import patch_database_setup_steps
+from tests.helpers import patch_generation_worker_phase
 from tests.helpers import preserve_summary_state
 
 
@@ -77,6 +78,7 @@ class TestSummaryLifespan:
                 patch('app.server.settings', mock_settings),
                 patch('app.server.create_backend', return_value=mock_backend),
                 patch_database_setup_steps(),
+                patch_generation_worker_phase(),
                 patch('app.startup.tool_registration.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
                 patch(

@@ -1,20 +1,25 @@
-"""Tests for execute_update_in_transaction in app.tools._transactions."""
+"""Tests for execute_update_in_transaction and write_generation_outputs in app.tools._transactions."""
 
 from typing import Any
 from typing import Literal
 from typing import cast
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
+from unittest.mock import call
+from unittest.mock import patch
 
 import pytest
 from fastmcp.exceptions import ToolError
 
 from app.access_scope import AccessScope
+from app.backends.base import MAINTENANCE
 from app.errors import ControlFlowError
 from app.repositories.embedding_repository.records import ChunkEmbedding
+from app.repositories.index_node_repository import IndexNodeRow
 from app.tools._transactions import EntryNotAuthorizedError
 from app.tools._transactions import EntryNotFoundError
 from app.tools._transactions import execute_update_in_transaction
+from app.tools._transactions import write_generation_outputs
 from tests.helpers import LOCAL_SCOPE
 
 
@@ -428,6 +433,116 @@ class TestExecuteUpdateInTransaction:
             )
         mock_repos.context.update_content_type.assert_not_called()
         mock_repos.context.touch_updated_at.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_generated_outputs_are_written_through_the_shared_helper(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """The regenerated embeddings and node rows reach the store through write_generation_outputs."""
+        chunk_embeddings = cast(list[ChunkEmbedding], [MagicMock()])
+        nodes = cast(list[IndexNodeRow], [MagicMock()])
+        helper = AsyncMock(return_value=True)
+
+        with patch('app.tools._transactions.write_generation_outputs', helper):
+            updated_fields, _ = await execute_update_in_transaction(
+                mock_repos, mock_txn,
+                context_id=CONTEXT_ID,
+                scope=LOCAL_SCOPE,
+                text='New text',
+                metadata=None,
+                metadata_patch=None,
+                summary=None,
+                clear_summary=False,
+                tags=None,
+                images=None,
+                validated_images=[],
+                chunk_embeddings=chunk_embeddings,
+                embedding_model='m',
+                index_nodes=nodes,
+            )
+
+        helper.assert_awaited_once_with(
+            mock_repos, mock_txn, CONTEXT_ID, chunk_embeddings, nodes, embedding_model='m', scope=LOCAL_SCOPE,
+        )
+        assert 'embedding' in updated_fields
+
+
+CONTEXT_ID = '0190abcdef1234567890abcd00000001'
+
+
+class TestWriteGenerationOutputs:
+    """write_generation_outputs writes an entry's generated embeddings and node rows on the given transaction."""
+
+    @pytest.fixture
+    def mock_repos(self) -> MagicMock:
+        """A repository container whose embedding and node writers record their calls."""
+        repos = MagicMock()
+        repos.embeddings.delete_all_chunks = AsyncMock(return_value=1)
+        repos.embeddings.store_chunked = AsyncMock()
+        repos.index_nodes.replace_nodes_for_context = AsyncMock()
+        return repos
+
+    @pytest.fixture
+    def mock_txn(self) -> MagicMock:
+        """A SQLite transaction context."""
+        txn = MagicMock()
+        txn.backend_type = 'sqlite'
+        return txn
+
+    @pytest.mark.asyncio
+    async def test_embeddings_replace_the_stored_chunks(self, mock_repos: MagicMock, mock_txn: MagicMock) -> None:
+        """Generated embeddings delete the stored chunks first, then store the new ones under the model."""
+        chunk_embeddings = cast(list[ChunkEmbedding], [MagicMock(), MagicMock()])
+        calls = MagicMock()
+        calls.attach_mock(mock_repos.embeddings.delete_all_chunks, 'delete_all_chunks')
+        calls.attach_mock(mock_repos.embeddings.store_chunked, 'store_chunked')
+
+        written = await write_generation_outputs(
+            mock_repos, mock_txn, CONTEXT_ID, chunk_embeddings, None, embedding_model='model-a', scope=MAINTENANCE,
+        )
+
+        assert written is True
+        assert calls.mock_calls == [
+            call.delete_all_chunks(CONTEXT_ID, txn=mock_txn, scope=MAINTENANCE),
+            call.store_chunked(
+                context_id=CONTEXT_ID, chunk_embeddings=chunk_embeddings, model='model-a', txn=mock_txn, scope=MAINTENANCE,
+            ),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_embeddings_leaves_the_stored_chunks(self, mock_repos: MagicMock, mock_txn: MagicMock) -> None:
+        """Without generated embeddings no chunk is deleted or stored."""
+        written = await write_generation_outputs(
+            mock_repos, mock_txn, CONTEXT_ID, None, None, embedding_model='model-a', scope=LOCAL_SCOPE,
+        )
+
+        assert written is False
+        mock_repos.embeddings.delete_all_chunks.assert_not_called()
+        mock_repos.embeddings.store_chunked.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('nodes', [[], [MagicMock()]], ids=['empty', 'one'])
+    async def test_a_node_list_replaces_the_stored_nodes(
+        self, mock_repos: MagicMock, mock_txn: MagicMock, nodes: list[IndexNodeRow],
+    ) -> None:
+        """A node list, empty included, replaces the entry's node rows."""
+        await write_generation_outputs(
+            mock_repos, mock_txn, CONTEXT_ID, None, nodes, embedding_model='model-a', scope=LOCAL_SCOPE,
+        )
+
+        mock_repos.index_nodes.replace_nodes_for_context.assert_awaited_once_with(
+            CONTEXT_ID, nodes, txn=mock_txn, scope=LOCAL_SCOPE,
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_node_list_keeps_the_stored_nodes(self, mock_repos: MagicMock, mock_txn: MagicMock) -> None:
+        """None for the nodes leaves the entry's node rows as they are."""
+        await write_generation_outputs(
+            mock_repos, mock_txn, CONTEXT_ID, cast(list[ChunkEmbedding], [MagicMock()]), None,
+            embedding_model='model-a', scope=LOCAL_SCOPE,
+        )
+
+        mock_repos.index_nodes.replace_nodes_for_context.assert_not_called()
 
 
 class TestEntryNotAuthorizedError:

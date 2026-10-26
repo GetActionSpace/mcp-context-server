@@ -27,6 +27,7 @@ import app.startup as app_startup
 from app.errors import ConfigurationError
 from app.startup.rls_posture import RequestRole
 from tests.helpers import patch_database_setup_steps
+from tests.helpers import patch_generation_worker_phase
 
 
 class TestLifespanErrorHandling:
@@ -219,6 +220,7 @@ class TestLifespanErrorHandling:
                 patch('app.server.settings', mock_settings),
                 patch('app.server.create_backend', return_value=mock_backend),
                 patch_database_setup_steps(),
+                patch_generation_worker_phase(),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
                 patch('app.startup.providers.check_vector_storage_dependencies', new=AsyncMock(return_value=True)),
                 patch(

@@ -1,9 +1,10 @@
 """Store and update transaction execution for the write tools.
 
 Runs the database writes of one store or update inside an open transaction,
-keeps that transaction alive with a heartbeat, classifies connection faults,
-re-probes an entry for the compare-and-set retry, and defines the control-flow
-exceptions these paths raise to their callers.
+writes an entry's generated embeddings and node rows for the update path and the
+generation worker alike, keeps that transaction alive with a heartbeat,
+classifies connection faults, re-probes an entry for the compare-and-set retry,
+and defines the control-flow exceptions these paths raise to their callers.
 """
 
 import asyncio
@@ -20,6 +21,7 @@ import asyncpg
 from fastmcp.exceptions import ToolError
 
 from app.access_scope import AccessScope
+from app.backends.base import BackendAccess
 from app.backends.sqlite_backend.contention import is_sqlite_locked_error
 from app.errors import ControlFlowError
 from app.repositories.context_repository.records import EntryProbe
@@ -748,19 +750,11 @@ async def execute_update_in_transaction(
             entry_row_stamped = True
 
     # Embeddings describe text_content, so a text change invalidates the stored vectors.
-    if chunk_embeddings is not None:
-        # New embeddings were generated -> replace the old chunks.
-        await transaction_heartbeat(txn)
-        await repos.embeddings.delete_all_chunks(context_id, txn=txn, scope=scope)
-        await repos.embeddings.store_chunked(
-            context_id=context_id,
-            chunk_embeddings=chunk_embeddings,
-            model=embedding_model,
-            txn=txn,
-            scope=scope,
-        )
-        updated_fields.append('embedding')
-    elif text is not None and await repos.embeddings.embedding_tables_exist(txn=txn, scope=scope):
+    if (
+        chunk_embeddings is None
+        and text is not None
+        and await repos.embeddings.embedding_tables_exist(txn=txn, scope=scope)
+    ):
         # Text changed but embeddings were NOT regenerated (no embedding provider at
         # update time -- generation disabled/absent). The stored chunks describe the
         # REPLACED text, so DELETE them rather than leave stale vectors that semantic
@@ -771,11 +765,59 @@ async def execute_update_in_transaction(
         if await repos.embeddings.delete_all_chunks(context_id, txn=txn, scope=scope):
             updated_fields.append('embedding')
 
-    # Replace index_tree node summaries atomically. None means leave the node
-    # table untouched (feature off, or text unchanged so the caller did not
-    # recompute); an empty list clears stale rows when text shrank below the
-    # summary thresholds.
-    if index_nodes is not None:
-        await repos.index_nodes.replace_nodes_for_context(context_id, index_nodes, txn=txn, scope=scope)
+    # New embeddings replace the old chunks. Index_tree node summaries are replaced
+    # atomically: None leaves the node table untouched (feature off, or text unchanged
+    # so the caller did not recompute); an empty list clears stale rows when text
+    # shrank below the summary thresholds.
+    if await write_generation_outputs(
+        repos, txn, context_id, chunk_embeddings, index_nodes, embedding_model=embedding_model, scope=scope,
+    ):
+        updated_fields.append('embedding')
 
     return updated_fields, clear_summary
+
+
+async def write_generation_outputs(
+    repos: 'RepositoryContainer',
+    txn: 'TransactionContext',
+    context_id: str,
+    chunk_embeddings: list[ChunkEmbedding] | None,
+    index_nodes: list[IndexNodeRow] | None,
+    *,
+    embedding_model: str,
+    scope: BackendAccess,
+) -> bool:
+    """Write an entry's generated embeddings and index-tree node rows on an open transaction.
+
+    Generated embeddings replace every stored chunk of the entry; a node list, empty
+    included, replaces its node rows, and None leaves them as they are. The update path
+    writes its regenerated outputs through this function, and so does the generation
+    worker, so both store the outputs of one text the same way.
+
+    Args:
+        repos: Repository container.
+        txn: The transaction that writes the entry's outputs.
+        context_id: The entry's id.
+        chunk_embeddings: The generated embeddings, or None when none were generated.
+        index_nodes: The generated node rows, or None to keep the stored ones.
+        embedding_model: The model the embeddings are stored under.
+        scope: The identity the writes run as.
+
+    Returns:
+        Whether embeddings were written.
+    """
+    embeddings_written = False
+    if chunk_embeddings is not None:
+        await transaction_heartbeat(txn)
+        await repos.embeddings.delete_all_chunks(context_id, txn=txn, scope=scope)
+        await repos.embeddings.store_chunked(
+            context_id=context_id,
+            chunk_embeddings=chunk_embeddings,
+            model=embedding_model,
+            txn=txn,
+            scope=scope,
+        )
+        embeddings_written = True
+    if index_nodes is not None:
+        await repos.index_nodes.replace_nodes_for_context(context_id, index_nodes, txn=txn, scope=scope)
+    return embeddings_written

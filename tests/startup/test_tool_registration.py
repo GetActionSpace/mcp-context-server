@@ -14,6 +14,7 @@ import pytest
 from fastmcp import Context
 
 from tests.helpers import patch_database_setup_steps
+from tests.helpers import patch_generation_worker_phase
 
 
 class TestSearchToolRegistrationMatrix:
@@ -114,6 +115,7 @@ class TestSearchToolRegistrationMatrix:
                 patch('app.server.settings', mock_settings),
                 patch('app.server.create_backend', return_value=mock_backend),
                 patch_database_setup_steps(),
+                patch_generation_worker_phase(),
                 patch('app.startup.tool_registration.register_tool', side_effect=_capture_register_tool),
                 patch('app.startup.tool_registration.generate_fts_description', return_value='fts description'),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),

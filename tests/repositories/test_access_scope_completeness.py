@@ -22,8 +22,9 @@ share. Six rules hold:
    exist in the case registry and run on both backends, with a filtered variant when the
    method accepts client filters; each dispatcher names the spy tests that prove it
    forwards the scope on every branch.
-6. Call sites and sweeps: every attribute reference to a child reader or writer is a
-   pinned site; every reference to a worker method sits in the generation worker, the CLI
+6. Call sites and sweeps: every attribute reference to a child reader or writer, and every
+   reference to the shared writer of generated outputs, is a pinned site; every reference
+   to a worker method sits in the generation worker, the CLI
    or another worker method; no context-table SQL exists outside the repositories, migrations, CLI and
    schemas; only the FTS migration uses the system scope; no tool exposes ``scope`` or
    ``owner_id``; every tool resolves its caller exactly once; no string constant names
@@ -478,6 +479,63 @@ def test_child_reader_and_writer_sites_are_pinned(key: str) -> None:
     )
 
     assert sites == Counter(entry.sites)
+
+
+# The shared writer of an entry's generated outputs runs the chunk and node writers for the id it is
+# handed: the update path calls it for the entry its write gate admitted, and the generation worker for
+# the entry of the job it claimed.
+GENERATION_OUTPUT_WRITER = 'write_generation_outputs'
+GENERATION_OUTPUT_WRITER_SITES = (
+    'tools/_transactions.py:execute_update_in_transaction',
+    'generation_jobs/executor.py:_complete',
+)
+
+
+def _name_references(module: ParsedModule, name: str) -> list[str]:
+    """Return the qualified enclosing function of every read of ``name``, bare or as an attribute, in ``module``."""
+    found: list[str] = []
+
+    def visit(node: ast.AST, scope: tuple[str, ...]) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                visit(child, (*scope, child.name))
+                continue
+            bare = isinstance(child, ast.Name) and child.id == name
+            attribute = isinstance(child, ast.Attribute) and child.attr == name
+            if (bare or attribute) and isinstance(getattr(child, 'ctx', None), ast.Load):
+                found.append('.'.join(scope))
+            visit(child, scope)
+
+    visit(module.tree, ())
+    return found
+
+
+def test_generation_output_writer_sites_are_pinned() -> None:
+    """A new caller of the shared output writer fails until the id it hands over is reviewed."""
+    sites = Counter(
+        f'{module.path}:{function}'
+        for module in app_modules()
+        for function in _name_references(module, GENERATION_OUTPUT_WRITER)
+    )
+
+    assert sites == Counter(GENERATION_OUTPUT_WRITER_SITES)
+
+
+def test_output_writer_references_count_bare_and_attribute_reads() -> None:
+    """Both a bare call and a call through a module attribute count as a site; the import does not."""
+    module = _module(
+        'tools/context/store.py',
+        '''
+        from app.tools._transactions import write_generation_outputs
+        import app.tools._transactions as transactions
+
+        async def store(repos, txn):
+            await write_generation_outputs(repos, txn, 'id', None, None, embedding_model='m', scope=None)
+            await transactions.write_generation_outputs(repos, txn, 'id', None, None, embedding_model='m', scope=None)
+        ''',
+    )
+
+    assert _name_references(module, GENERATION_OUTPUT_WRITER) == ['store', 'store']
 
 
 def test_worker_methods_are_referenced_only_outside_requests() -> None:
