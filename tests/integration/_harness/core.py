@@ -68,6 +68,28 @@ SERVER_FEATURES: dict[str, str] = {
 }
 
 
+# The wrapper that starts every harness server with the Python path and test-mode guards set.
+WRAPPER_SCRIPT = Path(__file__).parents[2] / 'run_server.py'
+
+
+def server_transport(env: dict[str, str]) -> PythonStdioTransport:
+    """Return the transport of a harness server, which stops when its client's context exits.
+
+    FastMCP keeps a stdio server running after its client's context exits unless
+    ``keep_alive`` is off. A harness server must stop there, so the database it served
+    can be removed and its generation worker claims no job after the check moved on.
+    ``env`` is passed explicitly, because the MCP SDK environment whitelist applied to a
+    bare script path strips the application's variables.
+
+    Args:
+        env: The server's complete environment.
+
+    Returns:
+        The transport.
+    """
+    return PythonStdioTransport(script_path=str(WRAPPER_SCRIPT), env=env, keep_alive=False)
+
+
 class HarnessCore:
     """Server, client and result plumbing shared by every check mixin."""
 
@@ -161,9 +183,7 @@ class HarnessCore:
             RuntimeError: If attempting to use default database in test mode.
         """
         try:
-            # Use the wrapper script that sets up Python path correctly
-            wrapper_script = Path(__file__).parents[2] / 'run_server.py'
-            print(f'[INFO] Connecting to server via wrapper: {wrapper_script}')
+            print(f'[INFO] Connecting to server via wrapper: {WRAPPER_SCRIPT}')
 
             if self.backend == 'postgresql':
                 # PostgreSQL path: the server auto-initializes its schema on
@@ -176,11 +196,7 @@ class HarnessCore:
                 # SQLite, whose default stdio environment carries none.
                 server_env = self._postgresql_env(**SERVER_FEATURES)
                 self.server_env = server_env
-                transport = PythonStdioTransport(
-                    script_path=str(wrapper_script),
-                    env=server_env,
-                )
-                self.client = self._new_client(transport)
+                self.client = self._new_client(server_transport(server_env))
                 await self.client.__aenter__()
                 self.registered_tools = frozenset(tool.name for tool in await self.client.list_tools())
                 print(f'[OK] Client connected successfully (postgresql, {self.client_mode} mode)')
@@ -212,8 +228,7 @@ class HarnessCore:
             }
             print(f'[INFO] Using temporary database: {self.temp_db_path}')
             self.server_env = server_env
-            transport = PythonStdioTransport(script_path=str(wrapper_script), env=server_env)
-            self.client = self._new_client(transport)
+            self.client = self._new_client(server_transport(server_env))
 
             # Connect to server
             await self.client.__aenter__()
@@ -341,9 +356,7 @@ class HarnessCore:
         the startup guard refuses a compression setting that disagrees with the
         database -- and differs only by the overrides.
 
-        ``PythonStdioTransport(env=...)`` passes the dict explicitly on both backends,
-        because the MCP SDK env whitelist applied to a bare script path strips
-        app-specific variables.
+        The server stops when the block exits (see :func:`server_transport`).
 
         Args:
             extra_env: Environment overrides applied last, so they win over every
@@ -357,7 +370,6 @@ class HarnessCore:
         Raises:
             RuntimeError: If sharing is requested before the primary server started.
         """
-        wrapper_script = Path(__file__).parents[2] / 'run_server.py'
         second_db_path: Path | None = None
         if share_primary_database:
             if self.server_env is None:
@@ -377,8 +389,7 @@ class HarnessCore:
                 **extra_env,
             }
 
-        transport = PythonStdioTransport(script_path=str(wrapper_script), env=server_env)
-        second_client = self._new_client(transport)
+        second_client = self._new_client(server_transport(server_env))
         try:
             await second_client.__aenter__()
             await second_client.list_tools()
