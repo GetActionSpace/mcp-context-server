@@ -167,9 +167,10 @@ mcp_client:
   timeout_normal: 240.0
   # The hook's whole budget in seconds, measured from its launch: from the creation
   # of the uv process that started the hook, so the time uv spends preparing the
-  # script's environment and the interpreter spends importing the hook's
-  # dependencies counts against it. When the hook cannot identify that process, it
-  # counts from the end of its imports instead. Every timeout above and the request
+  # script's environment and starting the interpreter counts against it, and so does
+  # the work before the store: reading this file and the prompt, and loading the MCP
+  # client library. When the hook cannot identify that process, it counts from the
+  # start of its module code instead. Every timeout above and the request
   # timeout below are capped by what remains of it, and no attempt starts once less
   # than a second remains. Keep it below the Claude Code hook timeout the
   # environment registers for this hook (the environment sets that timeout on the
@@ -218,3 +219,63 @@ chunking:
   # 'warn': A [WARN] line on stderr
   # 'error': An [ERROR] line on stderr
   fail_mode: warn
+
+# Startup trace
+# Every run records the stages it reaches in a trace file of its own, because a run
+# Claude Code kills at its hook timeout leaves no output that says where it stalled.
+# The trace is on by default and has no key in this file, because it starts before
+# the file is read: set the environment variable CLAUDE_HOOK_STARTUP_TRACE to 0,
+# false, or no to turn it off.
+#
+# Location: the claude_hook_user_prompt_context_saver_traces directory under the
+# temporary directory Python resolves (the TMPDIR, TEMP, or TMP variable, else the
+# platform default such as /tmp), one file per run named for its start time in UTC
+# and its process id, such as 20250102T030405.678Z-12345.jsonl. A run that exits
+# normally removes its own file, so every file there belongs to a run that was
+# killed or crashed, and the newest sorts last. A run keeps at most 20 files in the
+# directory, its own included, removing the oldest, but never one written within the
+# last 600 seconds, which may belong to a run still in flight.
+#
+# Format: one JSON object per line, written and flushed as the run reaches each
+# stage, with "stage", "at" (the wall-clock time in UTC), and "elapsed" (seconds
+# since the hook's module code started). The stages, in the order a run reaches them:
+#   module_start            the hook's code started; adds "pid" and "config" (the
+#                           configuration file's path)
+#   config_loaded           the configuration loader and its YAML library were loaded,
+#                           and this file was read
+#   stdin_read              the payload Claude Code sent was read
+#   skip_decided            "store" says whether the prompt is stored
+#   start_times             "interpreter_created" is when the process the hook runs in
+#                           was created, and "redirector_created" when the venv
+#                           redirector that started it was, which only Windows runs;
+#                           each is null when it could not be read, and
+#                           redirector_created also when no redirector started the
+#                           interpreter; a turn that is not stored ends here
+#   project_resolved        the project, the worktree, and the thread were resolved,
+#                           which runs git
+#   launcher_read           "launcher_created" is when the uv process that launched the
+#                           hook was created, or null when it could not be identified
+#   fastmcp_import_started  loading the MCP client library began
+#   fastmcp_imported        the library is loaded
+#   store_started           the store began
+#   store_ended             "confirmed" says whether the store returned the server's
+#                           answer rather than ending in an error
+#
+# Reading a leftover trace: the run stalled after the stage on its last line, before
+# the next stage in the list above. A trace ending at module_start stalled while the
+# run trimmed the traces of earlier runs or loaded its configuration: the loader and
+# its YAML library, the run's first third-party import, then this file. One ending
+# at skip_decided stalled while it read the start times from the process table,
+# which no run reads before it decides the skip. The start times split the startup,
+# from the moment Claude Code launches the hook command to the "at" of module_start.
+# From the launch to interpreter_created is the shell Claude Code runs the command
+# in, uv preparing the environment, and on Windows the redirector hop:
+# redirector_created to interpreter_created is the redirector, the environment's
+# small python.exe, starting the base interpreter the hook runs in, and on the store
+# path launcher_created marks where the shell handed over to uv. From
+# interpreter_created to module_start is the interpreter's own startup, through the
+# standard library. The launch itself is in the session transcript: the time Claude
+# Code canceled the hook less the duration it records for it. A run killed before
+# its trace file was created leaves no file at all, whether it was killed before the
+# hook's module code started or while the hook finished loading, located the
+# temporary directory, and created the file.

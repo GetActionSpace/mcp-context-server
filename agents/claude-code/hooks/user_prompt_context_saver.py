@@ -26,16 +26,38 @@ mcp_client.deadline_seconds: every connection or request timeout is capped by
 what remains of the budget, no attempt starts once less than a second remains,
 and the run ends with an answer for the model before the budget does. Claude
 Code counts its timeout from the moment it starts the hook's command, and uv
-prepares the script's environment and the interpreter imports the hook's
-dependencies before any hook code runs, so the budget counts from the launch:
-the creation of the uv process that started the hook, recognized by its image
-name as the hook's parent or, where the interpreter runs through a venv
-redirector, as the redirector's parent. When the hook cannot identify that
-process (no uv launcher in that short walk, a process that cannot be read, a
-parent newer than its child, or a launch older than the 600 seconds Claude
-Code gives a command hook by default), the budget counts from the end of the hook's imports. A startup that has already
-used the whole budget answers at once that no store request was sent, instead
-of being killed while it stores.
+prepares the script's environment and starts the interpreter before any hook
+code runs, so the budget counts from the launch: the creation of the uv process
+that started the hook, recognized by its image name as the hook's parent or,
+where the interpreter runs through a venv redirector, as the redirector's
+parent. When the hook cannot identify that process (no uv launcher in that
+short walk, a process that cannot be read, a parent newer than its child, or a
+launch older than the 600 seconds Claude Code gives a command hook by default),
+the budget counts from the start of the hook's module code. A startup that has
+already used the whole budget answers at once that no store request was sent,
+instead of being killed while it stores.
+
+A turn the hook does not store needs only its payload, the configuration, and
+the skip patterns, so the hook decides on them first and reads no process
+before that decision: the launch is read from the process table, and fastmcp
+and asyncio are imported, only for a prompt it stores.
+
+Each run records the stages it reaches in a startup trace, because a run
+Claude Code kills leaves no output to say where it stalled. The trace is a file
+of its own in the claude_hook_user_prompt_context_saver_traces directory under
+the temporary directory, one JSON record per line, each flushed as it is
+written; a run that ends normally removes it, so a file that remains belongs
+to a run that was killed or crashed, and its last record names the last
+stage that run reached. A run keeps at most MAX_KEPT_TRACES traces in the
+directory, its own included, and never removes one written within the last
+MAX_LAUNCH_AGE_SECONDS, which may belong to a run still in flight.
+CLAUDE_HOOK_STARTUP_TRACE set to 0, false, or no turns the trace off. Once the
+skip is decided, a run whose trace records reads from the process table when
+its interpreter was created and, where a Windows venv redirector started that
+interpreter, when the redirector was, and records both before it exits or
+stores, so the trace splits the startup into its parts. A creation time does
+not change, so reading it late loses nothing, and a run killed before that
+read still leaves the stages it reached; a run without a trace never reads it.
 
 A store request that fails or times out after it was sent is never sent again
 within the run, because the server may have received it and would store the
@@ -68,7 +90,6 @@ write.
 Trigger: UserPromptSubmit
 """
 
-import asyncio
 import ctypes
 import importlib.util
 import json
@@ -83,6 +104,7 @@ import time
 import traceback
 from collections.abc import Callable
 from collections.abc import Coroutine
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC
@@ -92,14 +114,16 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 from typing import Protocol
+from typing import TextIO
 from typing import cast
 
-from fastmcp import Client
-
-# The hook's own clock, read once the interpreter has imported the hook's
-# dependencies. The run's budget counts from the earlier launch of the hook
-# whenever launcher_clock_start can identify it, and from here otherwise.
+# The hook's own clock, read on the monotonic and the wall clock as its module code
+# starts, after the standard-library imports and before any third-party import. The
+# run's budget counts from the earlier launch of the hook whenever
+# launcher_clock_start can identify it, and from here otherwise; the startup trace
+# counts its elapsed seconds from here.
 _HOOK_STARTED_AT = time.monotonic()
+_HOOK_STARTED_WALL = time.time()
 
 
 def _load_config_loader() -> ModuleType:
@@ -176,8 +200,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         'timeout_first_run': 240.0,
         'timeout_normal': 240.0,
         # The run's whole time budget (seconds), measured from the hook's launch:
-        # the creation of the uv process that started it, or the end of the
-        # hook's imports when that process cannot be identified. Every timeout
+        # the creation of the uv process that started it, or the start of the
+        # hook's module code when that process cannot be identified. Every timeout
         # above is capped by what remains of it, so the hook answers before the
         # Claude Code hook timeout kills it. A UserPromptSubmit hook gets 30
         # seconds unless its event entry registers a timeout, so this default
@@ -304,7 +328,6 @@ if _LOGGING_ENABLED:
     log_always(f"CLAUDE_HOOK_DEBUG_FILE: {os.environ.get('CLAUDE_HOOK_DEBUG_FILE', 'NOT SET')}")
     log_always(f'Log file location: {_log_file()}')
     log_always(f'stdin isatty: {sys.stdin.isatty()}')
-    log_always('FastMCP Client imported successfully')
 
 
 def _warmup_uvx_cache(server_config: dict[str, Any]) -> None:
@@ -795,11 +818,11 @@ def launcher_clock_start(
     process table's clock, off a monotonic reading taken beside it. The hook's
     own clock is used instead when the launcher cannot be identified, when its
     age is above MAX_LAUNCH_AGE_SECONDS, or when the result would fall after
-    the hook's own clock, since the launch precedes the imports; that last case
-    includes a creation time apparently later than the read.
+    the hook's own clock, since the launch precedes the module code; that last
+    case includes a creation time apparently later than the read.
 
     Args:
-        hook_started_at: The hook's own clock, read after its imports
+        hook_started_at: The hook's own clock, read when its module code started
         processes: The platform's process table, or None where there is none
         executable: The interpreter's sys.executable
         pid: The hook's process id
@@ -818,6 +841,237 @@ def launcher_clock_start(
     if age > MAX_LAUNCH_AGE_SECONDS or started_at > hook_started_at:
         return hook_started_at
     return started_at
+
+
+@dataclass(frozen=True)
+class StartTimes:
+    """When the hook's interpreter, and the venv redirector that started it, were created, in wall-clock seconds."""
+
+    interpreter: float | None  # None when the hook's own process cannot be read
+    redirector: float | None  # None unless the interpreter's parent is its venv redirector, which only Windows runs
+
+
+def start_times(processes: ProcessTable | None, executable: str, pid: int) -> StartTimes:
+    """
+    Return when the hook's interpreter, and the venv redirector that started it, were created.
+
+    Each creation time is read on the process table's clock and converted by
+    taking its age off the wall clock. The redirector is timed only when the
+    interpreter's parent is the venv redirector of that interpreter; any other
+    parent, an unreadable one, or one newer than the interpreter is not.
+
+    Args:
+        processes: The platform's process table, or None where there is none
+        executable: The interpreter's sys.executable
+        pid: The hook's process id
+
+    Returns:
+        The creation times in wall-clock seconds, each None when it cannot be read
+    """
+    if processes is None:
+        return StartTimes(interpreter=None, redirector=None)
+    hook = processes.read(pid)
+    if hook is None:
+        return StartTimes(interpreter=None, redirector=None)
+    parent = _parent_of(processes, hook)
+    redirector = parent if parent is not None and _is_redirector(hook, parent, executable) else None
+    wall_offset = time.time() - processes.now()
+    return StartTimes(
+        interpreter=hook.created + wall_offset,
+        redirector=None if redirector is None else redirector.created + wall_offset,
+    )
+
+
+def own_start_times() -> StartTimes:
+    """Return when the running hook's interpreter, and the venv redirector that started it, were created."""
+    return start_times(process_table(), sys.executable, os.getpid())
+
+
+# The directory under the temporary directory that holds each run's startup trace
+STARTUP_TRACE_DIRECTORY = 'claude_hook_user_prompt_context_saver_traces'
+
+# The environment variable that turns the startup trace off when set to 0, false, or no
+STARTUP_TRACE_VARIABLE = 'CLAUDE_HOOK_STARTUP_TRACE'
+
+# The most traces a run leaves in the trace directory, its own included. A trace
+# that outlives its run belongs to a run that was killed or crashed, so only the
+# newest of those are kept.
+MAX_KEPT_TRACES = 20
+
+
+def startup_trace_directory(environ: Mapping[str, str] = os.environ) -> Path | None:
+    """
+    Return the directory a run's startup trace goes to, or None when the trace is off.
+
+    Args:
+        environ: The environment to read CLAUDE_HOOK_STARTUP_TRACE from
+
+    Returns:
+        The trace directory under the temporary directory, or None when the
+        variable is 0, false, or no, in any case
+    """
+    if environ.get(STARTUP_TRACE_VARIABLE, '').strip().lower() in ('0', 'false', 'no'):
+        return None
+    return Path(tempfile.gettempdir()) / STARTUP_TRACE_DIRECTORY
+
+
+def _utc_text(wall: float) -> str:
+    """Return wall-clock seconds as ISO 8601 text in UTC, to the millisecond."""
+    return datetime.fromtimestamp(wall, tz=UTC).isoformat(timespec='milliseconds')
+
+
+def prune_startup_traces(directory: Path, keep: int, min_age_seconds: float) -> None:
+    """
+    Remove the traces beyond the newest few, sparing any that may belong to a live run.
+
+    A trace's name starts with its run's start time, so the names sort oldest
+    first. A trace written within the last min_age_seconds may belong to a run
+    still in flight, so it is never removed, whatever its place in that order.
+    Files that are not traces are left alone, and a file that cannot be read or
+    removed is skipped.
+
+    Args:
+        directory: The trace directory
+        keep: How many of the newest traces always stay
+        min_age_seconds: The least time since a trace was last written before it may be removed
+    """
+    now = time.time()
+    try:
+        with os.scandir(directory) as entries:
+            traces = sorted(
+                (entry for entry in entries if entry.name.endswith('.jsonl') and entry.is_file()),
+                key=lambda entry: entry.name,
+                reverse=True,
+            )
+    except OSError:
+        return
+    for entry in traces[keep:]:
+        with suppress(OSError):
+            if now - entry.stat().st_mtime > min_age_seconds:
+                os.remove(entry.path)
+
+
+class StartupTrace:
+    """
+    The stages one run reaches, kept on disk for as long as the run lasts.
+
+    Claude Code kills a hook at its registered timeout and discards its output,
+    so a run that stalls says nothing about where. The trace appends one JSON
+    line per stage to a file of its own, flushed as it is written so that it
+    survives the process being killed, and finish() removes the file when the
+    run ends normally. Every record names its stage, the wall-clock time the run
+    reached it (at, ISO 8601 in UTC), and the seconds since the hook's module
+    code started (elapsed); some records add fields of their own. A trace whose
+    file cannot be created records nothing, and one whose writes fail stops
+    recording; neither breaks the hook.
+    """
+
+    def __init__(self, path: Path | None, stream: TextIO | None, started_wall: float, started_monotonic: float) -> None:
+        """
+        Initialize the trace; begin() is the way to start one.
+
+        Args:
+            path: The trace file, or None for a trace that records nothing
+            stream: The open trace file, or None for a trace that records nothing
+            started_wall: The wall-clock time the hook's module code started
+            started_monotonic: The time.monotonic() reading taken beside it
+        """
+        self.path = path
+        self._stream = stream
+        self._started_wall = started_wall
+        self._started_monotonic = started_monotonic
+
+    @classmethod
+    def begin(
+        cls, directory: Path | None, started_wall: float, started_monotonic: float, pid: int | None = None,
+        **fields: object,
+    ) -> 'StartupTrace':
+        """
+        Create the run's trace file, write its module_start record, and trim the traces of earlier runs.
+
+        The file is named for the start time in UTC and the process id, so the
+        newest trace sorts last and names the process that left it.
+
+        Args:
+            directory: The trace directory, or None when the trace is off
+            started_wall: The wall-clock time the hook's module code started
+            started_monotonic: The time.monotonic() reading taken beside it
+            pid: The run's process id; this process's when omitted
+            **fields: More fields for the module_start record
+
+        Returns:
+            The run's trace, recording nothing when the directory is None or the file cannot be created
+        """
+        if directory is None:
+            return cls(None, None, started_wall, started_monotonic)
+        run_pid = os.getpid() if pid is None else pid
+        started = datetime.fromtimestamp(started_wall, tz=UTC)
+        path = directory / f'{started:%Y%m%dT%H%M%S}.{started.microsecond // 1000:03d}Z-{run_pid}.jsonl'
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            stream = path.open('x', encoding='utf-8')
+        except OSError:
+            return cls(None, None, started_wall, started_monotonic)
+        trace = cls(path, stream, started_wall, started_monotonic)
+        trace._write({'stage': 'module_start', 'at': _utc_text(started_wall), 'elapsed': 0.0, 'pid': run_pid, **fields})
+        prune_startup_traces(directory, MAX_KEPT_TRACES, MAX_LAUNCH_AGE_SECONDS)
+        return trace
+
+    @property
+    def recording(self) -> bool:
+        """Whether a record written now reaches the trace file: the file was created and no write has failed."""
+        return self._stream is not None
+
+    def record(self, stage: str, **fields: object) -> None:
+        """
+        Append the record of a stage the run has just reached.
+
+        Args:
+            stage: The stage's name
+            **fields: More fields for the record
+        """
+        elapsed = round(time.monotonic() - self._started_monotonic, 3)
+        self._write({'stage': stage, 'at': _utc_text(time.time()), 'elapsed': elapsed, **fields})
+
+    def wall_text(self, monotonic_reading: float) -> str:
+        """
+        Return a time.monotonic() reading of this run as ISO 8601 wall-clock text in UTC.
+
+        Args:
+            monotonic_reading: The reading to convert
+
+        Returns:
+            The wall-clock time of the reading
+        """
+        return _utc_text(self._started_wall + (monotonic_reading - self._started_monotonic))
+
+    def finish(self) -> None:
+        """Close and remove the trace file: the run ended normally."""
+        self._close()
+        if self.path is not None:
+            with suppress(OSError):
+                self.path.unlink()
+
+    def _write(self, record: dict[str, object]) -> None:
+        """Write one record and flush it to the file, closing the file for good when the write fails."""
+        if self._stream is None:
+            return
+        try:
+            self._stream.write(json.dumps(record) + '\n')
+            self._stream.flush()
+        except OSError:
+            self._close()
+
+    def _close(self) -> None:
+        """Close the trace file once; the trace records nothing after it."""
+        if self._stream is not None:
+            with suppress(OSError):
+                self._stream.close()
+            self._stream = None
+
+
+# The trace main() records into when it runs without one, such as when it is called directly
+DISABLED_TRACE = StartupTrace(None, None, _HOOK_STARTED_WALL, _HOOK_STARTED_AT)
 
 
 class UnconfirmedStoreError(Exception):
@@ -951,6 +1205,8 @@ class SyncMCPClient:
         Raises:
             RuntimeError: If called from an existing async context
         """
+        import asyncio
+
         try:
             asyncio.get_running_loop()
             # If we get here, we're already in an async context
@@ -1110,6 +1366,9 @@ class SyncMCPClient:
         Returns:
             The server response as a dictionary
         """
+        import asyncio
+
+        from fastmcp import Client
         from fastmcp.client.transports import StdioTransport
 
         log_always(f'_store_single_context_async called: thread_id={thread_id}, source={source}, text_len={len(text)}')
@@ -1283,6 +1542,9 @@ class SyncMCPClient:
         Returns:
             Summary of chunked storage results
         """
+        import asyncio
+
+        from fastmcp import Client
         from fastmcp.client.transports import StdioTransport
 
         log_always(f'_store_chunks_single_connection: storing {len(chunks)} chunks through one connection')
@@ -1518,6 +1780,9 @@ class FastMCPHttpClient:
         Returns:
             The server response as a dictionary
         """
+        import asyncio
+
+        from fastmcp import Client
         from fastmcp.client.transports import StreamableHttpTransport
 
         log_always(f'_store_context_async: thread_id={thread_id}, source={source}, text_len={len(text)}')
@@ -1672,6 +1937,8 @@ class FastMCPHttpClient:
         Returns:
             The server response as a dictionary
         """
+        import asyncio
+
         log_always(f'FastMCPHttpClient.store_context: thread_id={thread_id}, source={source}, text_len={len(text)}')
         result = asyncio.run(self._store_context_async(thread_id, source, text, metadata))
         log_always('FastMCPHttpClient.store_context completed successfully')
@@ -1839,6 +2106,37 @@ def matches_skip_pattern(prompt: str, config: dict[str, Any]) -> bool:
             continue
 
     return False
+
+
+def skip_reason(input_data: dict[str, Any], config: dict[str, Any]) -> str | None:
+    """
+    Return why a hook payload is not stored, or None when its prompt is one to store.
+
+    Only UserPromptSubmit prompts are stored, and of those neither an empty
+    prompt, a pre-built slash command, nor a prompt matching a skip pattern:
+    internal hook prompts and the tagged or framed turns Claude Code starts on
+    the session's behalf are not the user's own words.
+
+    Args:
+        input_data: The hook payload Claude Code sent
+        config: The hook configuration
+
+    Returns:
+        The log line that records why the payload is skipped, or None for a prompt to store
+    """
+    hook_event_name = input_data.get('hook_event_name', '')
+    log_always(f'hook_event_name: {hook_event_name}')
+    if hook_event_name != 'UserPromptSubmit':
+        return f'Skipping: Event type is {hook_event_name}, not UserPromptSubmit'
+    prompt = input_data.get('prompt', '')
+    log_always(f'Prompt length: {len(prompt)} characters')
+    if not prompt:
+        return 'Skipping: Empty prompt'
+    if is_prebuilt_slash_command(prompt, config):
+        return 'Skipping: Pre-built slash command detected'
+    if matches_skip_pattern(prompt, config):
+        return 'Skipping: Prompt matches a skip pattern'
+    return None
 
 
 def resolve_thread_id(project_dir: str, config: dict[str, Any], worktree_info: dict[str, Any]) -> str:
@@ -2196,15 +2494,36 @@ def _unconfirmed_store_notice(error: Exception, error_msg: str, thread_id: str, 
     return f'[Hook: user message not confirmed stored to context-server (thread_id={thread_id}; {error_msg}).{stage}'
 
 
-def main(budget_started_at: float = _HOOK_STARTED_AT) -> None:
+def hook_clock() -> float:
+    """Return the hook's own clock: the time.monotonic() reading taken when its module code started."""
+    return _HOOK_STARTED_AT
+
+
+def main(
+    launch_clock: Callable[[], float] = hook_clock,
+    trace: StartupTrace = DISABLED_TRACE,
+    read_start_times: Callable[[], StartTimes] = own_start_times,
+) -> None:
     """
     Main hook execution function.
 
+    The payload is checked against the filters before any of the store's work,
+    because a turn that is not stored needs only its payload, the configuration,
+    and the skip patterns: no process is read before that decision, and the
+    launch is read and fastmcp imported only for a prompt to store. Right after
+    the decision, on both paths, a run whose trace records reads its start
+    times and records them as the start_times stage; a creation time does not
+    change, so reading it late loses nothing, and a run killed in that read
+    leaves a trace ending at skip_decided.
+
     Args:
-        budget_started_at: The time.monotonic() reading the run's budget counts from; the hook's own clock when omitted
+        launch_clock: Returns the time.monotonic() reading the store's budget counts from; called only for a
+            prompt to store, and the hook's own clock when omitted
+        trace: The run's startup trace, which records each stage main() reaches
+        read_start_times: Returns when the hook's interpreter, and the venv redirector that started it, were
+            created; called only while the trace records, and read from the platform's process table when omitted
     """
     log_always('Entering main() function')
-    log_always(f'Run budget counts from {_HOOK_STARTED_AT - budget_started_at:.2f}s before the hook clock started')
     start_time = datetime.now(tz=UTC)
 
     # Load configuration (defaults merged with config file if provided)
@@ -2214,15 +2533,12 @@ def main(budget_started_at: float = _HOOK_STARTED_AT) -> None:
     except Exception:
         # If config loading fails, use defaults
         config = DEFAULT_CONFIG.copy()
+    trace.record('config_loaded')
 
     # Check if hook is enabled
     if not config.get('enabled', True):
         log_always('Hook disabled via config, exiting')
         sys.exit(0)
-
-    # CRITICAL: Configure UTF-8 for Windows BEFORE any subprocess operations
-    # This prevents non-ASCII text corruption (mojibake) in MCP communication
-    setup_windows_utf8()
 
     # Claude Code writes the payload as UTF-8. The stdin text layer decodes with the locale's
     # encoding unless Python runs in UTF-8 mode, so the payload is parsed from the raw bytes.
@@ -2238,35 +2554,25 @@ def main(budget_started_at: float = _HOOK_STARTED_AT) -> None:
         log_always(f'Error reading stdin: {type(e).__name__}: {e}', level='ERROR')
         log_always('Exiting: Failed to read stdin')
         sys.exit(0)
+    trace.record('stdin_read')
 
-    # Extract key fields
-    hook_event_name = input_data.get('hook_event_name', '')
-    log_always(f'hook_event_name: {hook_event_name}')
-
-    # Validate this is a UserPromptSubmit event
-    if hook_event_name != 'UserPromptSubmit':
-        log_always(f'Skipping: Event type is {hook_event_name}, not UserPromptSubmit')
+    reason = skip_reason(input_data, config)
+    trace.record('skip_decided', store=reason is None)
+    if trace.recording:
+        times = read_start_times()
+        trace.record(
+            'start_times',
+            interpreter_created=None if times.interpreter is None else _utc_text(times.interpreter),
+            redirector_created=None if times.redirector is None else _utc_text(times.redirector),
+        )
+    if reason is not None:
+        log_always(reason)
         sys.exit(0)
+    prompt: str = input_data['prompt']
 
-    # Extract prompt from input data (UserPromptSubmit has prompt directly)
-    prompt = input_data.get('prompt', '')
-    log_always(f'Prompt length: {len(prompt)} characters')
-    if not prompt:
-        # No prompt to save
-        log_always('Skipping: Empty prompt')
-        sys.exit(0)
-
-    # Check if this is a pre-built slash command that should be skipped
-    if is_prebuilt_slash_command(prompt, config):
-        # Skip pre-built slash commands
-        log_always('Skipping: Pre-built slash command detected')
-        sys.exit(0)
-
-    # Skip prompts that are not the user's own words: internal hook prompts and
-    # tagged or framed turns Claude Code starts on the session's behalf
-    if matches_skip_pattern(prompt, config):
-        log_always('Skipping: Prompt matches a skip pattern')
-        sys.exit(0)
+    # CRITICAL: Configure UTF-8 for Windows BEFORE any subprocess operations
+    # This prevents non-ASCII text corruption (mojibake) in MCP communication
+    setup_windows_utf8()
 
     # Get Claude project directory
     claude_project_dir = os.environ.get('CLAUDE_PROJECT_DIR')
@@ -2300,8 +2606,23 @@ def main(budget_started_at: float = _HOOK_STARTED_AT) -> None:
         metadata['worktree_path'] = worktree_info['worktree_path']
     if worktree_info.get('is_linked_worktree') is not None:
         metadata['is_linked_worktree'] = worktree_info['is_linked_worktree']
+    trace.record('project_resolved')
+
+    budget_started_at = launch_clock()
+    log_always(f'Run budget counts from {_HOOK_STARTED_AT - budget_started_at:.2f}s before the hook clock started')
+    launcher_created = trace.wall_text(budget_started_at) if budget_started_at < _HOOK_STARTED_AT else None
+    trace.record('launcher_read', launcher_created=launcher_created)
+
+    # Loaded once the prompt is known to be stored, so a skipped turn never pays for it, and outside
+    # the store's error handling, so a broken installation fails the run instead of reading as an
+    # unconfirmed store; the clients take Client and their transports from the loaded package
+    trace.record('fastmcp_import_started')
+    importlib.import_module('fastmcp')
+    log_always('FastMCP imported')
+    trace.record('fastmcp_imported')
 
     # Create MCP client and store context
+    trace.record('store_started')
     try:
         # A failure in MCP communication never blocks the prompt: the hook exits 0
         # and tells the model below that the message was not confirmed stored
@@ -2327,6 +2648,7 @@ def main(budget_started_at: float = _HOOK_STARTED_AT) -> None:
             metadata=metadata,
         )
     except Exception as e:
+        trace.record('store_ended', confirmed=False)
         # Log the error with its traceback, then tell the model instead of blocking the prompt
         cause = e.cause if isinstance(e, UnconfirmedStoreError) else e
         error_msg = f'{type(cause).__name__}: {cause}'
@@ -2354,6 +2676,7 @@ def main(budget_started_at: float = _HOOK_STARTED_AT) -> None:
         json_output.emit_additional_context('UserPromptSubmit', failure_message)
         log_always(f'Output store failure notice via additionalContext: {failure_message}')
     else:
+        trace.record('store_ended', confirmed=True)
         _report_stored(result, config)
 
     # Always exit successfully
@@ -2363,5 +2686,35 @@ def main(budget_started_at: float = _HOOK_STARTED_AT) -> None:
     sys.exit(0)
 
 
+def entry() -> None:
+    """
+    Run the hook as Claude Code starts it.
+
+    The run's startup trace begins first, naming the process and the
+    configuration file, and is removed when main() ends the run, which it does
+    through sys.exit; a run that is killed, or that main() leaves with an
+    unexpected error, keeps it. The process table is read only once main() has
+    decided the skip: for the start times while the trace records, and for the
+    launch, which sets the store's budget, only if main() reaches the store.
+
+    Raises:
+        SystemExit: The exit main() ends the run with
+    """
+    pid = os.getpid()
+    trace = StartupTrace.begin(
+        startup_trace_directory(),
+        _HOOK_STARTED_WALL,
+        _HOOK_STARTED_AT,
+        pid=pid,
+        config=sys.argv[1] if len(sys.argv) > 1 else None,
+    )
+    try:
+        main(lambda: launcher_clock_start(_HOOK_STARTED_AT, process_table(), sys.executable, pid), trace)
+    except SystemExit:
+        trace.finish()
+        raise
+    trace.finish()
+
+
 if __name__ == '__main__':
-    main(launcher_clock_start(_HOOK_STARTED_AT, process_table(), sys.executable, os.getpid()))
+    entry()
