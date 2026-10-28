@@ -3,7 +3,7 @@ name: mcp-context-server
 description: MCP Context Server - Persistent context storage for LLM agents
 type: application
 version: 0.1.0
-appVersion: "2.2.2"  # x-release-please-version
+appVersion: "3.0.0"  # x-release-please-version
 keywords:
   - mcp
   - context
