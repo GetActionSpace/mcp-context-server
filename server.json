@@ -6,13 +6,13 @@
     "url": "https://github.com/GetActionSpace/mcp-context-server",
     "source": "github"
   },
-  "version": "2.2.2",
+  "version": "3.0.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "mcp-context-server",
-      "version": "2.2.2",
+      "version": "3.0.0",
       "transport": {
         "type": "stdio"
       },
@@ -1289,7 +1289,7 @@
     },
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/getactionspace/mcp-context-server:2.2.2",
+      "identifier": "ghcr.io/getactionspace/mcp-context-server:3.0.0",
       "runtimeHint": "docker",
       "transport": {
         "type": "streamable-http",
