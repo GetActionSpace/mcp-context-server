@@ -168,20 +168,25 @@ mcp_client:
   # The hook's whole budget in seconds, measured from its launch: from the creation
   # of the uv process that started the hook, so the time uv spends preparing the
   # script's environment and starting the interpreter counts against it, and so does
-  # the work before the store: reading this file and the prompt, and loading the MCP
-  # client library. When the hook cannot identify that process, it counts from the
-  # start of its module code instead. Every timeout above and the request
-  # timeout below are capped by what remains of it, and no attempt starts once less
-  # than a second remains. Keep it below the Claude Code hook timeout the
-  # environment registers for this hook (the environment sets that timeout on the
-  # hook's event entry; Claude Code's own default for a UserPromptSubmit hook is 30
-  # seconds), so the hook always answers before it is killed with its output
-  # discarded: with the stored context_id, or with a notice that the message was not
-  # confirmed stored, which a startup that already used the whole budget gives at
-  # once. The gap covers any shell start before uv, the hook's exit, and, when
-  # the launch cannot be identified, the startup before the hook's clock. A store
-  # request is sent at most once per run; only a failure before it is sent is
-  # retried.
+  # all the work after it: reading this file and the prompt, resolving the thread,
+  # loading the MCP client library, and the store. When the hook cannot identify
+  # that process, it counts from the start of its module code instead. Every timeout
+  # above and the request timeout below are capped by what remains of it, and no
+  # attempt starts once less than a second remains. Half a second after it ends, a
+  # watchdog answers for a run that has not answered, with a notice saying how far
+  # it got (before the skip decision, before the thread was resolved, or before or
+  # after its store request was sent), and ends the process without waiting for an
+  # import, a store, or an exit still running; a run that has already used the whole
+  # budget when it reads its launch, right after this file, answers at once.
+  # Keep it below the Claude Code hook timeout the environment registers for this
+  # hook (the environment sets that timeout on the hook's event entry; Claude Code's
+  # own default for a UserPromptSubmit hook is 30 seconds), so the hook always
+  # answers before it is killed with its output discarded: with the stored
+  # context_id, or with a notice that the message was not confirmed stored.
+  # The gap covers any shell start before uv, the exit of uv itself, and, when the
+  # launch cannot be identified, the startup before the hook's clock. A store request
+  # is sent at most once per run, and never after the watchdog has answered; only a
+  # failure before it is sent is retried.
   deadline_seconds: 90.0
 
 # MCP server command configuration
@@ -232,7 +237,8 @@ chunking:
 # platform default such as /tmp), one file per run named for its start time in UTC
 # and its process id, such as 20250102T030405.678Z-12345.jsonl. A run that exits
 # normally removes its own file, so every file there belongs to a run that was
-# killed or crashed, and the newest sorts last. A run keeps at most 20 files in the
+# killed or crashed, or that its watchdog ended at the end of its budget, and the
+# newest sorts last. A run keeps at most 20 files in the
 # directory, its own included, removing the oldest, but never one written within the
 # last 600 seconds, which may belong to a run still in flight.
 #
@@ -243,36 +249,44 @@ chunking:
 #                           configuration file's path)
 #   config_loaded           the configuration loader and its YAML library were loaded,
 #                           and this file was read
-#   stdin_read              the payload Claude Code sent was read
-#   skip_decided            "store" says whether the prompt is stored
+#   launcher_read           "launcher_created" is when the uv process that launched the
+#                           hook was created, or null when it could not be identified;
+#                           the budget counts from it
 #   start_times             "interpreter_created" is when the process the hook runs in
 #                           was created, and "redirector_created" when the venv
 #                           redirector that started it was, which only Windows runs;
 #                           each is null when it could not be read, and
 #                           redirector_created also when no redirector started the
-#                           interpreter; a turn that is not stored ends here
+#                           interpreter
+#   stdin_read              the payload Claude Code sent was read
+#   skip_decided            "store" says whether the prompt is stored; a turn that is
+#                           not stored ends here
 #   project_resolved        the project, the worktree, and the thread were resolved,
 #                           which runs git
-#   launcher_read           "launcher_created" is when the uv process that launched the
-#                           hook was created, or null when it could not be identified
 #   fastmcp_import_started  loading the MCP client library began
 #   fastmcp_imported        the library is loaded
 #   store_started           the store began
 #   store_ended             "confirmed" says whether the store returned the server's
 #                           answer rather than ending in an error
+#   deadline_reached        the run was still running half a second after its budget
+#                           ended, so its watchdog ended the process at once;
+#                           "answered_by_deadline" is true when the watchdog wrote the
+#                           answer, worded from the stage before this line, and false
+#                           when the run had answered and was still exiting
 #
 # Reading a leftover trace: the run stalled after the stage on its last line, before
-# the next stage in the list above. A trace ending at module_start stalled while the
-# run trimmed the traces of earlier runs or loaded its configuration: the loader and
-# its YAML library, the run's first third-party import, then this file. One ending
-# at skip_decided stalled while it read the start times from the process table,
-# which no run reads before it decides the skip. The start times split the startup,
-# from the moment Claude Code launches the hook command to the "at" of module_start.
-# From the launch to interpreter_created is the shell Claude Code runs the command
-# in, uv preparing the environment, and on Windows the redirector hop:
-# redirector_created to interpreter_created is the redirector, the environment's
-# small python.exe, starting the base interpreter the hook runs in, and on the store
-# path launcher_created marks where the shell handed over to uv. From
+# the next stage in the list above, or, when its last line is deadline_reached, its
+# budget ended there. A trace ending at module_start stalled while the run trimmed
+# the traces of earlier runs or loaded its configuration: the loader and its YAML
+# library, the run's first third-party import, then this file. One ending at
+# config_loaded stalled while it read the launch and the start times from the
+# process table, which every run walks once, right after this file. The start times
+# split the startup, from the moment Claude Code launches the hook command to the
+# "at" of module_start. From the launch to interpreter_created is the shell Claude
+# Code runs the command in, uv preparing the environment, and on Windows the
+# redirector hop: redirector_created to interpreter_created is the redirector, the
+# environment's small python.exe, starting the base interpreter the hook runs in,
+# and launcher_created marks where the shell handed over to uv. From
 # interpreter_created to module_start is the interpreter's own startup, through the
 # standard library. The launch itself is in the session transcript: the time Claude
 # Code canceled the hook less the duration it records for it. A run killed before

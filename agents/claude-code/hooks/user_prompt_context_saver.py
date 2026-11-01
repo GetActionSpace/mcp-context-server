@@ -23,41 +23,52 @@ text prompts are captured and stored.
 Claude Code kills a hook at the timeout its environment registers and discards
 its output, so the hook keeps one shorter time budget of its own,
 mcp_client.deadline_seconds: every connection or request timeout is capped by
-what remains of the budget, no attempt starts once less than a second remains,
-and the run ends with an answer for the model before the budget does. Claude
-Code counts its timeout from the moment it starts the hook's command, and uv
-prepares the script's environment and starts the interpreter before any hook
-code runs, so the budget counts from the launch: the creation of the uv process
-that started the hook, recognized by its image name as the hook's parent or,
-where the interpreter runs through a venv redirector, as the redirector's
-parent. When the hook cannot identify that process (no uv launcher in that
-short walk, a process that cannot be read, a parent newer than its child, or a
-launch older than the 600 seconds Claude Code gives a command hook by default),
-the budget counts from the start of the hook's module code. A startup that has
-already used the whole budget answers at once that no store request was sent,
-instead of being killed while it stores.
+what remains of the budget, and no attempt starts once less than a second
+remains. Claude Code counts its timeout from the moment it starts the hook's
+command, and uv prepares the script's environment and starts the interpreter
+before any hook code runs, so the budget counts from the launch: the creation of the uv process that started the hook,
+recognized by its image name as the hook's parent or, where the interpreter
+runs through a venv redirector, as the redirector's parent. When the hook
+cannot identify that process (no uv launcher in that short walk, a process that
+cannot be read, a parent newer than its child, or a launch older than the 600
+seconds Claude Code gives a command hook by default), the budget counts from
+the start of the hook's module code.
 
-A turn the hook does not store needs only its payload, the configuration, and
-the skip patterns, so the hook decides on them first and reads no process
-before that decision: the launch is read from the process table, and fastmcp
-and asyncio are imported, only for a prompt it stores.
+The configuration sets the budget, so the hook reads the launch right after
+loading it, and from then on a watchdog thread holds the run to the budget,
+because an import, a git call, a store, or an exit starved of CPU can take
+seconds that no timeout interrupts. DEADLINE_GRACE_SECONDS after the budget
+ends, a run that has not answered is answered for with a notice worded from the
+stage it reached: before it decided whether to store the prompt, before it
+resolved the thread, or before or after its store request was sent. The process
+then ends at once, whether the watchdog or the run wrote the answer, without
+waiting for the work or the interpreter shutdown still running. A run whose
+budget is already gone when it reads the launch answers at once that no store
+request was sent. The configuration load precedes the budget it defines, so it
+counts against the budget without being cut short by it.
+
+A turn the hook does not store needs only its payload, the configuration, the
+skip patterns, and the launch its budget counts from: it reads the process
+table only in the one walk from the hook to its launcher, which also yields the
+start times its trace records, and fastmcp and asyncio are imported only for a
+prompt it stores.
 
 Each run records the stages it reaches in a startup trace, because a run
-Claude Code kills leaves no output to say where it stalled. The trace is a file
-of its own in the claude_hook_user_prompt_context_saver_traces directory under
-the temporary directory, one JSON record per line, each flushed as it is
-written; a run that ends normally removes it, so a file that remains belongs
-to a run that was killed or crashed, and its last record names the last
-stage that run reached. A run keeps at most MAX_KEPT_TRACES traces in the
-directory, its own included, and never removes one written within the last
+that stalls leaves no output to say where. The trace is a file of its own in
+the claude_hook_user_prompt_context_saver_traces directory under the temporary
+directory, one JSON record per line, each flushed as it is written; a run that
+ends normally removes it, so a file that remains belongs to a run that was
+killed or crashed, or that its watchdog ended at the end of its budget, which
+adds a last record, deadline_reached; the records before it name the last stage
+that run reached. A run keeps at most MAX_KEPT_TRACES traces in the directory,
+its own included, and never removes one written within the last
 MAX_LAUNCH_AGE_SECONDS, which may belong to a run still in flight.
-CLAUDE_HOOK_STARTUP_TRACE set to 0, false, or no turns the trace off. Once the
-skip is decided, a run whose trace records reads from the process table when
-its interpreter was created and, where a Windows venv redirector started that
-interpreter, when the redirector was, and records both before it exits or
-stores, so the trace splits the startup into its parts. A creation time does
-not change, so reading it late loses nothing, and a run killed before that
-read still leaves the stages it reached; a run without a trace never reads it.
+CLAUDE_HOOK_STARTUP_TRACE set to 0, false, or no turns the trace off. Right
+after the launch, a run whose trace records takes from the same walk of the
+process table when its interpreter was created and, where a Windows venv
+redirector started that interpreter, when the redirector was, and records both,
+so the trace splits the startup into its parts; a run without a trace never
+reads them.
 
 A store request that fails or times out after it was sent is never sent again
 within the run, because the server may have received it and would store the
@@ -100,6 +111,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
 from collections.abc import Callable
@@ -202,9 +214,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # The run's whole time budget (seconds), measured from the hook's launch:
         # the creation of the uv process that started it, or the start of the
         # hook's module code when that process cannot be identified. Every timeout
-        # above is capped by what remains of it, so the hook answers before the
-        # Claude Code hook timeout kills it. A UserPromptSubmit hook gets 30
-        # seconds unless its event entry registers a timeout, so this default
+        # above is capped by what remains of it, and half a second after it ends a
+        # watchdog answers for the run and ends the process, so the hook answers
+        # before the Claude Code hook timeout kills it. A UserPromptSubmit hook gets
+        # 30 seconds unless its event entry registers a timeout, so this default
         # leaves 10 of them for any shell start before uv, the exit, and a startup
         # the launch read cannot see; a config pairs a longer budget with a
         # longer registered timeout.
@@ -741,6 +754,35 @@ def process_table() -> ProcessTable | None:
     return table
 
 
+class CachedProcessTable:
+    """
+    A process table that reads each process once.
+
+    The launch and the start times walk the same processes, the hook and the
+    processes that started it, so a run that reads both reads each process once.
+    """
+
+    def __init__(self, table: ProcessTable) -> None:
+        """
+        Initialize the cache over a platform's table.
+
+        Args:
+            table: The table each process is read from the first time it is asked for
+        """
+        self._table = table
+        self._records: dict[int, ProcessRecord | None] = {}
+
+    def read(self, pid: int) -> ProcessRecord | None:
+        """Return a process's record, read from the table the first time it is asked for."""
+        if pid not in self._records:
+            self._records[pid] = self._table.read(pid)
+        return self._records[pid]
+
+    def now(self) -> float:
+        """Return the current time on the table's clock."""
+        return self._table.now()
+
+
 def _is_launcher(record: ProcessRecord) -> bool:
     """Return whether a process is the uv launcher, by its image name in any case and with or without .exe."""
     return record.image.lower().removesuffix('.exe') == LAUNCHER_IMAGE
@@ -1154,6 +1196,188 @@ def _unconfirmed_store_error(
     return error
 
 
+# The cause a client gives for a store request it did not send, because the run had already answered without it
+ANSWERED_BEFORE_SENDING = 'the run answered at the end of its budget before this request was sent'
+
+# How long the watchdog waits past the end of the budget before it answers for the run: every attempt's
+# timeout is capped at that same instant, so the client's own account of an attempt, with whether its
+# request was sent and which chunks the server confirmed, normally arrives within it
+DEADLINE_GRACE_SECONDS = 0.5
+
+
+def _additional_context_writer() -> Callable[[str], None]:
+    """Return the function that writes a text as the additionalContext of the hook's UserPromptSubmit answer."""
+    json_output = _load_json_output()
+
+    def write(text: str) -> None:
+        json_output.emit_additional_context('UserPromptSubmit', text)
+
+    return write
+
+
+class RunAnswer:
+    """
+    The one answer a run gives Claude Code, written by the run or, once its budget has ended, by a watchdog.
+
+    Claude Code reads a hook's answer when its process exits and discards it
+    when it kills the process at its own timeout, and an import, a git call, a
+    store, or an exit starved of CPU can take seconds that no timeout interrupts.
+    Armed with the run's budget, the answer starts a watchdog thread that wakes
+    DEADLINE_GRACE_SECONDS after the budget ends. A run that has not answered by
+    then is answered for with a notice worded from what the run had reached:
+    whether it had decided to store the prompt, the thread it resolved, whether
+    its store request was sent, and which chunks the server confirmed. Either
+    way the process then ends at once, without waiting for the work still
+    running or for interpreter shutdown. Exactly one answer is written, by
+    whichever side claims it first, and every store request is claimed through
+    send_request(), so none is sent after the watchdog answered that none was.
+    """
+
+    def __init__(self, end_process: Callable[[], None] | None = None, trace: StartupTrace = DISABLED_TRACE) -> None:
+        """
+        Initialize an answer that nothing has claimed yet.
+
+        Args:
+            end_process: Ends the process, called from the watchdog thread; arm() starts no watchdog without it
+            trace: The run's startup trace, which records the watchdog's wake-up
+        """
+        self._end_process = end_process
+        self._trace = trace
+        self._lock = threading.Lock()
+        self._answered = False
+        self._write: Callable[[str], None] | None = None
+        self._deadline: Deadline | None = None
+        self._storing = False
+        self._thread_id: str | None = None
+        self._metadata: dict[str, Any] = {}
+        self._request_sent = False
+        self._total_chunks: int | None = None
+        self._stored_context_ids: list[int] = []
+
+    @property
+    def request_sent(self) -> bool:
+        """Whether a store request has been claimed for sending, after which the server may store the message."""
+        return self._request_sent
+
+    def arm(self, deadline: Deadline) -> None:
+        """
+        Hold the run to its budget: load the writer every answer goes through, then start the watchdog.
+
+        Args:
+            deadline: The run's budget
+        """
+        self._deadline = deadline
+        self._write = _additional_context_writer()
+        if self._end_process is not None:
+            threading.Thread(target=self._watch, name='deadline-watchdog', daemon=True).start()
+
+    def decided_to_store(self) -> None:
+        """Record that the prompt passed the filters and is to be stored."""
+        with self._lock:
+            self._storing = True
+
+    def resolved(self, thread_id: str, metadata: dict[str, Any]) -> None:
+        """
+        Record the thread the prompt belongs in and the metadata it is stored with.
+
+        Args:
+            thread_id: The thread
+            metadata: The metadata
+        """
+        with self._lock:
+            self._thread_id = thread_id
+            self._metadata = metadata
+
+    def send_request(self, total_chunks: int | None = None) -> None:
+        """
+        Claim the sending of a store request, which the run may no longer do once it has answered.
+
+        Args:
+            total_chunks: The number of chunks the message is stored in, for a chunked store
+
+        Raises:
+            TimeoutError: The run has already answered, so the request must not be sent
+        """
+        with self._lock:
+            if self._answered:
+                raise TimeoutError(ANSWERED_BEFORE_SENDING)
+            self._request_sent = True
+            if total_chunks is not None:
+                self._total_chunks = total_chunks
+
+    def chunk_stored(self, context_id: object) -> None:
+        """
+        Record a chunk the server confirmed stored.
+
+        Args:
+            context_id: The context_id the server gave the chunk; anything but an integer is not recorded
+        """
+        if isinstance(context_id, int):
+            with self._lock:
+                self._stored_context_ids.append(context_id)
+
+    def give(self, notice: str | None) -> bool:
+        """
+        Claim the run's answer and write it, unless an answer was already given.
+
+        Args:
+            notice: The additionalContext text, or None for an answer that writes nothing
+
+        Returns:
+            Whether this was the run's answer: False when one had already been given
+        """
+        with self._lock:
+            if self._answered:
+                return False
+            self._answered = True
+            if notice is not None:
+                if self._write is None:
+                    self._write = _additional_context_writer()
+                self._write(notice)
+            return True
+
+    def settle(self) -> None:
+        """Close the answer with whatever was given, so the watchdog writes nothing for the run."""
+        self.give(None)
+
+    def budget_notice(self) -> str:
+        """Return the notice for a run whose budget ended before it answered, worded from the stage it reached."""
+        with self._lock:
+            return self._budget_notice()
+
+    def _budget_notice(self) -> str:
+        """Compose the budget notice; the caller holds the lock."""
+        budget = cast(Deadline, self._deadline).describe()
+        store_call = "the context-server store_context tool (source=user), in this project's thread"
+        if self._thread_id is None:
+            if not self._storing:
+                return (
+                    '[Hook: user message not stored to context-server: the hook reached the end of its time budget'
+                    f' ({budget}) before it decided whether to store this prompt. No store request was sent:'
+                    f" if this prompt holds the user's own words, store it yourself with {store_call}.]"
+                )
+            return (
+                '[Hook: user message not stored to context-server: the hook reached the end of its time budget'
+                f' ({budget}) before it resolved the thread for this prompt. No store request was sent, so no'
+                f' thread holds a copy: store the prompt yourself now with {store_call}.]'
+            )
+        cause = TimeoutError(f'the hook reached the end of its time budget ({budget})')
+        error = UnconfirmedStoreError(cause, self._request_sent, self._stored_context_ids, self._total_chunks)
+        return _unconfirmed_store_notice(error, f'{type(cause).__name__}: {cause}', self._thread_id, self._metadata)
+
+    def _watch(self) -> None:
+        """Wait out the budget and the grace, answer for a run that has not answered, and end the process."""
+        deadline = cast(Deadline, self._deadline)
+        time.sleep(deadline.remaining() + DEADLINE_GRACE_SECONDS)
+        with self._lock:
+            answered_by_deadline = not self._answered
+            if answered_by_deadline:
+                self._answered = True
+                cast(Callable[[str], None], self._write)(self._budget_notice())
+        self._trace.record('deadline_reached', answered_by_deadline=answered_by_deadline)
+        cast(Callable[[], None], self._end_process)()
+
+
 class SyncMCPClient:
     """
     Synchronous wrapper for the async FastMCP client.
@@ -1170,6 +1394,7 @@ class SyncMCPClient:
         max_connection_retries: int = 3,
         connection_timeout: float = 30.0,
         deadline: Deadline | None = None,
+        answer: RunAnswer | None = None,
     ) -> None:
         """
         Initialize the synchronous MCP client wrapper.
@@ -1180,12 +1405,15 @@ class SyncMCPClient:
             max_connection_retries: Number of connection attempts before the store request is sent
             connection_timeout: Timeout in seconds per connection attempt
             deadline: The run's time budget; the default budget, starting now, when omitted
+            answer: The run's answer, which every store request is sent through; one of the client's own when
+                omitted
         """
         self.server_command = server_command
         self.timeout = timeout
         self.max_connection_retries = max_connection_retries
         self.connection_timeout = connection_timeout
         self.deadline = deadline if deadline is not None else Deadline(DEFAULT_CONFIG['mcp_client']['deadline_seconds'])
+        self.answer = answer if answer is not None else RunAnswer()
         log_always(
             f'SyncMCPClient initialized: command={server_command}, timeout={timeout}, '
             f'max_conn_retries={max_connection_retries}, conn_timeout={connection_timeout}, '
@@ -1422,6 +1650,7 @@ class SyncMCPClient:
                         log_always(f'Calling store_context with thread_id={thread_id}, source={source}')
                         # From here on the request may have reached the server, so a
                         # failure ends the run instead of sending a second copy
+                        self.answer.send_request()
                         request_sent = True
                         result = await client.call_tool('store_context', params)
                         log_always(f'store_context returned: {type(result).__name__}')
@@ -1618,10 +1847,13 @@ class SyncMCPClient:
 
                             # From here on the request may have reached the server, so a
                             # failed chunk is recorded instead of being sent again
+                            self.answer.send_request(total_chunks=len(chunks))
                             request_sent = True
                             try:
                                 result = await client.call_tool('store_context', params)
-                                results.append(self._response_payload(result))
+                                payload = self._response_payload(result)
+                                results.append(payload)
+                                self.answer.chunk_stored(payload.get('context_id'))
                                 log_always(f'Chunk {chunk_num}/{len(chunks)} stored successfully')
                             except Exception as chunk_error:
                                 log_always(
@@ -1723,6 +1955,7 @@ class FastMCPHttpClient:
         max_retries: int = 3,
         config: dict[str, Any] | None = None,
         deadline: Deadline | None = None,
+        answer: RunAnswer | None = None,
     ) -> None:
         """
         Initialize the FastMCP HTTP client.
@@ -1734,6 +1967,8 @@ class FastMCPHttpClient:
             max_retries: Number of connection attempts before the store request is sent
             config: Optional configuration dictionary
             deadline: The run's time budget; the default budget, starting now, when omitted
+            answer: The run's answer, which every store request is sent through; one of the client's own when
+                omitted
         """
         self.url = url
         self.timeout = timeout
@@ -1741,6 +1976,7 @@ class FastMCPHttpClient:
         self.max_retries = max_retries
         self.config = config or DEFAULT_CONFIG
         self.deadline = deadline if deadline is not None else Deadline(DEFAULT_CONFIG['mcp_client']['deadline_seconds'])
+        self.answer = answer if answer is not None else RunAnswer()
         log_always(
             f'FastMCPHttpClient initialized: url={url}, timeout={timeout}, '
             f'max_retries={max_retries}, deadline={self.deadline.seconds}s',
@@ -1823,6 +2059,7 @@ class FastMCPHttpClient:
 
                         # From here on the request may have reached the server, so a
                         # failure ends the run instead of sending a second copy
+                        self.answer.send_request()
                         request_sent = True
                         result = await client.call_tool(
                             'store_context',
@@ -2191,13 +2428,17 @@ def resolve_thread_id(project_dir: str, config: dict[str, Any], worktree_info: d
     return fallback_name
 
 
-def create_mcp_client_with_retry(config: dict[str, Any], deadline: Deadline) -> SyncMCPClient:
+def create_mcp_client_with_retry(
+    config: dict[str, Any], deadline: Deadline, answer: RunAnswer | None = None,
+) -> SyncMCPClient:
     """
     Create MCP client with retry logic for uvx reliability.
 
     Args:
         config: Configuration dictionary with mcp_client and mcp_server settings
         deadline: The run's time budget, shared by every attempt the client makes
+        answer: The run's answer, which the client sends its store request through; one of the client's own
+            when omitted
 
     Returns:
         Configured SyncMCPClient instance
@@ -2247,6 +2488,7 @@ def create_mcp_client_with_retry(config: dict[str, Any], deadline: Deadline) -> 
                 max_connection_retries=max_connection_retries,
                 connection_timeout=connection_timeout,
                 deadline=deadline,
+                answer=answer,
             )
 
             if attempts > 0:
@@ -2281,6 +2523,7 @@ def create_mcp_client_with_retry(config: dict[str, Any], deadline: Deadline) -> 
                             max_connection_retries=max_connection_retries,
                             connection_timeout=connection_timeout,
                             deadline=deadline,
+                            answer=answer,
                         )
                         log_always('MCP client created successfully in offline mode')
                         return client
@@ -2301,8 +2544,24 @@ def create_mcp_client_with_retry(config: dict[str, Any], deadline: Deadline) -> 
     raise RuntimeError('Failed to create MCP client after all retries')
 
 
+def run_deadline(config: dict[str, Any], budget_started_at: float = _HOOK_STARTED_AT) -> Deadline:
+    """
+    Return the run's time budget: mcp_client.deadline_seconds counted from budget_started_at.
+
+    Args:
+        config: Configuration dictionary with the mcp_client settings
+        budget_started_at: The time.monotonic() reading the budget counts from; the hook's own clock when omitted
+
+    Returns:
+        The budget
+    """
+    mcp_config = config.get('mcp_client', DEFAULT_CONFIG['mcp_client'])
+    deadline_seconds = float(mcp_config.get('deadline_seconds', DEFAULT_CONFIG['mcp_client']['deadline_seconds']))
+    return Deadline(deadline_seconds, started_at=budget_started_at)
+
+
 def create_mcp_client(
-    config: dict[str, Any], budget_started_at: float = _HOOK_STARTED_AT,
+    config: dict[str, Any], budget_started_at: float = _HOOK_STARTED_AT, answer: RunAnswer | None = None,
 ) -> SyncMCPClient | FastMCPHttpClient:
     """
     Create appropriate MCP client based on transport configuration.
@@ -2315,6 +2574,8 @@ def create_mcp_client(
     Args:
         config: Configuration dictionary with mcp_client and mcp_server settings
         budget_started_at: The time.monotonic() reading the budget counts from; the hook's own clock when omitted
+        answer: The run's answer, which the client sends its store request through; one of the client's own
+            when omitted
 
     Returns:
         Either SyncMCPClient (stdio) or FastMCPHttpClient (http)
@@ -2326,8 +2587,7 @@ def create_mcp_client(
     mcp_config = config.get('mcp_client', DEFAULT_CONFIG['mcp_client'])
     transport = server_config.get('transport', 'stdio')
 
-    deadline_seconds = float(mcp_config.get('deadline_seconds', DEFAULT_CONFIG['mcp_client']['deadline_seconds']))
-    deadline = Deadline(deadline_seconds, started_at=budget_started_at)
+    deadline = run_deadline(config, budget_started_at)
 
     log_always(f'Creating MCP client with transport: {transport} ({deadline.describe()})')
 
@@ -2350,23 +2610,25 @@ def create_mcp_client(
             max_retries=max_retries,
             config=config,
             deadline=deadline,
+            answer=answer,
         )
     if transport == 'stdio':
         # Stdio transport via uvx subprocess. Warm the uvx cache first so the
         # initial connection attempt does not pay the package-download cost.
         _warmup_uvx_cache(server_config)
         log_always('stdio transport: using create_mcp_client_with_retry')
-        return create_mcp_client_with_retry(config, deadline)
+        return create_mcp_client_with_retry(config, deadline, answer)
     raise ValueError(f"Invalid mcp_server.transport: {transport}. Must be 'stdio' or 'http'")
 
 
-def _report_stored(result: dict[str, Any], config: dict[str, Any]) -> None:
+def _report_stored(result: dict[str, Any], config: dict[str, Any], answer: RunAnswer) -> None:
     """
     Report a confirmed store: the context_id, or the chunk ids and any failed chunks.
 
     Args:
         result: The store's response, or the chunked store's summary
         config: The hook configuration
+        answer: The run's answer, which carries the report to the model
     """
     # Check for chunked storage and surface complete chunk-storage info to the
     # model via additionalContext (both success-chunk-ids AND any partial-failure
@@ -2432,8 +2694,7 @@ def _report_stored(result: dict[str, Any], config: dict[str, Any]) -> None:
                     f'[Hook: user message stored to context-server (chunked).'
                     f' context_ids={chunk_ids}]'
                 )
-            json_output = _load_json_output()
-            json_output.emit_additional_context('UserPromptSubmit', chunk_message)
+            answer.give(chunk_message)
             log_always(f'Output chunk message via additionalContext: {chunk_message}')
     else:
         log_always('SUCCESS: Context stored successfully')
@@ -2443,8 +2704,7 @@ def _report_stored(result: dict[str, Any], config: dict[str, Any]) -> None:
             context_id = result.get('context_id')
             if context_id is not None:
                 single_message = f'[Hook: user message stored to context-server. context_id={context_id}]'
-                json_output = _load_json_output()
-                json_output.emit_additional_context('UserPromptSubmit', single_message)
+                answer.give(single_message)
                 log_always(f'Output context_id={context_id} via additionalContext')
 
 
@@ -2503,187 +2763,200 @@ def main(
     launch_clock: Callable[[], float] = hook_clock,
     trace: StartupTrace = DISABLED_TRACE,
     read_start_times: Callable[[], StartTimes] = own_start_times,
+    answer: RunAnswer | None = None,
 ) -> None:
     """
     Main hook execution function.
 
-    The payload is checked against the filters before any of the store's work,
-    because a turn that is not stored needs only its payload, the configuration,
-    and the skip patterns: no process is read before that decision, and the
-    launch is read and fastmcp imported only for a prompt to store. Right after
-    the decision, on both paths, a run whose trace records reads its start
-    times and records them as the start_times stage; a creation time does not
-    change, so reading it late loses nothing, and a run killed in that read
-    leaves a trace ending at skip_decided.
+    The configuration sets the run's budget, so the launch the budget counts
+    from is read right after it and the run's answer is armed with the budget;
+    a run whose budget is already gone answers at once. A run whose trace
+    records reads its start times there too and records them as the start_times
+    stage. The payload is then checked against the filters: a turn that is not
+    stored needs nothing more, and fastmcp is imported only for a prompt to
+    store. Whatever ends the run, its answer is settled on the way out, so a
+    watchdog that wakes later only ends the process.
 
     Args:
-        launch_clock: Returns the time.monotonic() reading the store's budget counts from; called only for a
-            prompt to store, and the hook's own clock when omitted
+        launch_clock: Returns the time.monotonic() reading the run's budget counts from; the hook's own clock
+            when omitted
         trace: The run's startup trace, which records each stage main() reaches
         read_start_times: Returns when the hook's interpreter, and the venv redirector that started it, were
             created; called only while the trace records, and read from the platform's process table when omitted
+        answer: The run's answer; one without a watchdog when omitted
     """
-    log_always('Entering main() function')
-    start_time = datetime.now(tz=UTC)
-
-    # Load configuration (defaults merged with config file if provided)
+    if answer is None:
+        answer = RunAnswer()
     try:
-        config_loader = _load_config_loader()
-        config: dict[str, Any] = config_loader.get_config_from_argv(DEFAULT_CONFIG)
-    except Exception:
-        # If config loading fails, use defaults
-        config = DEFAULT_CONFIG.copy()
-    trace.record('config_loaded')
+        log_always('Entering main() function')
+        start_time = datetime.now(tz=UTC)
 
-    # Check if hook is enabled
-    if not config.get('enabled', True):
-        log_always('Hook disabled via config, exiting')
+        # Load configuration (defaults merged with config file if provided)
+        try:
+            config_loader = _load_config_loader()
+            config: dict[str, Any] = config_loader.get_config_from_argv(DEFAULT_CONFIG)
+        except Exception:
+            # If config loading fails, use defaults
+            config = DEFAULT_CONFIG.copy()
+        trace.record('config_loaded')
+
+        # Check if hook is enabled
+        if not config.get('enabled', True):
+            log_always('Hook disabled via config, exiting')
+            sys.exit(0)
+
+        budget_started_at = launch_clock()
+        log_always(f'Run budget counts from {_HOOK_STARTED_AT - budget_started_at:.2f}s before the hook clock started')
+        launcher_created = trace.wall_text(budget_started_at) if budget_started_at < _HOOK_STARTED_AT else None
+        trace.record('launcher_read', launcher_created=launcher_created)
+        if trace.recording:
+            times = read_start_times()
+            trace.record(
+                'start_times',
+                interpreter_created=None if times.interpreter is None else _utc_text(times.interpreter),
+                redirector_created=None if times.redirector is None else _utc_text(times.redirector),
+            )
+        deadline = run_deadline(config, budget_started_at)
+        answer.arm(deadline)
+        if deadline.remaining() <= 0.0:
+            log_always(f'Answering at once, the startup used the whole budget: {deadline.describe()}', level='WARN')
+            answer.give(answer.budget_notice())
+            sys.exit(0)
+
+        # Claude Code writes the payload as UTF-8. The stdin text layer decodes with the locale's
+        # encoding unless Python runs in UTF-8 mode, so the payload is parsed from the raw bytes.
+        log_always('Reading stdin data')
+        try:
+            input_data = json.load(sys.stdin.buffer)
+            log_always(f'stdin data keys: {list(input_data.keys())}')
+        except json.JSONDecodeError as e:
+            log_always(f'JSON decode error: {e}', level='ERROR')
+            log_always('Exiting: Invalid JSON from stdin')
+            sys.exit(0)
+        except Exception as e:
+            log_always(f'Error reading stdin: {type(e).__name__}: {e}', level='ERROR')
+            log_always('Exiting: Failed to read stdin')
+            sys.exit(0)
+        trace.record('stdin_read')
+
+        reason = skip_reason(input_data, config)
+        trace.record('skip_decided', store=reason is None)
+        if reason is not None:
+            log_always(reason)
+            sys.exit(0)
+        answer.decided_to_store()
+        prompt: str = input_data['prompt']
+
+        # CRITICAL: Configure UTF-8 for Windows BEFORE any subprocess operations
+        # This prevents non-ASCII text corruption (mojibake) in MCP communication
+        setup_windows_utf8()
+
+        # Get Claude project directory
+        claude_project_dir = os.environ.get('CLAUDE_PROJECT_DIR')
+        log_always(f'CLAUDE_PROJECT_DIR for context save: {claude_project_dir}')
+        if not claude_project_dir:
+            # No project directory, can't proceed
+            log_always('Exiting: CLAUDE_PROJECT_DIR not set', level='ERROR')
+            sys.exit(0)
+
+        # Get worktree information for context metadata and thread ID resolution
+        # Provides canonical project name from git remote URL for cross-worktree consistency
+        worktree_info = get_worktree_info(claude_project_dir)
+        log_always(f'Worktree info: project={worktree_info["project"]}')
+
+        # Resolve thread ID (reads .thread_id file, falls back to project name)
+        thread_id = resolve_thread_id(claude_project_dir, config, worktree_info)
+
+        # Build metadata with worktree fields for context isolation.
+        # kind and schema_version follow the universal context-server metadata
+        # schema v1: every entry carries a record-kind discriminator so filters
+        # and future server-side schema enforcement can rely on it.
+        metadata: dict[str, Any] = {
+            'schema_version': 1,
+            'kind': 'user_message',
+            'project': worktree_info['project'],
+        }
+        # Add optional worktree fields if available (git repository detected)
+        if worktree_info.get('worktree_id') is not None:
+            metadata['worktree_id'] = worktree_info['worktree_id']
+        if worktree_info.get('worktree_path') is not None:
+            metadata['worktree_path'] = worktree_info['worktree_path']
+        if worktree_info.get('is_linked_worktree') is not None:
+            metadata['is_linked_worktree'] = worktree_info['is_linked_worktree']
+        answer.resolved(thread_id, metadata)
+        trace.record('project_resolved')
+
+        # A budget too short for a connection attempt needs neither the library nor a client.
+        # setup_windows_utf8() above has already set UTF-8 for the stdio server's pipes, which
+        # FastMCP's StdioTransport opens without an explicit encoding.
+        result: dict[str, Any] | None = None
+        failure: Exception | None = None
+        if deadline.allows_attempt():
+            trace.record('fastmcp_import_started')
+            importlib.import_module('fastmcp')
+            log_always('FastMCP imported')
+            trace.record('fastmcp_imported')
+            trace.record('store_started')
+            try:
+                client = create_mcp_client(config, budget_started_at, answer)
+                log_always('Storing context in MCP server')
+                result = client.store_context(thread_id=thread_id, source='user', text=prompt, metadata=metadata)
+            except Exception as error:
+                # A failure in MCP communication never blocks the prompt: the hook exits 0
+                # and tells the model that the message was not confirmed stored
+                failure = error
+        else:
+            failure = UnconfirmedStoreError(TimeoutError(f'no connection attempt could start ({deadline.describe()})'), False)
+            log_always(f'No store attempt: {failure.cause}', level='WARN')
+
+        if failure is not None:
+            trace.record('store_ended', confirmed=False)
+            cause = failure.cause if isinstance(failure, UnconfirmedStoreError) else failure
+            error_msg = f'{type(cause).__name__}: {cause}'
+            failure_message = _unconfirmed_store_notice(failure, error_msg, thread_id, metadata)
+            # The notice goes out before the diagnostics, whose traceback and log writes can take
+            # seconds on a starved machine, so the answer never waits for them
+            answer.give(failure_message)
+
+            full_traceback = ''.join(traceback.format_exception(failure))
+
+            # Check for specific error patterns related to pipe buffer issues
+            error_str = str(failure).lower()
+            error_context = ''
+
+            if 'broken pipe' in error_str:
+                error_context = ' (Message likely too large for subprocess pipe buffer)'
+            elif 'timed out' in error_str or 'deadline' in error_str:
+                error_context = ' (The store did not finish within the run budget; see mcp_client.deadline_seconds)'
+            elif '[errno 32]' in error_str or 'epipe' in error_str:
+                error_context = ' (Subprocess pipe broken - message size may exceed buffer capacity)'
+            elif 'buffer' in error_str:
+                error_context = ' (Buffer-related error - message may be too large)'
+
+            log_always(f'MCP store failure: {error_msg}{error_context}', level='ERROR')
+            log_always(f'Traceback:\n{full_traceback}', level='ERROR')
+            report_error('MCP_STORE_FAILURE', f'{error_msg}{error_context}\n{full_traceback}')
+            log_always(f'Output store failure notice via additionalContext: {failure_message}')
+        else:
+            trace.record('store_ended', confirmed=True)
+            _report_stored(cast(dict[str, Any], result), config, answer)
+
+        # Always exit successfully
+        end_time = datetime.now(tz=UTC)
+        duration = (end_time - start_time).total_seconds()
+        log_always(f'Execution completed in {duration:.3f} seconds')
         sys.exit(0)
+    finally:
+        # Whatever ends the run, the watchdog writes nothing for it from here on
+        answer.settle()
 
-    # Claude Code writes the payload as UTF-8. The stdin text layer decodes with the locale's
-    # encoding unless Python runs in UTF-8 mode, so the payload is parsed from the raw bytes.
-    log_always('Reading stdin data')
-    try:
-        input_data = json.load(sys.stdin.buffer)
-        log_always(f'stdin data keys: {list(input_data.keys())}')
-    except json.JSONDecodeError as e:
-        log_always(f'JSON decode error: {e}', level='ERROR')
-        log_always('Exiting: Invalid JSON from stdin')
-        sys.exit(0)
-    except Exception as e:
-        log_always(f'Error reading stdin: {type(e).__name__}: {e}', level='ERROR')
-        log_always('Exiting: Failed to read stdin')
-        sys.exit(0)
-    trace.record('stdin_read')
 
-    reason = skip_reason(input_data, config)
-    trace.record('skip_decided', store=reason is None)
-    if trace.recording:
-        times = read_start_times()
-        trace.record(
-            'start_times',
-            interpreter_created=None if times.interpreter is None else _utc_text(times.interpreter),
-            redirector_created=None if times.redirector is None else _utc_text(times.redirector),
-        )
-    if reason is not None:
-        log_always(reason)
-        sys.exit(0)
-    prompt: str = input_data['prompt']
-
-    # CRITICAL: Configure UTF-8 for Windows BEFORE any subprocess operations
-    # This prevents non-ASCII text corruption (mojibake) in MCP communication
-    setup_windows_utf8()
-
-    # Get Claude project directory
-    claude_project_dir = os.environ.get('CLAUDE_PROJECT_DIR')
-    log_always(f'CLAUDE_PROJECT_DIR for context save: {claude_project_dir}')
-    if not claude_project_dir:
-        # No project directory, can't proceed
-        log_always('Exiting: CLAUDE_PROJECT_DIR not set', level='ERROR')
-        sys.exit(0)
-
-    # Get worktree information for context metadata and thread ID resolution
-    # Provides canonical project name from git remote URL for cross-worktree consistency
-    worktree_info = get_worktree_info(claude_project_dir)
-    log_always(f'Worktree info: project={worktree_info["project"]}')
-
-    # Resolve thread ID (reads .thread_id file, falls back to project name)
-    thread_id = resolve_thread_id(claude_project_dir, config, worktree_info)
-
-    # Build metadata with worktree fields for context isolation.
-    # kind and schema_version follow the universal context-server metadata
-    # schema v1: every entry carries a record-kind discriminator so filters
-    # and future server-side schema enforcement can rely on it.
-    metadata: dict[str, Any] = {
-        'schema_version': 1,
-        'kind': 'user_message',
-        'project': worktree_info['project'],
-    }
-    # Add optional worktree fields if available (git repository detected)
-    if worktree_info.get('worktree_id') is not None:
-        metadata['worktree_id'] = worktree_info['worktree_id']
-    if worktree_info.get('worktree_path') is not None:
-        metadata['worktree_path'] = worktree_info['worktree_path']
-    if worktree_info.get('is_linked_worktree') is not None:
-        metadata['is_linked_worktree'] = worktree_info['is_linked_worktree']
-    trace.record('project_resolved')
-
-    budget_started_at = launch_clock()
-    log_always(f'Run budget counts from {_HOOK_STARTED_AT - budget_started_at:.2f}s before the hook clock started')
-    launcher_created = trace.wall_text(budget_started_at) if budget_started_at < _HOOK_STARTED_AT else None
-    trace.record('launcher_read', launcher_created=launcher_created)
-
-    # Loaded once the prompt is known to be stored, so a skipped turn never pays for it, and outside
-    # the store's error handling, so a broken installation fails the run instead of reading as an
-    # unconfirmed store; the clients take Client and their transports from the loaded package
-    trace.record('fastmcp_import_started')
-    importlib.import_module('fastmcp')
-    log_always('FastMCP imported')
-    trace.record('fastmcp_imported')
-
-    # Create MCP client and store context
-    trace.record('store_started')
-    try:
-        # A failure in MCP communication never blocks the prompt: the hook exits 0
-        # and tells the model below that the message was not confirmed stored
-        #
-        # CRITICAL UTF-8 REQUIREMENT:
-        # The setup_windows_utf8() function MUST be called before this point
-        # to ensure subprocess stdin/stdout use UTF-8 encoding.
-        # Without this, non-ASCII text (Cyrillic, Chinese, Arabic, etc.) gets
-        # corrupted on Windows due to codepage defaults (CP1252/Windows-1251).
-        #
-        # FastMCP's StdioTransport does not explicitly set encoding='utf-8'
-        # on subprocess pipes, so we configure it via environment variable
-        # (PYTHONUTF8=1) and console codepage (65001) instead.
-
-        # Create client based on transport configuration (stdio or http)
-        client = create_mcp_client(config, budget_started_at)
-
-        log_always('Storing context in MCP server')
-        result = client.store_context(
-            thread_id=thread_id,
-            source='user',
-            text=prompt,
-            metadata=metadata,
-        )
-    except Exception as e:
-        trace.record('store_ended', confirmed=False)
-        # Log the error with its traceback, then tell the model instead of blocking the prompt
-        cause = e.cause if isinstance(e, UnconfirmedStoreError) else e
-        error_msg = f'{type(cause).__name__}: {cause}'
-        full_traceback = traceback.format_exc()
-
-        # Check for specific error patterns related to pipe buffer issues
-        error_str = str(e).lower()
-        error_context = ''
-
-        if 'broken pipe' in error_str:
-            error_context = ' (Message likely too large for subprocess pipe buffer)'
-        elif 'timed out' in error_str or 'deadline' in error_str:
-            error_context = ' (The store did not finish within the run budget; see mcp_client.deadline_seconds)'
-        elif '[errno 32]' in error_str or 'epipe' in error_str:
-            error_context = ' (Subprocess pipe broken - message size may exceed buffer capacity)'
-        elif 'buffer' in error_str:
-            error_context = ' (Buffer-related error - message may be too large)'
-
-        log_always(f'MCP store failure: {error_msg}{error_context}', level='ERROR')
-        log_always(f'Traceback:\n{full_traceback}', level='ERROR')
-        report_error('MCP_STORE_FAILURE', f'{error_msg}{error_context}\n{full_traceback}')
-
-        failure_message = _unconfirmed_store_notice(e, error_msg, thread_id, metadata)
-        json_output = _load_json_output()
-        json_output.emit_additional_context('UserPromptSubmit', failure_message)
-        log_always(f'Output store failure notice via additionalContext: {failure_message}')
-    else:
-        trace.record('store_ended', confirmed=True)
-        _report_stored(result, config)
-
-    # Always exit successfully
-    end_time = datetime.now(tz=UTC)
-    duration = (end_time - start_time).total_seconds()
-    log_always(f'Execution completed in {duration:.3f} seconds')
-    sys.exit(0)
+def _end_process_now() -> None:
+    """End the process at once with status 0, skipping interpreter shutdown, once the standard streams are flushed."""
+    with suppress(Exception):
+        sys.stdout.flush()
+        sys.stderr.flush()
+    os._exit(0)
 
 
 def entry() -> None:
@@ -2692,10 +2965,12 @@ def entry() -> None:
 
     The run's startup trace begins first, naming the process and the
     configuration file, and is removed when main() ends the run, which it does
-    through sys.exit; a run that is killed, or that main() leaves with an
-    unexpected error, keeps it. The process table is read only once main() has
-    decided the skip: for the start times while the trace records, and for the
-    launch, which sets the store's budget, only if main() reaches the store.
+    through sys.exit; a run that is killed, that main() leaves with an
+    unexpected error, or that its watchdog ends keeps it. The process table is
+    read in one walk once main() has loaded the configuration: each process
+    there is read once, for the launch, which sets the budget, and for the start
+    times while the trace records. The run's answer ends the process from its
+    watchdog thread.
 
     Raises:
         SystemExit: The exit main() ends the run with
@@ -2708,8 +2983,15 @@ def entry() -> None:
         pid=pid,
         config=sys.argv[1] if len(sys.argv) > 1 else None,
     )
+    table = process_table()
+    processes = None if table is None else CachedProcessTable(table)
     try:
-        main(lambda: launcher_clock_start(_HOOK_STARTED_AT, process_table(), sys.executable, pid), trace)
+        main(
+            lambda: launcher_clock_start(_HOOK_STARTED_AT, processes, sys.executable, pid),
+            trace,
+            lambda: start_times(processes, sys.executable, pid),
+            RunAnswer(_end_process_now, trace),
+        )
     except SystemExit:
         trace.finish()
         raise
