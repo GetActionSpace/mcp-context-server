@@ -17,8 +17,8 @@ output_context_id: true
 # Regex patterns to skip saving: prompts that are not the user's own words.
 # Patterns match the START of the prompt text after leading whitespace is
 # stripped. This shared list is synced to external consumers; a pattern for a
-# hook or delivery path a given consumer does not use simply never matches
-# there, which is harmless.
+# delivery path a given consumer does not use simply never matches there,
+# which is harmless.
 #
 # Claude Code also submits turns it starts on the session's behalf, and the
 # UserPromptSubmit hook input carries no field naming a turn's origin, so the
@@ -38,10 +38,10 @@ output_context_id: true
 # anthropics/claude-code#94675 asks for the missing origin field; the tag and
 # framing patterns are needed only until the hook input carries it.
 #
-# When creating a `type: prompt` hook, add its prompt-prefix pattern here so the
-# internal prompt is not saved as a user message. The fixed prompt a scheduler
-# sends to a headless session belongs in the skip list of the configuration
-# that schedules it.
+# A hook of `type: prompt` needs no pattern here: Claude Code evaluates it as a
+# model request of its own, so its prompt never reaches UserPromptSubmit. The
+# fixed prompt a scheduler sends to a headless session does reach it, and its
+# pattern belongs in the skip list of the configuration that schedules it.
 #
 # Write patterns as plain scalars, where a regex backslash stays literal. Quote
 # a pattern only when YAML requires it, such as the trailing space that keeps
@@ -55,7 +55,6 @@ skip_patterns:
   - "^<channel "
   - ^Another Claude session sent a message
   - ^A peer session sent a message
-  - ^You are a fast, single-purpose tool-routing gate
 
 # Pre-built Claude Code slash commands to skip saving
 # These are system-level operations that don't need context preservation

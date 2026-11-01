@@ -13,8 +13,8 @@ This hook captures user prompts from UserPromptSubmit events and stores them
 in the mcp-context-server for enhanced conversation context management.
 Pre-built slash commands and prompts matching a configured skip pattern are
 not stored; the patterns identify prompts that are not the user's own words,
-such as internal hook prompts and the tagged or framed turns Claude Code starts
-on the session's behalf.
+such as the tagged or framed turns Claude Code starts on the session's behalf
+and the fixed prompt a scheduler sends to a headless session.
 
 Note: Currently, the UserPromptSubmit event does not provide images from user
 requests, so this hook cannot save image content to the context server. Only
@@ -2300,14 +2300,16 @@ def matches_skip_pattern(prompt: str, config: dict[str, Any]) -> bool:
     """
     Check if a prompt matches any skip pattern, meaning it is not the user's own words.
 
-    UserPromptSubmit fires for more than prompts the user typed. Evaluating a hook
-    of `type: prompt` triggers it with the hook's internal prompt, and Claude Code
+    UserPromptSubmit fires for more than prompts the user typed. Claude Code
     triggers it for turns it starts on the session's behalf: its own notifications
     (such as a finished background command or a Stop-hook wake), reports and
     messages from its subagents, messages from another Claude Code session, and
-    channel-integration events. The hook input carries no field naming a turn's
-    origin (anthropics/claude-code#94675 asks for one), so the only signal is the
-    start of the text itself. Claude Code wraps such a turn in a tag such as
+    channel-integration events. A scheduler's fixed prompt to a headless session
+    arrives the same way, while the prompt of a hook of `type: prompt` never does,
+    because Claude Code evaluates such a hook as a model request of its own. The
+    hook input carries no field naming a turn's origin
+    (anthropics/claude-code#94675 asks for one), so the only signal is the start
+    of the text itself. Claude Code wraps such a turn in a tag such as
     <task-notification>, <agent-message from="...">, <cross-session-message ...>,
     or <channel source="...">, or frames a message from another session or a
     subagent with a leading sentence such as "Another Claude session sent a
@@ -2351,8 +2353,8 @@ def skip_reason(input_data: dict[str, Any], config: dict[str, Any]) -> str | Non
 
     Only UserPromptSubmit prompts are stored, and of those neither an empty
     prompt, a pre-built slash command, nor a prompt matching a skip pattern:
-    internal hook prompts and the tagged or framed turns Claude Code starts on
-    the session's behalf are not the user's own words.
+    the tagged or framed turns Claude Code starts on the session's behalf and a
+    scheduler's fixed prompt are not the user's own words.
 
     Args:
         input_data: The hook payload Claude Code sent
