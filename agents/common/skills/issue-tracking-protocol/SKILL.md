@@ -1,7 +1,7 @@
 ---
 name: issue-tracking-protocol
 description: |
-  Cross-project task tracker in the issues thread of an MCP-compatible context server. Use whenever you file an issue, bug report, feature request, improvement, or follow-up task for any project (your own or another); triage, prioritize, assign, or transition your own project's issue through its lifecycle; pick up an issue in your own project and implement it; comment on an issue; mark duplicates or blockers; or query the tracker (this project's open work, sub-issues, blocked work, triage backlog, and another project's rows when the user asks for them). Trigger on phrases like "file an issue", "create a task", "track this", "заведи задачу", "add it to the backlog", "start on issue N", on any call on the issues thread, or on any request to record work for later or to act on work already recorded -- even when no tracker is named explicitly. Not for an external tracker (YouTrack, Jira, GitHub, GitLab) that the user names or that the project's own convention uses for that work, nor the session's own to-do list.
+  Cross-project task tracker in the issues thread of a context server. Use whenever you file an issue, bug report, feature request, improvement, or follow-up task for any project (your own or another); triage, prioritize, assign, or transition your own project's issue through its lifecycle; pick up an issue in your own project and implement it; comment on an issue; mark duplicates or blockers; or query the tracker (this project's open work and another project's rows when the user asks for them). Trigger on phrases like "file an issue", "create a task", "track this", "заведи задачу", "add it to the backlog", "start on issue N", on any call on the issues thread, on any request to record work for later or to act on work already recorded, or when agreed work in your own project will outlive the session -- even when no tracker is named. Not for an external tracker (YouTrack, Jira, GitHub, GitLab) that the user names or that the project's own convention uses for that work, nor the session's own to-do list.
 ---
 
 <overview>
@@ -44,6 +44,14 @@ Previews decide which entries are worth reading; read every plausible hit in ful
 **Two open entries for one need are merged, not left side by side** -- whether this search or a triage pass finds them, in your own project's queue. Keep as canonical the entry the work has advanced furthest (an assignee, progress, discussion), else the older one. Carry into it what only the other holds: its evidence and acceptance criteria as a comment on the canonical entry, its tags, and its `links` edges merged into the canonical entry's arrays (read-modify-write); re-point any sub-issue whose `parent`, and any issue whose `blocks`, names the duplicate. Then close the other with `{"status": "duplicate", "links": {"duplicate_of": [<canonical-id>]}}` and a comment naming the canonical entry, so the need survives in one place and nothing still points at the closed one. Duplicates sitting in another project's queue are that project's to merge: comment on the entry your need matches and leave the rest to its owner.
 
 </before_filing>
+
+<own_project_work>
+
+## Agreed Work That Outlives the Session
+
+Work the user agreed to in this project -- a request, a planned change, a bug they reported or the session found -- lives in the session's plan while the session carries it out. It belongs in this project's own queue as soon as it will outlive that session: the user deferred it ("later", "after X", "add it to the backlog"), it waits on something outside the session (a change in another project, a release, a step only the user can take), it falls outside the plan being executed, or the session is about to end with it unfinished. File it then, after the search above, at `todo` or `backlog`, with `links.commissioned_by` naming the user message that agreed it, and name the entry in the plan that carried it. Work that starts and finishes inside the session that agreed it is not filed: the plan already records it, and an entry opened only to be closed minutes later doubles the record and hides the queue's real backlog.
+
+</own_project_work>
 
 <filing>
 
