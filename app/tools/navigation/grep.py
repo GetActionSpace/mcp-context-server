@@ -219,7 +219,12 @@ async def grep_context(
     ] = 'files_with_matches',
     context_lines: Annotated[
         int,
-        Field(ge=0, le=100, description='Surrounding lines before/after each match in content mode (like grep -C)'),
+        Field(
+            ge=0,
+            le=100,
+            description='Surrounding lines before/after each match in content mode (like grep -C; '
+                        'clamped to the server cap, 20 by default)',
+        ),
     ] = 0,
     max_matches: Annotated[
         int,

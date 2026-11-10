@@ -36,6 +36,7 @@ from app.ingest import MAX_PLAN_DELETES
 from app.repositories.fts_repository.query import ENGLISH_STOPWORD_FTS_LANGUAGES
 from app.repositories.fts_repository.query import desired_sqlite_fts_tokenizer
 from app.repositories.fts_repository.query import transform_query_sqlite
+from app.settings.navigation import GrepContextSettings
 from app.tools import TOOL_ANNOTATIONS
 from app.tools import plan_context_sync
 from app.tools import register_tool
@@ -309,8 +310,8 @@ class TestSqliteDescriptionExamplesOnARealIndex:
 class TestPostgresqlFtsDescription:
     """Test PostgreSQL-specific FTS description generation."""
 
-    def test_the_english_examples_are_given_for_english_only(self) -> None:
-        """Another language has its own stems and stop words, so its description claims no English example."""
+    def test_the_english_stemming_and_stop_word_examples_are_given_for_english_only(self) -> None:
+        """Another language has its own stems and stop words, so its characteristics block claims neither example."""
         english = _generate_postgresql_fts_description('english')
         assert '"running" WILL match "run" and "runs", but not "runner"' in english
         assert '"the", "is", "a" are REMOVED and ignored in searches' in english
@@ -320,6 +321,13 @@ class TestPostgresqlFtsDescription:
             assert '"the", "is", "a" are REMOVED' not in other
             assert f'Inflected forms of a {language} word match each other' in other
             assert f'The most common {language} words are REMOVED and ignored in searches' in other
+
+    @pytest.mark.parametrize('language', ['english', 'german', 'catalan', 'hindi', 'simple'])
+    def test_the_mode_examples_are_labeled_as_english_under_every_language(self, language: str) -> None:
+        """The search-mode examples are English text whatever the language, so their header says what they show."""
+        description = _generate_postgresql_fts_description(language)
+        assert 'Search modes (the examples show English text under FTS_LANGUAGE=english):' in description
+        assert 'Example: "running tests" finds docs with "run", "test"' in description
 
     def test_no_mode_promises_stemming_where_it_is_off(self) -> None:
         simple = _generate_postgresql_fts_description('simple')
@@ -637,6 +645,25 @@ class TestFtsModeParameter:
         assert 'must appear as-is' not in docstring
         assert 'python AND (async OR await) NOT blocking' not in docstring
         assert 'PostgreSQL: space for AND, "or", "-" for NOT, no grouping' in docstring
+
+
+class TestClampedGrepParameters:
+    """A grep_context parameter the server clamps says so: its schema maximum is wider than the server cap."""
+
+    @pytest.mark.parametrize('parameter', ['context_lines', 'max_matches', 'max_entries_scanned'])
+    @pytest.mark.asyncio
+    async def test_a_clamped_parameter_says_it_is_clamped(self, parameter: str) -> None:
+        tool = await _served_tool('grep_context')
+        assert 'clamped to the server cap' in tool.parameters['properties'][parameter]['description']
+
+    @pytest.mark.asyncio
+    async def test_context_lines_names_the_default_cap(self) -> None:
+        """No response field reports the applied context, so the description gives the cap a server has by default."""
+        tool = await _served_tool('grep_context')
+        default_cap = GrepContextSettings.model_fields['max_context_lines'].default
+        assert default_cap < tool.parameters['properties']['context_lines']['maximum']
+        expected = f'clamped to the server cap, {default_cap} by default'
+        assert expected in tool.parameters['properties']['context_lines']['description']
 
 
 class TestRankedPaginationDescription:

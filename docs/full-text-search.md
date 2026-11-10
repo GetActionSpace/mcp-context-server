@@ -389,7 +389,7 @@ Call `get_statistics` to check FTS availability:
 
 ### Issue 1: fts_search_context Not Available
 
-**Error**: `Full-text search is not available. Set ENABLE_FTS to auto (default) or true to enable this feature.`, or tool not listed
+**Symptom**: `fts_search_context` is not in the server's tool list. With `LOG_LEVEL=INFO` the server logs `Full-text search disabled (ENABLE_FTS=false)` at startup.
 
 **Diagnostic Steps**:
 
@@ -474,7 +474,6 @@ Call `get_statistics` to check FTS availability:
 
 | Error Message                       | Cause                           | Solution                                                     |
 |-------------------------------------|---------------------------------|--------------------------------------------------------------|
-| `Full-text search is not available` | FTS force-disabled              | Unset `ENABLE_FTS` (default `auto`) or set `ENABLE_FTS=true` |
 | `FTS_LANGUAGE='xyz' is not a valid` | Unknown language                | Use valid language name                                      |
 | `FTS index not found`               | Migration not applied           | Restart server to apply migration                            |
 
