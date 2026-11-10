@@ -149,7 +149,7 @@ Search context entries with powerful filtering including metadata queries and da
 
 **Date Filtering:** Supports ISO 8601 date filtering. See [Date Filtering](#date-filtering) section below.
 
-**Returns:** List of matching context entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry) and `generation_status` (see [Generation Status](#generation-status)), plus optional query statistics
+**Returns:** Dictionary with `results` (the matching entries, each with `id`, `thread_id`, `source`, truncated `text_content`, `summary`, `is_text_content_truncated`, `metadata`, `tags`, `visibility`, `is_owner` (true when the caller owns the entry) and `generation_status` (see [Generation Status](#generation-status))), `count`, and `stats` when `explain_query` is true
 
 ### get_context_by_ids
 

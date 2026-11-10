@@ -504,6 +504,25 @@ class TestDescriptionReadBack:
         assert 'whether the caller owns the entry' in returns
         assert 'owner_id' not in returns
 
+    @pytest.mark.parametrize('tool_name', ['semantic_search_context', 'hybrid_search_context', 'search_context'])
+    @pytest.mark.asyncio
+    async def test_served_return_description_names_the_fields_a_client_picks_entries_by(self, tool_name: str) -> None:
+        """A client reads the result fields from the description: no output schema or server type name lists them."""
+        description = await _served_description(tool_name)
+        returns = ' '.join(description[description.index('Returns:'):description.index('Raises:')].split())
+        for field in ('id', 'thread_id', 'source', 'text_content (truncated)', 'summary', 'metadata', 'tags'):
+            assert re.search(rf'(?<![a-z_]){re.escape(field)}(?![a-z_])', returns), f'{tool_name} omits {field}'
+        assert 'ContextEntryDict' not in returns
+
+    @pytest.mark.parametrize('backend', ['sqlite', 'postgresql'])
+    def test_fts_description_names_the_fields_a_client_picks_entries_by(
+        self, backend: Literal['sqlite', 'postgresql'],
+    ) -> None:
+        description = generate_fts_description(backend, 'english')
+        returns = ' '.join(description[description.index('Returns:'):description.index('Raises:')].split())
+        for field in ('id', 'thread_id', 'source', 'text_content (truncated)', 'summary', 'metadata', 'tags'):
+            assert re.search(rf'(?<![a-z_]){re.escape(field)}(?![a-z_])', returns), f'{backend} full-text omits {field}'
+
     @pytest.mark.parametrize('backend', ['sqlite', 'postgresql'])
     def test_fts_description_names_the_generation_state(self, backend: Literal['sqlite', 'postgresql']) -> None:
         """The served full-text description names generation_status and each state it takes."""
