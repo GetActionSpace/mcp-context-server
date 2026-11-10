@@ -286,6 +286,7 @@ class MCPServerIntegrationTest(
             ('Image Attachment Cascade Delete', self.test_image_attachment_cascade_delete),
             ('Tags Lowercase Normalization', self.test_tags_lowercase_normalization),
             ('Tool Annotations Exposed To Client', self.test_tool_annotations_exposed_to_client),
+            ('Tool Descriptions Describe The Response', self.test_tool_descriptions_describe_the_response),
             ('Search Context Offset Pagination', self.test_search_context_offset_pagination),
             ('Grep Context Literal Regex Unicode', self.test_grep_context_literal_regex_unicode),
             ('Read Context Range Clamp And Composition', self.test_read_context_range_clamp_and_composition),

@@ -33,6 +33,7 @@ The tool registration helpers and TOOL_ANNOTATIONS are defined here for use by
 app/startup/tool_registration.py.
 """
 
+import inspect
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -199,11 +200,15 @@ def register_tool(
 ) -> bool:
     """Register a tool only if it's not in the disabled list.
 
+    The tool serves ``description`` when one is given and otherwise its whole
+    docstring: the summary, the usage notes, and the return and error sections a
+    client reads to learn what the tool answers.
+
     Args:
         mcp_instance: The FastMCP server instance to register the tool with
         func: The tool function to register
         name: Optional explicit tool name (defaults to function name)
-        description: Optional custom description (overrides function docstring)
+        description: The description to serve (defaults to the function's whole docstring)
 
     Returns:
         True if tool was registered, False if disabled
@@ -218,15 +223,18 @@ def register_tool(
     # Get annotations from centralized mapping
     annotations = TOOL_ANNOTATIONS.get(tool_name, {})
 
-    # Pass description if provided (overrides docstring in FastMCP).
+    # The description is always passed: left to derive one, FastMCP serves only the
+    # docstring text before the first section heading, without the Returns and Raises
+    # sections.
     # Forward name=tool_name so an explicit name argument actually renames the
     # registration (FastMCP otherwise derives the name from func.__name__); this
     # keeps the DISABLED_TOOLS check, the TOOL_ANNOTATIONS lookup, and the served
     # tool name in agreement for a caller that passes name != func.__name__.
-    if description:
-        mcp_instance.tool(name=tool_name, description=description, annotations=annotations)(func)
-    else:
-        mcp_instance.tool(name=tool_name, annotations=annotations)(func)
+    mcp_instance.tool(
+        name=tool_name,
+        description=description or inspect.getdoc(func),
+        annotations=annotations,
+    )(func)
 
     logger.info(f'{tool_name} registered')
     return True

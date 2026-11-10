@@ -16,23 +16,24 @@ client: how to compute a manifest item's text digest, and no name of
 the server's own modules or constants.
 """
 
+import inspect
 import json
 import re
 from collections.abc import Awaitable
 from collections.abc import Callable
 from typing import Literal
+from unittest.mock import patch
 
 import pytest
 from fastmcp import FastMCP
 from fastmcp.tools import Tool
 
+from app import tools as exported_tools
 from app.ingest import MAX_PLAN_DELETES
-from app.tools import get_context_by_ids
-from app.tools import get_statistics
+from app.tools import TOOL_ANNOTATIONS
 from app.tools import list_ingest_state
 from app.tools import plan_context_sync
 from app.tools import register_tool
-from app.tools import search_context
 from app.tools import store_context
 from app.tools import store_context_batch
 from app.tools import update_context
@@ -43,6 +44,59 @@ from app.tools.descriptions import _SQLITE_MODE_DESCRIPTIONS
 from app.tools.descriptions import _generate_postgresql_fts_description
 from app.tools.descriptions import _generate_sqlite_fts_description
 from app.tools.descriptions import generate_fts_description
+
+
+async def _served_tool(tool_name: str) -> Tool:
+    """Return a tool as a server serves it, registered through register_tool whatever DISABLED_TOOLS holds."""
+    mcp: FastMCP[None] = FastMCP(name='served-tools')
+    with patch('app.tools.is_tool_disabled', return_value=False):
+        assert register_tool(mcp, getattr(exported_tools, tool_name)) is True
+    tool = await mcp.get_tool(tool_name)
+    assert tool is not None
+    return tool
+
+
+async def _served_description(tool_name: str) -> str:
+    """Return the description a server serves for a tool that brings no description of its own."""
+    tool = await _served_tool(tool_name)
+    assert tool.description is not None
+    return tool.description
+
+
+class TestServedDescription:
+    """A tool's served description is its whole docstring unless the registration passes one."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('tool_name', sorted(TOOL_ANNOTATIONS))
+    async def test_served_description_is_the_whole_docstring(self, tool_name: str) -> None:
+        """The description carries every docstring section, the return and error descriptions included."""
+        description = await _served_description(tool_name)
+
+        assert description == inspect.getdoc(getattr(exported_tools, tool_name))
+        assert description.index('Returns:') < description.index('Raises:')
+
+    @pytest.mark.asyncio
+    async def test_a_description_passed_at_registration_is_served_as_given(self) -> None:
+        """The full-text search tool is registered with a generated description, which replaces its docstring."""
+        from app.tools.search.fts import fts_search_context
+
+        generated = generate_fts_description('sqlite', 'english')
+        mcp: FastMCP[None] = FastMCP(name='served-tools')
+        with patch('app.tools.is_tool_disabled', return_value=False):
+            assert register_tool(mcp, fts_search_context, description=generated) is True
+        tool = await mcp.get_tool('fts_search_context')
+
+        assert tool is not None
+        assert tool.description == generated
+        assert tool.description != inspect.getdoc(fts_search_context)
+
+    @pytest.mark.asyncio
+    async def test_list_threads_serves_the_explanation_of_its_fields(self) -> None:
+        """Text that follows a docstring section, such as the field list of list_threads, is served too."""
+        description = await _served_description('list_threads')
+
+        assert 'Fields explained:' in description
+        assert '- source_types: Number of distinct sources' in description
 
 
 class TestGenerateFtsDescription:
@@ -213,20 +267,11 @@ class TestDescriptionReadBack:
         'tool_name',
         ['semantic_search_context', 'hybrid_search_context', 'search_context', 'get_context_by_ids'],
     )
-    def test_docstring_return_description_names_the_access_fields(self, tool_name: str) -> None:
-        """The return description of each docstring-described tool names both fields and never the owner."""
-        from app.tools.search.hybrid import hybrid_search_context
-        from app.tools.search.semantic import semantic_search_context
-
-        functions: dict[str, Callable[..., Awaitable[object]]] = {
-            'semantic_search_context': semantic_search_context,
-            'hybrid_search_context': hybrid_search_context,
-            'search_context': search_context,
-            'get_context_by_ids': get_context_by_ids,
-        }
-        docstring = functions[tool_name].__doc__
-        assert docstring is not None
-        returns = ' '.join(docstring[docstring.index('Returns:'):docstring.index('Raises:')].split())
+    @pytest.mark.asyncio
+    async def test_served_return_description_names_the_access_fields(self, tool_name: str) -> None:
+        """The served return description of each docstring-described tool names both fields and never the owner."""
+        description = await _served_description(tool_name)
+        returns = ' '.join(description[description.index('Returns:'):description.index('Raises:')].split())
         assert 'visibility' in returns
         assert 'is_owner' in returns
         assert 'whether the caller owns the entry' in returns
@@ -247,35 +292,19 @@ class TestDescriptionReadBack:
             'grep_context', 'navigate_context', 'read_context_range',
         ],
     )
-    def test_docstring_return_description_names_the_generation_state(self, tool_name: str) -> None:
-        """The return description of each docstring-described entry-carrying tool names generation_status and its states."""
-        from app.tools.navigation.grep import grep_context
-        from app.tools.navigation.navigate import navigate_context
-        from app.tools.navigation.read_range import read_context_range
-        from app.tools.search.hybrid import hybrid_search_context
-        from app.tools.search.semantic import semantic_search_context
-
-        functions: dict[str, Callable[..., Awaitable[object]]] = {
-            'semantic_search_context': semantic_search_context,
-            'hybrid_search_context': hybrid_search_context,
-            'search_context': search_context,
-            'get_context_by_ids': get_context_by_ids,
-            'grep_context': grep_context,
-            'navigate_context': navigate_context,
-            'read_context_range': read_context_range,
-        }
-        docstring = functions[tool_name].__doc__
-        assert docstring is not None
-        returns = ' '.join(docstring[docstring.index('Returns:'):docstring.index('Raises:')].split())
+    @pytest.mark.asyncio
+    async def test_served_return_description_names_the_generation_state(self, tool_name: str) -> None:
+        """The served return description of each entry-carrying tool names generation_status and its states."""
+        description = await _served_description(tool_name)
+        returns = ' '.join(description[description.index('Returns:'):description.index('Raises:')].split())
         assert 'generation_status' in returns
         for state in ("'ready'", "'pending'", "'failed'"):
             assert state in returns
 
-    def test_statistics_return_description_names_the_generation_block(self) -> None:
-        """The get_statistics description names the generation block and counts it per caller."""
-        docstring = get_statistics.__doc__
-        assert docstring is not None
-        description = ' '.join(docstring.split())
+    @pytest.mark.asyncio
+    async def test_statistics_return_description_names_the_generation_block(self) -> None:
+        """The served get_statistics description names the generation block and counts it per caller."""
+        description = ' '.join((await _served_description('get_statistics')).split())
         returns = description[description.index('Returns:'):description.index('Raises:')]
         assert 'generation (dict with pending' in returns
         assert 'and failed' in returns
@@ -285,14 +314,15 @@ class TestDescriptionReadBack:
 class TestWriteToolDescriptions:
     """Every write tool tells a client how to defer generation and which generation state its response reports."""
 
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         'tool_function', [store_context, update_context, store_context_batch, update_context_batch],
         ids=lambda function: function.__name__,
     )
-    def test_served_description_names_deferral_and_the_generation_state(
+    async def test_served_description_names_deferral_and_the_generation_state(
         self, tool_function: Callable[..., Awaitable[object]],
     ) -> None:
-        tool = Tool.from_function(tool_function)
+        tool = await _served_tool(tool_function.__name__)
         assert tool.description is not None
         description = ' '.join(tool.description.split())
         served = ' '.join(json.dumps({'description': tool.description, 'input': tool.parameters}).split())
@@ -301,10 +331,11 @@ class TestWriteToolDescriptions:
         for state in ("'ready'", "'pending'", "'failed'"):
             assert state in description
 
+    @pytest.mark.asyncio
     @pytest.mark.parametrize('tool_function', [store_context, update_context], ids=lambda function: function.__name__)
-    def test_the_parameter_states_both_modes(self, tool_function: Callable[..., Awaitable[object]]) -> None:
+    async def test_the_parameter_states_both_modes(self, tool_function: Callable[..., Awaitable[object]]) -> None:
         """The parameter's served description says what each value does and when pending turns ready or failed."""
-        tool = Tool.from_function(tool_function)
+        tool = await _served_tool(tool_function.__name__)
         description = ' '.join(tool.parameters['properties']['defer_generation']['description'].split())
         assert 'False (default)' in description
         assert 'True:' in description
