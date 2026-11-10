@@ -6,7 +6,7 @@ Full-Text Search (FTS) enables linguistic search with stemming, ranking, and boo
 
 - Finding exact phrases within context entries
 - Prefix matching for partial word searches
-- Boolean operators (AND, OR, NOT) for complex queries
+- Boolean operators for complex queries, in the syntax of the storage backend
 - Language-specific stemming (e.g., "running" matches "run")
 - BM25/ts_rank relevance scoring
 - Highlighted snippets in search results
@@ -57,7 +57,7 @@ swedish, tamil, turkish, yiddish
 ```
 
 **Important Notes**:
-- PostgreSQL uses this language for full stemming support (all 29 languages)
+- PostgreSQL stems 28 of these languages; `simple` tokenizes without stemming or stop words
 - SQLite uses `porter unicode61` tokenizer for English (with stemming) or `unicode61` for other languages (no stemming, but proper Unicode tokenization)
 - Invalid language values are rejected at startup with a clear error message
 
@@ -103,7 +103,7 @@ SQLite uses the FTS5 extension with external content mode for efficient full-tex
 | `english`       | `porter unicode61` | Yes      | Yes                     |
 | Other languages | `unicode61`        | No       | No                      |
 
-**SQLite Stemming Limitation**: SQLite FTS5 only supports English stemming via the Porter stemmer. For non-English languages, use PostgreSQL for full stemming support, or use prefix mode (`mode='prefix'`) to match word beginnings.
+**SQLite Stemming Limitation**: SQLite FTS5 only supports English stemming via the Porter stemmer, which then runs on every word whatever its language. For non-English languages, use PostgreSQL for full stemming support, or use prefix mode (`mode='prefix'`) to match word beginnings.
 
 ### PostgreSQL (tsvector)
 
@@ -111,12 +111,13 @@ PostgreSQL uses native tsvector/tsquery functionality with GIN indexing.
 
 **Features**:
 - **ts_rank_cd scoring**: PostgreSQL's built-in relevance ranking with document coverage normalization
-- **29 language support**: Full linguistic stemming for all supported languages
+- **Language support**: Snowball stemming for 28 languages, plus the unstemmed `simple` configuration
 - **GIN index**: Optimized for fast full-text searches
 - **Generated column**: tsvector automatically computed and stored
 
 **PostgreSQL Advantages**:
-- Full stemming support for all 29 languages
+- Stemming for 28 languages, each applied to every word whatever language it is written in
+- Stop word removal for the languages PostgreSQL ships a list for: danish, dutch, english, finnish, french, german, hungarian, italian, nepali, norwegian, portuguese, russian, spanish, swedish and turkish. The other stemmed languages keep every word of a query; `hindi` and `russian` also apply the English rules and stop list to ASCII words
 - More sophisticated query parsing with `websearch_to_tsquery`
 - Native phrase search support with `phraseto_tsquery`
 
@@ -202,11 +203,11 @@ Standard word matching with implicit AND between terms.
 fts_search_context(query="error handling", mode="match")
 ```
 
-Finds entries containing both "error" AND "handling" (with stemming applied).
+Finds entries containing both "error" AND "handling" (in their stemmed forms where stemming applies).
 
 #### Prefix Mode
 
-Matches words starting with the query terms. Useful for autocomplete-style searches.
+Matches words starting with the query terms: every word of the query is a prefix, all of them are required, and a trailing `*` is optional. Useful for autocomplete-style searches.
 
 ```python
 fts_search_context(query="implement", mode="prefix")
@@ -214,29 +215,34 @@ fts_search_context(query="implement", mode="prefix")
 
 Finds entries containing words starting with "implement" (implements, implementation, implementing).
 
-**SQLite**: Transforms query to `implement*`
+**SQLite**: Transforms query to `"implement"*`
 **PostgreSQL**: Transforms query to `implement:*`
+
+Where stemming is on (PostgreSQL except `simple`, SQLite with `FTS_LANGUAGE=english`), indexed words and the typed prefix are both stemmed first, so a prefix that is not a word stem can miss: `runn` does not match "running", which is indexed as "run".
 
 #### Phrase Mode
 
-Matches exact phrases in order.
+Matches the words in sequence, in this order.
 
 ```python
 fts_search_context(query="connection refused", mode="phrase")
 ```
 
-Finds entries containing the exact phrase "connection refused" (words must appear adjacent and in order).
+Finds entries containing "connection refused" with the words adjacent and in order. Where stemming is on, stemmed forms match too ("connections refused"). On PostgreSQL a stop word inside the phrase matches any word in its position, while SQLite requires every word of the phrase.
 
 #### Boolean Mode
 
-Supports complex queries with AND, OR, NOT operators.
+Supports complex queries with operators. The syntax depends on the storage backend.
 
 ```python
+# SQLite
 fts_search_context(query="python OR javascript NOT typescript", mode="boolean")
+# PostgreSQL
+fts_search_context(query="python or javascript -typescript", mode="boolean")
 ```
 
-**SQLite syntax**: `word1 AND word2`, `word1 OR word2`, `NOT word`
-**PostgreSQL syntax**: Uses `websearch_to_tsquery` which accepts Google-like syntax with quotes, `-` for NOT, and `OR`
+**SQLite syntax**: `word1 AND word2`, `word1 OR word2`, `word1 NOT word2` (uppercase operators; `NOT` takes a term on each side), with parentheses for grouping
+**PostgreSQL syntax**: Uses `websearch_to_tsquery` which accepts Google-like syntax with quotes, a leading `-` for NOT, and `or`; it has no `AND` or `NOT` keyword and no grouping
 
 ### Example Use Cases
 
@@ -257,7 +263,10 @@ fts_search_context(query="python OR javascript NOT typescript", mode="boolean")
 
 4. **Boolean query**: Complex search with operators
    ```python
+   # SQLite
    fts_search_context(query="database AND (postgres OR sqlite) NOT memory", mode="boolean")
+   # PostgreSQL: no grouping, so the shared terms are repeated on each side of "or"
+   fts_search_context(query="database postgres -memory or database sqlite -memory", mode="boolean")
    ```
 
 5. **Filtered search**: Combine FTS with metadata filtering
@@ -347,9 +356,9 @@ For more details, see [Semantic Search - Cross-Encoder Reranking](semantic-searc
    uv run mcp-context-server
    ```
 
-3. **Check server logs** for:
+3. **Check server logs** (at `LOG_LEVEL=INFO`) for:
    ```text
-   fts_search_context registered
+   Full-text search enabled and available (backend: sqlite)
    ```
 
 4. **Verify MCP client** - List available tools and confirm `fts_search_context` is present
@@ -380,7 +389,7 @@ Call `get_statistics` to check FTS availability:
 
 ### Issue 1: fts_search_context Not Available
 
-**Error**: `fts_search_context not available` or tool not listed
+**Error**: `Full-text search is not available. Set ENABLE_FTS to auto (default) or true to enable this feature.`, or tool not listed
 
 **Diagnostic Steps**:
 
@@ -413,10 +422,10 @@ Call `get_statistics` to check FTS availability:
 
 1. **Use prefix mode**: Query with `mode='prefix'` to match word beginnings
    ```python
-   fts_search_context(query="runn", mode="prefix")
+   fts_search_context(query="run", mode="prefix")
    ```
 
-2. **Switch to PostgreSQL**: PostgreSQL supports full stemming for all 29 languages
+2. **Switch to PostgreSQL**: PostgreSQL stems 28 languages (every `FTS_LANGUAGE` value except `simple`)
 
 3. **Accept limitation**: Unicode61 tokenizer still provides proper Unicode tokenization for all languages
 
@@ -429,9 +438,9 @@ Call `get_statistics` to check FTS availability:
 
 **Diagnostic Steps**:
 
-1. Try broader search without filters:
+1. Try a broader search without filters, with a word you know is stored (not a stop word such as "the", which PostgreSQL removes from the query):
    ```python
-   fts_search_context(query="the", mode="match", limit=10)
+   fts_search_context(query="error", mode="match", limit=10)
    ```
 
 2. Check if data exists:
@@ -447,11 +456,12 @@ Call `get_statistics` to check FTS availability:
 
 **Solution**: Match syntax to backend:
 
-**SQLite** uses FTS5 syntax:
+**SQLite** uses FTS5 syntax (operators in uppercase; a lowercase `and`, `or` or `not` is an ordinary word):
 - AND: `word1 AND word2`
 - OR: `word1 OR word2`
-- NOT: `NOT word`
+- NOT: `word1 NOT word2` (`NOT` takes a term on each side)
 - Grouping: `(word1 OR word2) AND word3`
+- A query FTS5 cannot parse is answered as a plain match of its words instead of an error
 
 **PostgreSQL** uses websearch_to_tsquery syntax:
 - OR: `word1 or word2`
@@ -464,10 +474,9 @@ Call `get_statistics` to check FTS availability:
 
 | Error Message                       | Cause                           | Solution                                                     |
 |-------------------------------------|---------------------------------|--------------------------------------------------------------|
-| `fts_search_context not available`  | FTS force-disabled              | Unset `ENABLE_FTS` (default `auto`) or set `ENABLE_FTS=true` |
-| `Invalid FTS_LANGUAGE`              | Unknown language                | Use valid language name                                      |
-| `FTS5 table not found`              | Migration not applied           | Restart server to apply migration                            |
-| `text_search_vector column missing` | PostgreSQL migration incomplete | Restart server to apply migration                            |
+| `Full-text search is not available` | FTS force-disabled              | Unset `ENABLE_FTS` (default `auto`) or set `ENABLE_FTS=true` |
+| `FTS_LANGUAGE='xyz' is not a valid` | Unknown language                | Use valid language name                                      |
+| `FTS index not found`               | Migration not applied           | Restart server to apply migration                            |
 
 ## Changing FTS Language
 
@@ -493,11 +502,10 @@ Both operations automatically rebuild the index from existing data.
 
 3. **Restart the server** - migration runs automatically
 
-4. **Verify via logs**:
+4. **Verify via logs** (at `LOG_LEVEL=INFO`; PostgreSQL shown. SQLite reports the tokenizer instead, and only for a change between `english` and another language, because every other language shares one tokenizer and needs no rebuild):
    ```text
-   [INFO] FTS language changed from 'english' to 'german'
-   [INFO] Rebuilding FTS index...
-   [OK] FTS index rebuilt successfully
+   FTS language mismatch: current="english", desired="german". Starting migration...
+   FTS language migration completed: 1000 entries migrated from "english" to "german"
    ```
 
 ### Data Safety

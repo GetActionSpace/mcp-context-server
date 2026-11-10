@@ -159,7 +159,7 @@ Fetch specific context entries by their IDs.
 - `context_ids` (list[str], required): List of context-entry IDs in canonical 32-character hex or 36-character hyphenated UUID form (at most 100 IDs per call). Both forms are accepted at the tool boundary; storage canonicalizes to 32-character lowercase hex. An 8-31 character hex prefix is also accepted for each ID and resolved independently (zero matches or an ambiguous prefix returns an error).
 - `include_images` (bool, optional): Include image data (default: True)
 
-**Returns:** List of the requested entries the caller may read, with full untruncated `text_content`; an ID that does not exist and an ID of an entry the caller may not read are both omitted. Each entry contains `id`, `thread_id`, `source`, `text_content`, `metadata`, `tags`, `images`, `created_at`, `updated_at`, `visibility` (`private` or `public`), `is_owner` (true when the caller owns the entry; the owner itself is never returned), and `generation_status` (see [Generation Status](#generation-status)). The `summary` field follows a tri-state contract controlled by the `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` environment variable:
+**Returns:** List of the requested entries the caller may read, with full untruncated `text_content`; an ID that does not exist and an ID of an entry the caller may not read are both omitted. Each entry contains `id`, `thread_id`, `source`, `content_type`, `text_content`, `metadata`, `tags`, `created_at`, `updated_at`, `visibility` (`private` or `public`), `is_owner` (true when the caller owns the entry; the owner itself is never returned), and `generation_status` (see [Generation Status](#generation-status)). An entry whose `content_type` is `multimodal` also carries `images` (each with `mime_type`, base64 `data` and any image `metadata`) when `include_images` is true; a text entry, and every entry fetched with `include_images` false, has no `images` key. The `summary` field follows a tri-state contract controlled by the `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` environment variable:
 
 - When disabled (the default), the `summary` key is omitted entirely; consumers reading `entry.get('summary')` will receive `None`, which is the conventional Python signal for "feature disabled, no value to surface".
 - When enabled and the stored summary is a non-empty string, the value is returned verbatim.
@@ -331,7 +331,7 @@ Perform full-text search with linguistic processing, relevance ranking, and high
 
 Note: This tool is available by default (`ENABLE_FTS=auto`); set `ENABLE_FTS=false` to force off. The implementation varies by backend:
 - **SQLite**: Uses FTS5 with BM25 ranking. Porter stemmer (English) or unicode61 tokenizer (multilingual).
-- **PostgreSQL**: Uses tsvector/tsquery with ts_rank_cd ranking. Supports 29 languages with full stemming.
+- **PostgreSQL**: Uses tsvector/tsquery with ts_rank_cd ranking. Stems 28 languages; the 29th `FTS_LANGUAGE` value, `simple`, tokenizes without stemming.
 
 **Parameters:**
 - `query` (str, required): Search query (1-10000 characters)
@@ -351,18 +351,20 @@ Note: This tool is available by default (`ENABLE_FTS=auto`); set `ENABLE_FTS=fal
 - `explain_query` (bool, optional): Include query execution statistics (default: false)
 
 **Search Modes:**
-- `match`: Standard word matching with stemming (default)
-- `prefix`: Prefix matching for autocomplete-style search
-- `phrase`: Exact phrase matching preserving word order
-- `boolean`: Boolean operators (AND, OR, NOT) for complex queries
+- `match`: All words required, in their stemmed forms where stemming applies (default)
+- `prefix`: Every word is matched as a word beginning
+- `phrase`: The words in sequence, in this order
+- `boolean`: Operators, in backend-specific syntax: `AND`, `OR`, `NOT` and parentheses on SQLite; a space for AND, `or` and a leading `-` for NOT on PostgreSQL, which has no grouping
+
+The description the server serves for this tool states the exact behavior of the running backend and `FTS_LANGUAGE`: stemming, stop words, and the syntax and examples of each mode.
 
 **Metadata Filtering:** Supports same filtering syntax as search_context. See [Metadata Guide](metadata-addition-updating-and-filtering.md).
 
 **Returns:** Dictionary with:
 - Query string and search mode
-- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry), `generation_status`, relevance scores, and highlighted snippets. The full-text index covers an entry as soon as it is stored, whatever its generation state
+- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry), `generation_status`, relevance scores, and a highlighted snippet when `highlight` is true. The full-text index covers an entry as soon as it is stored, whatever its generation state
 - Result count
-- FTS availability status
+- The configured `FTS_LANGUAGE` (`language`)
 
 **Example:**
 ```python
@@ -373,7 +375,7 @@ fts_search_context(
     thread_id="project-123"
 )
 
-# Boolean search with metadata filter
+# Boolean search with metadata filter (SQLite syntax; on PostgreSQL write "authentication security")
 fts_search_context(
     query="authentication AND security",
     mode="boolean",

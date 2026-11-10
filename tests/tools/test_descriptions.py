@@ -33,6 +33,7 @@ from fastmcp.tools import Tool
 from app import tools as exported_tools
 from app.discovery_types import StatisticsResponseDict
 from app.ingest import MAX_PLAN_DELETES
+from app.repositories.fts_repository.query import ENGLISH_STOPWORD_FTS_LANGUAGES
 from app.repositories.fts_repository.query import desired_sqlite_fts_tokenizer
 from app.repositories.fts_repository.query import transform_query_sqlite
 from app.tools import TOOL_ANNOTATIONS
@@ -168,6 +169,20 @@ class TestSqliteFtsDescription:
         assert 'Hyphenated words are split: "full-text" becomes "full* AND text*"' in result
         assert 'adjacency' not in result
 
+    def test_words_of_other_languages_follow_the_tokenizer(self) -> None:
+        """The porter tokenizer stems every word under english; under another language no word is stemmed."""
+        english = _generate_sqlite_fts_description('english')
+        assert 'Words of other languages: stemmed by the same Porter rules, which run on every word' in english
+        assert 'NOT stemmed' not in english
+        assert 'Words of other languages: NOT stemmed either' in _generate_sqlite_fts_description('german')
+
+    def test_the_dropped_operator_words_are_named_where_the_server_drops_them(self) -> None:
+        """The server drops and/or/not from match and prefix queries for the languages whose PostgreSQL side does."""
+        for language in sorted(ENGLISH_STOPWORD_FTS_LANGUAGES):
+            description = _generate_sqlite_fts_description(language)
+            assert 'only "and", "or", "not" are dropped, from match and prefix queries' in description
+        assert '"and", "or", "not"' not in _generate_sqlite_fts_description('german')
+
 
 class TestSqliteDescriptionExamplesOnARealIndex:
     """The examples of the SQLite description hold on an FTS5 table built with the server's tokenizer."""
@@ -214,6 +229,82 @@ class TestSqliteDescriptionExamplesOnARealIndex:
         documents = ['full text', 'the text is fully there', 'full only']
         assert self._matching('english', 'prefix', 'full-text', documents) == ['full text', 'the text is fully there']
 
+    def test_stop_words_must_match_and_only_the_operator_words_are_dropped(self) -> None:
+        assert '"the", "is", "a" MUST match literally in queries' in _generate_sqlite_fts_description('english')
+        documents = ['cats dogs', 'cats and dogs', 'the cats']
+        assert self._matching('english', 'match', 'the cats', documents) == ['the cats']
+        assert self._matching('english', 'match', 'cats and dogs', documents) == ['cats dogs', 'cats and dogs']
+        assert self._matching('english', 'prefix', 'cat or dog', documents) == ['cats dogs', 'cats and dogs']
+        assert self._matching('english', 'phrase', 'cats and dogs', documents) == ['cats and dogs']
+        assert self._matching('german', 'match', 'cats and dogs', documents) == ['cats and dogs']
+
+    def test_the_prefix_example_holds_with_and_without_the_star(self) -> None:
+        words = ['searching', 'searched', 'searchable', 'research']
+        for language in ('english', 'german'):
+            description = _generate_sqlite_fts_description(language)
+            assert 'Every word is matched as a word beginning, all words required; a trailing * is optional.' in description
+            assert 'Example: "search*" matches "searching", "searched", "searchable"' in description
+            for query in ('search*', 'search'):
+                assert self._matching(language, 'prefix', query, words) == ['searching', 'searched', 'searchable']
+        documents = ['python async', 'python only', 'asynchronous python']
+        assert self._matching('german', 'prefix', 'python asy', documents) == ['python async', 'asynchronous python']
+
+    def test_a_typed_prefix_is_stemmed_where_stemming_is_on(self) -> None:
+        description = ' '.join(_generate_sqlite_fts_description('english').split())
+        assert 'indexed words and the typed prefix are both stemmed first' in description
+        assert '"runn*" does not match "running" (indexed as "run")' in description
+        assert self._matching('english', 'prefix', 'runn*', ['running', 'runner']) == ['runner']
+        assert self._matching('german', 'prefix', 'runn*', ['running', 'runner']) == ['running', 'runner']
+
+    def test_a_phrase_requires_its_stop_words(self) -> None:
+        assert 'Note: All words including stop words must be present.' in _generate_sqlite_fts_description('english')
+        documents = ['somewhere over the rainbow', 'over a rainbow', 'over rainbow']
+        assert self._matching('english', 'phrase', 'over the rainbow', documents) == ['somewhere over the rainbow']
+
+    def test_the_boolean_example_and_its_grouping(self) -> None:
+        description = _generate_sqlite_fts_description('english')
+        assert 'Example: "python AND (async OR await) NOT blocking"' in description
+        assert 'Grouping: Full parentheses support' in description
+        documents = ['python async', 'python await', 'python sync', 'python async blocking', 'await only']
+        assert self._matching('english', 'boolean', 'python AND (async OR await) NOT blocking', documents) == [
+            'python async', 'python await',
+        ]
+        assert self._matching('english', 'boolean', 'python AND async OR await', documents) == [
+            'python async', 'python await', 'python async blocking', 'await only',
+        ]
+
+    def test_boolean_operators_are_uppercase_and_not_takes_two_terms(self) -> None:
+        description = _generate_sqlite_fts_description('english')
+        assert 'Syntax: AND, OR, NOT (UPPERCASE required); NOT takes a term on each side: "python NOT blocking"' in description
+        documents = ['python', 'ruby', 'python or ruby', 'python blocking']
+        assert self._matching('english', 'boolean', 'python or ruby', documents) == ['python or ruby']
+        assert self._matching('english', 'boolean', 'python OR ruby', documents) == documents
+        assert self._matching('english', 'boolean', 'python NOT blocking', documents) == ['python', 'python or ruby']
+        with pytest.raises(sqlite3.OperationalError):
+            self._matching('english', 'boolean', 'NOT blocking', documents)
+
+    def test_a_quoted_phrase_inside_a_boolean_query(self) -> None:
+        assert """'"error handling" AND python'""" in _generate_sqlite_fts_description('english')
+        documents = ['error handling in python', 'python handling of an error']
+        assert self._matching('english', 'boolean', '"error handling" AND python', documents) == ['error handling in python']
+
+    def test_words_of_another_language_are_stemmed_only_under_english(self) -> None:
+        assert '"maison" matches "maisons"' in _generate_sqlite_fts_description('english')
+        assert self._matching('english', 'match', 'maison', ['maisons', 'maisonette']) == ['maisons']
+        assert self._matching('german', 'match', 'maison', ['maisons', 'maison']) == ['maison']
+
+    def test_text_without_spaces_is_indexed_as_one_word(self) -> None:
+        for language in ('english', 'german'):
+            description = ' '.join(_generate_sqlite_fts_description(language).split())
+            assert 'is not split into words: each unbroken run is indexed as one word' in description
+        documents = ['全文検索は便利です', '検索']
+        assert self._matching('english', 'match', '検索', documents) == ['検索']
+        assert self._matching('english', 'prefix', '全文', documents) == ['全文検索は便利です']
+
+    def test_matching_ignores_case(self) -> None:
+        assert 'Case-insensitive matching' in _generate_sqlite_fts_description('english')
+        assert self._matching('english', 'match', 'PYTHON', ['python', 'Python', 'ruby']) == ['python', 'Python']
+
 
 class TestPostgresqlFtsDescription:
     """Test PostgreSQL-specific FTS description generation."""
@@ -253,6 +344,55 @@ class TestPostgresqlFtsDescription:
         assert 'Snowball' in result
         assert 'for spanish text' in result
         assert 'Stop words: ENABLED' in result
+
+    def test_stop_words_are_claimed_only_where_postgresql_has_a_list(self) -> None:
+        """PostgreSQL ships a stop word list for some languages only; the others keep every word of a query."""
+        for language in ('german', 'spanish', 'turkish'):
+            assert 'Stop words: ENABLED' in _generate_postgresql_fts_description(language)
+        for language in ('catalan', 'greek', 'arabic', 'yiddish'):
+            description = _generate_postgresql_fts_description(language)
+            assert f'Stop words: DISABLED (PostgreSQL has no {language} stop word list)' in description
+            assert f'No {language} word is ignored: a common word in a query must match like any other' in description
+            assert 'REMOVED' not in description
+            assert 'Stemming: ENABLED' in description
+
+    def test_hindi_and_russian_name_the_english_rules_for_ascii_words(self) -> None:
+        """Both configurations send ASCII words to the English stemmer and its stop word list."""
+        hindi = _generate_postgresql_fts_description('hindi')
+        assert 'Stop words: ENABLED (the English list, for ASCII words only: PostgreSQL has no hindi stop word list)' in hindi
+        assert '"the", "is", "a" are REMOVED and ignored in searches; no hindi word is ignored' in hindi
+        russian = _generate_postgresql_fts_description('russian')
+        assert 'Stop words: ENABLED (for russian (language-specific list); the English list for ASCII words)' in russian
+        assert 'The most common russian words are REMOVED and ignored in searches, and so are "the", "is", "a"' in russian
+        for language, description in (('hindi', hindi), ('russian', russian)):
+            assert (
+                f'Words of other languages: ASCII words follow the English stemming rules and stop list, '
+                f'all other words the {language} rules'
+            ) in description
+
+    def test_words_of_other_languages_follow_the_configuration(self) -> None:
+        """A configuration's stemmer and stop list run on every word, whatever language it is written in."""
+        simple = _generate_postgresql_fts_description('simple')
+        assert 'Words of other languages: NOT stemmed either, like every word under the simple configuration' in simple
+        english = _generate_postgresql_fts_description('english')
+        assert (
+            'Words of other languages: treated by the same english stemming rules and stop list: "maison" matches "maisons"'
+        ) in english
+        german = _generate_postgresql_fts_description('german')
+        assert (
+            'Words of other languages: treated by the same german stemming rules and stop list, whatever their language'
+        ) in german
+        catalan = _generate_postgresql_fts_description('catalan')
+        assert 'Words of other languages: stemmed by the same catalan rules, whatever their language' in catalan
+        for description in (simple, english, german, catalan):
+            assert 'CJK languages require extensions' not in description
+            assert 'is not split into words: each unbroken run is indexed as one word' in ' '.join(description.split())
+
+    def test_prefix_mode_names_the_stemmed_prefix(self) -> None:
+        description = ' '.join(_generate_postgresql_fts_description('english').split())
+        assert 'Every word is matched as a word beginning, all words required; a trailing * is optional.' in description
+        assert 'Example: "search*" matches "searching", "searched", "searchable"' in description
+        assert '"runn*" does not match "running" (indexed as "run")' in description
 
 
 class TestDescriptionStructure:
@@ -440,6 +580,46 @@ class TestHighlightedIsConditional:
         assert 'highlighted (set only when highlight=True)' in description
 
 
+class TestConditionalFieldsAreNamedAsSuch:
+    """A return description says when a result carries a field it does not always carry."""
+
+    @pytest.mark.asyncio
+    async def test_get_context_by_ids_says_when_an_entry_carries_images(self) -> None:
+        """An entry carries images only when it is multimodal and the call asked for them."""
+        description = await _served_description('get_context_by_ids')
+        returns = ' '.join(description[description.index('Returns:'):description.index('Raises:')].split())
+        assert 'tags, images, created_at' not in returns
+        assert 'plus images (each with mime_type, base64 data and any image metadata) on an entry whose content_type is' in (
+            returns
+        )
+        assert "'multimodal' when include_images is true" in returns
+        assert 'has no images key' in returns
+        assert 'content_type' in returns
+
+
+class TestFtsModeParameter:
+    """The mode parameter is served on both backends, so it claims nothing only one of them does."""
+
+    @pytest.mark.asyncio
+    async def test_the_mode_parameter_claims_no_backend_specific_syntax(self) -> None:
+        tool = await _served_tool('fts_search_context')
+        description = tool.parameters['properties']['mode']['description']
+        assert 'exact phrase' not in description
+        assert 'AND/OR/NOT' not in description
+        assert "'phrase' (the words in sequence)" in description
+        assert "'boolean' (operators; the tool description gives this backend's syntax)" in description
+
+    def test_the_docstring_repeats_no_claim_the_generated_description_dropped(self) -> None:
+        """The docstring is not served, but it must not teach a maintainer what the served text corrected."""
+        from app.tools.search.fts import fts_search_context
+
+        docstring = inspect.getdoc(fts_search_context)
+        assert docstring is not None
+        assert 'must appear as-is' not in docstring
+        assert 'python AND (async OR await) NOT blocking' not in docstring
+        assert 'PostgreSQL: space for AND, "or", "-" for NOT, no grouping' in docstring
+
+
 class TestRankedPaginationDescription:
     """Each ranked search tool tells a client that a page is a window into one ranking of bounded depth."""
 
@@ -503,6 +683,16 @@ class TestWriteToolDescriptions:
         assert 'an embedding or summary failure' in description
         assert 'a section summary that fails is left out' in description
         assert 'a generation failure' not in description
+
+    @pytest.mark.asyncio
+    async def test_the_batch_store_says_what_a_deduplication_update_changes(self) -> None:
+        """A batch entry that deduplicates is updated as a single store updates it: its visibility and owner stay."""
+        description = ' '.join((await _served_description('store_context_batch')).split())
+        assert 'metadata, tags and images are replaced when the entry gives them' in description
+        assert 'its visibility and owner never change' in description
+        assert 'keeps a waiting generation job, restarts a failed one, and adds one only when an output is missing' in (
+            description
+        )
 
 
 _INTERNAL_NAME = re.compile(r'\bapp\.|MAX_PLAN_DELETES|content_hash')

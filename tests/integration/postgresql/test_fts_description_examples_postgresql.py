@@ -13,13 +13,25 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+from app.repositories.fts_repository.query import ENGLISH_STOPWORD_FTS_LANGUAGES
 from app.repositories.fts_repository.query import get_tsquery_function
 from app.repositories.fts_repository.query import transform_query_postgresql
+from app.settings.search import FtsSettings
 from app.tools.descriptions import generate_fts_description
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
 Mode = Literal['match', 'prefix', 'phrase', 'boolean']
+
+# The dictionary each text search configuration sends plain words to, per token type.
+_WORD_DICTIONARIES = '''
+    SELECT c.cfgname, t.alias, d.dictname, d.dictinitoption
+    FROM pg_ts_config c
+    JOIN pg_ts_config_map m ON m.mapcfg = c.oid
+    JOIN pg_ts_dict d ON d.oid = m.mapdict
+    JOIN ts_token_type('default') t ON t.tokid = m.maptokentype
+    WHERE t.alias IN ('asciiword', 'word')
+'''
 
 
 @pytest_asyncio.fixture
@@ -57,13 +69,96 @@ async def test_another_language_follows_its_own_stems_and_stop_words(conn: async
     assert await _matching(conn, 'german', 'match', 'the python', ['python code', 'the python code']) == ['the python code']
 
 
+async def _word_dictionaries(conn: asyncpg.Connection) -> dict[str, dict[str, tuple[str, str]]]:
+    """Return, for each language FTS_LANGUAGE accepts, the dictionary and its options per word token type."""
+    dictionaries: dict[str, dict[str, tuple[str, str]]] = {}
+    for row in await conn.fetch(_WORD_DICTIONARIES):
+        try:
+            FtsSettings.validate_language(row['cfgname'])
+        except ValueError:
+            continue
+        dictionaries.setdefault(row['cfgname'], {})[row['alias']] = (row['dictname'], row['dictinitoption'] or '')
+    return dictionaries
+
+
+@pytest.mark.asyncio
+async def test_a_stop_word_list_is_claimed_exactly_where_postgresql_has_one(conn: asyncpg.Connection) -> None:
+    """The description of every accepted language follows the stop word list of its own dictionary."""
+    dictionaries = await _word_dictionaries(conn)
+    assert len(dictionaries) == 29
+    for language, by_token_type in dictionaries.items():
+        if language == 'simple':
+            continue
+        description = generate_fts_description('postgresql', language)
+        _, options = by_token_type['word']
+        if 'stopwords' in options:
+            assert f'Stop words: ENABLED (for {language} (language-specific list)' in description, language
+        else:
+            assert f'PostgreSQL has no {language} stop word list' in description, language
+
+
+@pytest.mark.asyncio
+async def test_ascii_words_follow_the_english_rules_where_the_description_says(conn: asyncpg.Connection) -> None:
+    """Only the configurations the description names send ASCII words to the English stemmer and stop list."""
+    dictionaries = await _word_dictionaries(conn)
+    for language, by_token_type in dictionaries.items():
+        ascii_dictionary, _ = by_token_type['asciiword']
+        assert (ascii_dictionary == 'english_stem') == (language in ENGLISH_STOPWORD_FTS_LANGUAGES), language
+        description = generate_fts_description('postgresql', language)
+        named = 'ASCII words follow the English stemming rules and stop list' in description
+        assert named == (language in ENGLISH_STOPWORD_FTS_LANGUAGES - {'english'}), language
+        if language not in ENGLISH_STOPWORD_FTS_LANGUAGES and language != 'simple':
+            assert ascii_dictionary == by_token_type['word'][0] == f'{language}_stem', language
+    assert await _matching(conn, 'hindi', 'match', 'the book', ['a book', 'books']) == ['a book', 'books']
+    assert await _matching(conn, 'russian', 'match', 'this is not a book', ['книга', 'a book']) == ['a book']
+    assert await _matching(conn, 'russian', 'match', 'и не книга', ['книги', 'a book']) == ['книги']
+
+
+@pytest.mark.asyncio
+async def test_a_language_without_a_stop_word_list_requires_every_word(conn: asyncpg.Connection) -> None:
+    assert 'No catalan word is ignored' in generate_fts_description('postgresql', 'catalan')
+    assert await _matching(conn, 'catalan', 'match', 'el gat', ['un gat negre', 'el gat negre']) == ['el gat negre']
+    assert await _matching(conn, 'french', 'match', 'le chat', ['un chat noir', 'le chat noir']) == [
+        'un chat noir', 'le chat noir',
+    ]
+
+
+@pytest.mark.asyncio
+async def test_words_of_another_language_follow_the_configuration(conn: asyncpg.Connection) -> None:
+    assert '"maison" matches "maisons"' in generate_fts_description('postgresql', 'english')
+    assert await _matching(conn, 'english', 'match', 'maison', ['maisons', 'maisonette']) == ['maisons']
+    assert await _matching(conn, 'german', 'match', 'tests', ['a test', 'running']) == ['a test']
+    assert await _matching(conn, 'simple', 'match', 'tests', ['a test', 'tests']) == ['tests']
+
+
+@pytest.mark.asyncio
+async def test_text_without_spaces_is_indexed_as_one_word(conn: asyncpg.Connection) -> None:
+    documents = ['全文検索は便利です', '検索']
+    for language in ('english', 'simple'):
+        assert await _matching(conn, language, 'match', '検索', documents) == ['検索']
+    assert await _matching(conn, 'english', 'prefix', '全文', documents) == ['全文検索は便利です']
+
+
 @pytest.mark.asyncio
 async def test_the_match_and_prefix_examples(conn: asyncpg.Connection) -> None:
+    description = ' '.join(generate_fts_description('postgresql', 'english').split())
     assert await _matching(conn, 'english', 'match', 'running tests', ['we run a test', 'a test only']) == ['we run a test']
-    words = ['searching', 'searched', 'search', 'research']
-    assert await _matching(conn, 'english', 'prefix', 'search*', words) == ['searching', 'searched', 'search']
+    assert 'Example: "search*" matches "searching", "searched", "searchable"' in description
+    words = ['searching', 'searched', 'searchable', 'research']
+    for query in ('search*', 'search'):
+        assert await _matching(conn, 'english', 'prefix', query, words) == ['searching', 'searched', 'searchable']
     documents = ['full text', 'the text is fully there', 'full only']
     assert await _matching(conn, 'english', 'prefix', 'full-text', documents) == ['full text', 'the text is fully there']
+    documents = ['python async', 'python only', 'asynchronous python']
+    assert await _matching(conn, 'simple', 'prefix', 'python asy', documents) == ['python async', 'asynchronous python']
+
+
+@pytest.mark.asyncio
+async def test_a_typed_prefix_is_stemmed_where_stemming_is_on(conn: asyncpg.Connection) -> None:
+    description = ' '.join(generate_fts_description('postgresql', 'english').split())
+    assert '"runn*" does not match "running" (indexed as "run")' in description
+    assert await _matching(conn, 'english', 'prefix', 'runn*', ['running', 'runner']) == ['runner']
+    assert await _matching(conn, 'simple', 'prefix', 'runn*', ['running', 'runner']) == ['running', 'runner']
 
 
 @pytest.mark.asyncio

@@ -66,7 +66,9 @@ async def store_context_batch(
     Deduplication: the candidate is the latest entry of the same thread_id and source
     among the entries the caller may read; when the caller owns it and its text is
     identical, the existing entry is updated, otherwise a new entry owned by the caller
-    is inserted. Deduplication is suppressed when opposite-source entries the caller
+    is inserted. In such an update metadata, tags and images are replaced when the entry
+    gives them and kept when it does not, and its visibility and owner never change.
+    Deduplication is suppressed when opposite-source entries the caller
     may read exist after the candidate, preserving chronological ordering.
     Pre-check optimization skips embedding/summary generation for likely duplicates.
     An entry with deduplicate=False skips the candidate and always inserts a new entry
@@ -78,7 +80,9 @@ async def store_context_batch(
     summary that fails is left out and the entry is stored without it. An entry with
     defer_generation=True skips the pre-check and generation: it is stored at once with a
     background job that generates its outputs, readable and full-text searchable
-    immediately, and found by semantic search once the job has written its embeddings.
+    immediately, and found by semantic search once the job has written its embeddings;
+    one that deduplicates into an existing entry keeps a waiting generation job, restarts
+    a failed one, and adds one only when an output is missing.
     Each stored item's generation_status is 'ready' when the entry's generated outputs are
     complete, 'pending' while its generation job waits or runs, and 'failed' once the job
     exhausted its retries; an item that was not stored reports null.

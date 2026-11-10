@@ -21,7 +21,7 @@ _FTS_TOKEN_RE = re.compile(r'"[^"]*"|\S+')
 # SQLite must keep them too (as literal terms) or the two backends return different result sets.
 # Verified against PostgreSQL 18: ``plainto_tsquery(cfg, 'and or not')`` is empty ONLY for english,
 # hindi, and russian; all other configs (including 'simple') return the three lexemes.
-_ENGLISH_STOPWORD_FTS_LANGUAGES = frozenset({'english', 'hindi', 'russian'})
+ENGLISH_STOPWORD_FTS_LANGUAGES = frozenset({'english', 'hindi', 'russian'})
 
 
 def sanitize_sqlite_fts_terms(tokens: list[str], language: str = 'english') -> list[str]:
@@ -36,7 +36,7 @@ def sanitize_sqlite_fts_terms(tokens: list[str], language: str = 'english') -> l
     - A quoted-phrase token (``"..."``) is preserved as-is.
     - An operator bareword (and/or/not, case-insensitive) is DROPPED only when ``language`` is one
       whose PostgreSQL config treats them as stopwords (english/hindi/russian -- see
-      ``_ENGLISH_STOPWORD_FTS_LANGUAGES``); for every other language it is KEPT as a literal term,
+      ``ENGLISH_STOPWORD_FTS_LANGUAGES``); for every other language it is KEPT as a literal term,
       because PostgreSQL keeps it as a required lexeme and dropping it on SQLite alone would make
       the two backends return different rows.
     - A bare term carrying an embedded double quote is SPLIT on that quote into one FTS5 string
@@ -74,7 +74,7 @@ def sanitize_sqlite_fts_terms(tokens: list[str], language: str = 'english') -> l
         The list of safe FTS5 term strings (operator barewords removed only for the
         stopword-dropping languages).
     """
-    drop_operator_barewords = language.lower() in _ENGLISH_STOPWORD_FTS_LANGUAGES
+    drop_operator_barewords = language.lower() in ENGLISH_STOPWORD_FTS_LANGUAGES
     terms: list[str] = []
     for token in tokens:
         # Require >= 2 chars: a LONE '"' satisfies both startswith AND endswith (they test the
@@ -197,9 +197,9 @@ def transform_query_sqlite(
     query = query.strip()
     # Drop the English operator barewords and/or/not ONLY for a language whose PostgreSQL
     # config treats them as stopwords; otherwise keep them as literal terms (see
-    # sanitize_sqlite_fts_terms / _ENGLISH_STOPWORD_FTS_LANGUAGES) so SQLite and PostgreSQL
+    # sanitize_sqlite_fts_terms / ENGLISH_STOPWORD_FTS_LANGUAGES) so SQLite and PostgreSQL
     # return the same rows.
-    drop_operator_barewords = language.lower() in _ENGLISH_STOPWORD_FTS_LANGUAGES
+    drop_operator_barewords = language.lower() in ENGLISH_STOPWORD_FTS_LANGUAGES
 
     if mode == 'phrase':
         # Exact phrase matching - wrap in double quotes

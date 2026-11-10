@@ -43,9 +43,12 @@ async def get_context_by_ids(
     before any database work. Fetch larger sets in successive calls.
 
     Returns:
-        List of ContextEntryDict with id, thread_id, source, text_content, metadata,
-        tags, images, created_at, updated_at, visibility, is_owner and
-        generation_status fields; is_owner says whether the caller owns the entry,
+        List of ContextEntryDict with id, thread_id, source, content_type, text_content,
+        metadata, tags, created_at, updated_at, visibility, is_owner and
+        generation_status fields, plus images (each with mime_type, base64 data and any
+        image metadata) on an entry whose content_type is 'multimodal' when include_images
+        is true; a text entry, and every entry fetched with include_images false, has no
+        images key. is_owner says whether the caller owns the entry,
         and generation_status is 'ready' once the entry's embeddings and summaries
         are generated, 'pending' while their generation waits or runs, and 'failed'
         when it gave up after its retries. The summary field follows a
