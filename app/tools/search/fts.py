@@ -138,9 +138,9 @@ async def fts_search_context(
     Returns:
         Dict with query (str), mode (str), results (list with id, thread_id, source,
         text_content (truncated), summary, is_text_content_truncated,
-        metadata, scores, highlighted, tags, visibility, is_owner (whether the
-        caller owns the entry), generation_status ('ready' once the entry's
-        embeddings and summaries are generated, 'pending' while their generation
+        metadata, scores, highlighted (set only when highlight=True), tags, visibility,
+        is_owner (whether the caller owns the entry), generation_status ('ready' once the
+        entry's embeddings and summaries are generated, 'pending' while their generation
         waits or runs, 'failed' when it gave up after its retries; the full-text
         index covers an entry as soon as it is stored)), count (int), language (str),
         stats (only when explain_query=True), and rank_depth_limit (only when the

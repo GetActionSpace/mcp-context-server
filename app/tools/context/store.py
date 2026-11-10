@@ -66,7 +66,7 @@ async def store_context(
         Field(
             max_length=MAX_IMAGES_PER_ENTRY,
             description=f'List of base64 encoded images with mime_type. Max {MAX_IMAGES_PER_ENTRY} images, '
-            'each image max 10MB, total max 100MB',
+            'each image max 10MB and total max 100MB by default (the operator may set other sizes)',
         ),
     ] = None,
     metadata: Annotated[
@@ -126,7 +126,7 @@ async def store_context(
     Deduplication: the candidate is the latest entry of the same thread_id and source
     among the entries the caller may read. When the caller owns that entry and its text
     is identical, the existing entry is updated instead of creating a duplicate:
-    - metadata: New values override existing; omitting metadata preserves current values
+    - metadata: REPLACED as a whole object if provided (no per-key merge); preserved if metadata=None
     - tags: REPLACED with new list if provided; preserved if tags=None
     - images: REPLACED with new list if provided; preserved if images=None
     - visibility/ownership: NEVER changed by a deduplication update (a retransmit

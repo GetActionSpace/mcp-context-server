@@ -19,6 +19,8 @@ the server's own modules or constants.
 import inspect
 import json
 import re
+import sqlite3
+import typing
 from collections.abc import Awaitable
 from collections.abc import Callable
 from typing import Literal
@@ -31,6 +33,7 @@ from fastmcp.tools import Tool
 from app import tools as exported_tools
 from app.discovery_types import StatisticsResponseDict
 from app.ingest import MAX_PLAN_DELETES
+from app.repositories.fts_repository.query import desired_sqlite_fts_tokenizer
 from app.repositories.fts_repository.query import transform_query_sqlite
 from app.tools import TOOL_ANNOTATIONS
 from app.tools import plan_context_sync
@@ -166,8 +169,83 @@ class TestSqliteFtsDescription:
         assert 'adjacency' not in result
 
 
+class TestSqliteDescriptionExamplesOnARealIndex:
+    """The examples of the SQLite description hold on an FTS5 table built with the server's tokenizer."""
+
+    @staticmethod
+    def _matching(
+        language: str, mode: Literal['match', 'prefix', 'phrase', 'boolean'], query: str, documents: list[str],
+    ) -> list[str]:
+        """Return the documents the server's query for this mode matches, in insertion order."""
+        database = sqlite3.connect(':memory:')
+        try:
+            database.execute(
+                f"CREATE VIRTUAL TABLE docs USING fts5(body, tokenize='{desired_sqlite_fts_tokenizer(language)}')",
+            )
+            database.executemany('INSERT INTO docs(body) VALUES (?)', [(document,) for document in documents])
+            expression = transform_query_sqlite(query, mode, language)
+            rows = database.execute('SELECT body FROM docs WHERE docs MATCH ? ORDER BY rowid', (expression,))
+            return [row[0] for row in rows]
+        finally:
+            database.close()
+
+    def test_the_english_stemming_example(self) -> None:
+        assert '"running" WILL match "run" and "runs", but not "runner"' in _generate_sqlite_fts_description('english')
+        assert self._matching('english', 'match', 'running', ['run', 'runs', 'runner']) == ['run', 'runs']
+
+    def test_match_mode_finds_stemmed_forms_only_where_stemming_is_on(self) -> None:
+        for language in ('english', 'german'):
+            description = _generate_sqlite_fts_description(language)
+            assert 'finds docs containing BOTH words (stemmed forms when Stemming is ENABLED)' in description
+            assert 'exact words' not in description
+        documents = ['python async', 'pythons asyncs', 'python only']
+        assert self._matching('english', 'match', 'python async', documents) == ['python async', 'pythons asyncs']
+        assert self._matching('german', 'match', 'python async', documents) == ['python async']
+
+    def test_phrase_mode_keeps_the_word_order(self) -> None:
+        description = _generate_sqlite_fts_description('english')
+        assert '"exact phrase" matches "exact phrase", not "phrase exact"' in description
+        assert 'matches only' not in description
+        documents = ['exact phrase', 'exact phrases', 'phrase exact', 'an exact and phrase']
+        assert self._matching('english', 'phrase', 'exact phrase', documents) == ['exact phrase', 'exact phrases']
+        assert self._matching('german', 'phrase', 'exact phrase', documents) == ['exact phrase']
+
+    def test_a_hyphenated_prefix_query_requires_both_parts_anywhere(self) -> None:
+        documents = ['full text', 'the text is fully there', 'full only']
+        assert self._matching('english', 'prefix', 'full-text', documents) == ['full text', 'the text is fully there']
+
+
 class TestPostgresqlFtsDescription:
     """Test PostgreSQL-specific FTS description generation."""
+
+    def test_the_english_examples_are_given_for_english_only(self) -> None:
+        """Another language has its own stems and stop words, so its description claims no English example."""
+        english = _generate_postgresql_fts_description('english')
+        assert '"running" WILL match "run" and "runs", but not "runner"' in english
+        assert '"the", "is", "a" are REMOVED and ignored in searches' in english
+        for language in ('german', 'spanish'):
+            other = _generate_postgresql_fts_description(language)
+            assert '"running" WILL match' not in other
+            assert '"the", "is", "a" are REMOVED' not in other
+            assert f'Inflected forms of a {language} word match each other' in other
+            assert f'The most common {language} words are REMOVED and ignored in searches' in other
+
+    def test_no_mode_promises_stemming_where_it_is_off(self) -> None:
+        simple = _generate_postgresql_fts_description('simple')
+        assert 'Stemming: DISABLED' in simple
+        assert 'query with stemming' not in simple
+        assert 'when Stemming is ENABLED' in simple
+
+    def test_boolean_mode_states_that_parentheses_do_not_group(self) -> None:
+        result = _generate_postgresql_fts_description('english')
+        assert 'Parentheses for grouping' not in result
+        assert 'Grouping: none. Parentheses are ignored' in result
+        assert '"python (async or await) -blocking"' not in result
+
+    def test_the_phrase_example_keeps_a_stop_word_inside_the_phrase(self) -> None:
+        result = _generate_postgresql_fts_description('english')
+        assert '"lord of the rings"' in result
+        assert 'over the rainbow' not in result
 
     def test_non_simple_stemming_enabled(self) -> None:
         result = _generate_postgresql_fts_description('spanish')
@@ -331,6 +409,36 @@ class TestDescriptionReadBack:
         missing = sorted(set(StatisticsResponseDict.__annotations__) - names)
         assert not missing, f'the get_statistics return description omits {missing}'
 
+    @pytest.mark.asyncio
+    async def test_statistics_return_description_names_the_fields_of_each_block(self) -> None:
+        """Each block described as 'dict with ...' names every field of its type but the reason an unavailable one adds."""
+        description = await _served_description('get_statistics')
+        returns = description[description.index('Returns:'):description.index('Raises:')]
+        checked = 0
+        for name, hint in typing.get_type_hints(StatisticsResponseDict).items():
+            start = re.search(rf'\b{name} \(dict with\b', ' '.join(returns.split()))
+            if start is None:
+                continue
+            text = ' '.join(returns.split())
+            depth, end = 1, start.end()
+            while depth:
+                depth += {'(': 1, ')': -1}.get(text[end], 0)
+                end += 1
+            listed = set(re.findall(r'[a-z_]+', text[start.end():end]))
+            missing = sorted(set(typing.get_type_hints(hint)) - listed - {'message'})
+            assert not missing, f'the {name} block of the get_statistics return description omits {missing}'
+            checked += 1
+        assert checked == 8
+
+
+class TestHighlightedIsConditional:
+    """The full-text return description says when a result carries a highlighted snippet."""
+
+    @pytest.mark.parametrize('backend', ['sqlite', 'postgresql'])
+    def test_fts_description_marks_highlighted_as_conditional(self, backend: Literal['sqlite', 'postgresql']) -> None:
+        description = ' '.join(generate_fts_description(backend, 'english').split())
+        assert 'highlighted (set only when highlight=True)' in description
+
 
 class TestRankedPaginationDescription:
     """Each ranked search tool tells a client that a page is a window into one ranking of bounded depth."""
@@ -385,6 +493,16 @@ class TestWriteToolDescriptions:
         assert "'pending'" in description
         assert "'ready'" in description
         assert "'failed'" in description
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('tool_name', ['store_context', 'update_context'])
+    async def test_the_parameter_names_the_failures_that_refuse_the_write(self, tool_name: str) -> None:
+        """A failed section summary never refuses a write, so the parameter names the failures that do."""
+        tool = await _served_tool(tool_name)
+        description = ' '.join(tool.parameters['properties']['defer_generation']['description'].split())
+        assert 'an embedding or summary failure' in description
+        assert 'a section summary that fails is left out' in description
+        assert 'a generation failure' not in description
 
 
 _INTERNAL_NAME = re.compile(r'\bapp\.|MAX_PLAN_DELETES|content_hash')

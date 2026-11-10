@@ -111,7 +111,7 @@ async def get_statistics() -> StatisticsResponseDict:
         embedding_count, average_chunks_per_entry, coverage_percentage),
         fts (dict with enabled, available, language, backend, engine,
         indexed_entries, coverage_percentage), chunking (dict with enabled,
-        chunk_size, chunk_overlap, aggregation), reranking (dict with
+        available, chunk_size, chunk_overlap, aggregation), reranking (dict with
         enabled, available, provider, model), summary (dict with enabled,
         available, provider, model, summary_count, coverage_percentage,
         min_content_length), compression (dict with enabled, available,

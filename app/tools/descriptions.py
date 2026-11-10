@@ -50,7 +50,7 @@ def _generate_sqlite_fts_description(language: str) -> str:
     if language_lower == 'english':
         stemming_status = 'ENABLED'
         stemming_detail = 'for English text (Porter algorithm)'
-        stemming_example = '"running" WILL match "run", "runs", "runner"'
+        stemming_example = '"running" WILL match "run" and "runs", but not "runner"'
     else:
         stemming_status = 'DISABLED'
         stemming_detail = '(Porter stemmer is English-only)'
@@ -117,10 +117,15 @@ def _generate_postgresql_fts_description(language: str) -> str:
     else:
         stemming_status = 'ENABLED'
         stemming_detail = f'for {language} text (Snowball algorithm)'
-        stemming_example = '"running" WILL match "run", "runs", "runner"'
         stopwords_status = 'ENABLED'
         stopwords_detail = f'for {language} (language-specific list)'
-        stopwords_example = '"the", "is", "a" are REMOVED and ignored in searches'
+        if language_lower == 'english':
+            stemming_example = '"running" WILL match "run" and "runs", but not "runner"'
+            stopwords_example = '"the", "is", "a" are REMOVED and ignored in searches'
+        else:
+            # Every language has its own stems and stop words: the English examples do not hold for it.
+            stemming_example = f'Inflected forms of a {language} word match each other'
+            stopwords_example = f'The most common {language} words are REMOVED and ignored in searches'
 
     # Non-language text behavior
     non_language_behavior = 'Tokenized on spaces but NOT stemmed (CJK languages require extensions)'
@@ -183,9 +188,9 @@ Pagination:
 Returns:
     Dict with query (str), mode (str), results (list with id, thread_id, source,
     text_content (truncated), summary, is_text_content_truncated,
-    metadata, scores, highlighted, tags, visibility, is_owner (whether the
-    caller owns the entry), generation_status ('ready' once the entry's
-    embeddings and summaries are generated, 'pending' while their generation
+    metadata, scores, highlighted (set only when highlight=True), tags, visibility,
+    is_owner (whether the caller owns the entry), generation_status ('ready' once the
+    entry's embeddings and summaries are generated, 'pending' while their generation
     waits or runs, 'failed' when it gave up after its retries; the full-text
     index covers an entry as soon as it is stored)), count (int), language (str),
     stats (only when explain_query=True), and rank_depth_limit (only when the
@@ -199,14 +204,14 @@ Raises:
 _SQLITE_MODE_DESCRIPTIONS = '''Search modes:
 
 match (default): Natural language query. Words joined with implicit AND.
-  Example: "python async" finds docs containing BOTH exact words.
+  Example: "python async" finds docs containing BOTH words (stemmed forms when Stemming is ENABLED).
 
 prefix: Wildcard search with * suffix. Matches word beginnings.
   Example: "search*" matches "searching", "searched", "searchable"
   Note: Hyphenated words are split: "full-text" becomes "full* AND text*"
 
-phrase: Exact phrase matching. Words must appear in exact order.
-  Example: "exact phrase" matches only "exact phrase", not "phrase exact"
+phrase: Phrase matching. Words must appear next to each other, in this order (stemmed forms when Stemming is ENABLED).
+  Example: "exact phrase" matches "exact phrase", not "phrase exact"
   Note: All words including stop words must be present.
 
 boolean: Boolean operators for precise control.
@@ -218,27 +223,29 @@ boolean: Boolean operators for precise control.
 
 
 # PostgreSQL-specific mode descriptions
-_POSTGRESQL_MODE_DESCRIPTIONS = '''Search modes:
+_POSTGRESQL_MODE_DESCRIPTIONS = '''Search modes (the examples show English text under FTS_LANGUAGE=english):
 
-match (default): Natural language query with stemming. Words joined with implicit AND.
-  Example: "running tests" finds docs with "run", "test" (stemmed forms).
+match (default): Natural language query. Words joined with implicit AND.
+  Example: "running tests" finds docs with "run", "test" (stemmed forms, when Stemming is ENABLED).
 
-prefix: Wildcard search with * suffix. Matches word beginnings after stemming.
+prefix: Wildcard search with * suffix. Matches word beginnings (after stemming, when Stemming is ENABLED).
   Example: "search*" matches "searching", "searched" (also "search" via stem)
   Note: Hyphenated words are split: "full-text" becomes "full* AND text*"
 
-phrase: Phrase matching with stemming and stop word handling.
+phrase: Phrase matching: the words in sequence, with the stemming and stop word handling above.
   Example: "running tests" matches "run test" (stemmed forms in sequence)
   Note: Stop words are replaced with positional distance operators.
-  "over the rainbow" matches "over ... rainbow" with correct distance.
+  "lord of the rings" matches "lord ... rings" with correct distance.
 
 boolean: Boolean operators with websearch syntax.
   Syntax:
     - space = AND (implicit, no "AND" keyword exists)
     - "or" = OR operator (case-insensitive: "or", "OR", "Or" all work)
-    - "-" = NOT operator (minus prefix, no "NOT" keyword exists)
-  Example: "python (async or await) -blocking"
-  Grouping: Parentheses for grouping
+    - "-" = NOT operator (minus prefix on one term, no "NOT" keyword exists)
+  Example: "python async -blocking" (python AND async, without blocking); "async or await" (either word)
+  Grouping: none. Parentheses are ignored, and "or" binds looser than AND and "-":
+    "python async or python await" means (python AND async) OR (python AND await),
+    so repeat a shared term on each side of "or".
   IMPORTANT:
     - There is NO "AND" or "NOT" keyword. Use space for AND, "-" for NOT.
     - Words "and"/"not" typed as terms are removed as stop words under English (and configs whose

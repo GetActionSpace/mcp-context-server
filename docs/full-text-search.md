@@ -458,6 +458,7 @@ Call `get_statistics` to check FTS availability:
 - NOT: `-word` (dash prefix)
 - Phrase: `"exact phrase"`
 - Default is AND between terms
+- Grouping: none. Parentheses are ignored and `or` binds looser than AND, so `python async or python await` means `(python AND async) OR (python AND await)`: repeat a shared term on each side of `or`
 
 ### Common Error Messages
 

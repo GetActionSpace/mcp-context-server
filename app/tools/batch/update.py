@@ -87,7 +87,8 @@ async def update_context_batch(
 
     Size limits:
     - Maximum 100 entries per batch
-    - Image limits per entry: at most 10 images, 10MB each, 100MB total
+    - Image limits per entry: at most 10 images; by default 10MB each and 100MB in total
+      (the operator may set other sizes)
     - Tag limits per entry: 100 tags, each at most 128 characters
     - Value under an indexed metadata field: at most 512 characters
 
