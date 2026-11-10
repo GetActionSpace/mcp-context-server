@@ -35,8 +35,9 @@ from tests.repositories._generation_job_cases import read_job
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
-# Claims every job it can from the database file named by its argument, after printing
-# ``ready`` and reading one line from its standard input, and prints the claimed ids.
+# Prints ``ready``, then claims one job from the database file named by its argument for
+# every ``claim`` line it reads from its standard input, printing the claimed id, or null
+# when no job is claimable, until its standard input closes.
 CLAIMING_PROCESS = '''
 import asyncio
 import json
@@ -51,15 +52,13 @@ async def main(db_path: str) -> None:
     backend = create_backend(backend_type='sqlite', db_path=db_path)
     await backend.initialize()
     repository = GenerationJobRepository(backend)
-    claimed = []
     try:
         print('ready', flush=True)
-        sys.stdin.readline()
-        while (job := await repository.claim_next(max_attempts=3, lease_s=120, scope=MAINTENANCE)) is not None:
-            claimed.append(job.context_id)
+        while sys.stdin.readline().strip() == 'claim':
+            job = await repository.claim_next(max_attempts=3, lease_s=120, scope=MAINTENANCE)
+            print(json.dumps(None if job is None else job.context_id), flush=True)
     finally:
         await backend.shutdown()
-    print(json.dumps(claimed), flush=True)
 
 
 asyncio.run(main(sys.argv[1]))
@@ -113,8 +112,16 @@ async def test_states_bind_ids_in_chunks_under_the_variable_limit(scoped_db: Sco
     assert {state for context_id, state in states.items() if context_id not in {ids[0], ids[-1]}} == {'ready'}
 
 
-def _claim_from_two_processes(db_path: Path) -> list[list[str]]:
-    """Start two claiming processes on ``db_path``, let them claim at the same moment and return what each claimed."""
+def _claim_in_rounds(db_path: Path, rounds: int) -> list[tuple[str | None, str | None]]:
+    """Start two claiming processes on ``db_path`` and let both claim one job at the same moment, round after round.
+
+    Each round sends both processes their ``claim`` line before reading either answer, so the
+    two claims race for the same oldest job; a single unbounded claim loop per process would
+    instead let one process take every job while the other waits for the write lock.
+
+    Returns:
+        One pair per round: what the first and the second process claimed, None for nothing.
+    """
     processes = [
         subprocess.Popen(
             [sys.executable, '-c', CLAIMING_PROCESS, str(db_path)],
@@ -133,16 +140,21 @@ def _claim_from_two_processes(db_path: Path) -> list[list[str]]:
             assert process.stdout is not None
             first_line = process.stdout.readline().strip()
             assert first_line == 'ready', process.stderr.read() if process.stderr else first_line
+        answers: list[tuple[str | None, str | None]] = []
+        for _ in range(rounds):
+            for process in processes:
+                assert process.stdin is not None
+                process.stdin.write('claim\n')
+                process.stdin.flush()
+            replies: list[str | None] = []
+            for process in processes:
+                assert process.stdout is not None
+                replies.append(json.loads(process.stdout.readline()))
+            answers.append((replies[0], replies[1]))
         for process in processes:
-            assert process.stdin is not None
-            process.stdin.write('go\n')
-            process.stdin.flush()
-        claimed: list[list[str]] = []
-        for process in processes:
-            stdout, stderr = process.communicate(timeout=180)
+            _, stderr = process.communicate(timeout=180)
             assert process.returncode == 0, stderr
-            claimed.append(json.loads(stdout.strip().splitlines()[-1]))
-        return claimed
+        return answers
     finally:
         for process in processes:
             if process.poll() is None:
@@ -152,16 +164,18 @@ def _claim_from_two_processes(db_path: Path) -> list[list[str]]:
 
 @pytest.mark.asyncio
 async def test_two_processes_never_claim_the_same_job(scoped_db: ScopedDb, temp_db_path: Path) -> None:
-    """Two processes claiming from one database file together claim every job exactly once."""
+    """Two processes claiming from one database file at the same moment claim every job exactly once."""
     ids = await _insert_entries(scoped_db, 200)
     await enqueue(scoped_db, *ids)
 
-    first, second = await asyncio.to_thread(_claim_from_two_processes, temp_db_path)
+    rounds = await asyncio.to_thread(_claim_in_rounds, temp_db_path, len(ids) // 2 + 1)
 
-    assert first
-    assert second
+    first = [claimed for claimed, _ in rounds if claimed is not None]
+    second = [claimed for _, claimed in rounds if claimed is not None]
     assert not set(first) & set(second)
     assert sorted(first + second) == sorted(ids)
+    assert len(first) == len(second) == len(ids) // 2
+    assert rounds[-1] == (None, None)
     for context_id in (first[0], second[0]):
         job = await read_job(scoped_db, context_id)
         assert job is not None
