@@ -25,8 +25,9 @@ from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
-# threadpoolctl's save/set/restore of the BLAS thread count is PROCESS-GLOBAL
-# ("There is no thread level isolation" per its own docs). The hot path fans
+# threadpoolctl's save/set/restore of the BLAS thread count is PROCESS-GLOBAL for
+# the OpenBLAS that NumPy bundles: its "pthreads" and "windows" threading layers
+# share one thread pool across the calling threads. The hot path fans
 # encode/decode/estimate across worker threads (asyncio.to_thread bounded by
 # COMPRESSION_MAX_CONCURRENT), so unsynchronized threadpool_limits blocks
 # would race: one thread's exit can restore the UNPINNED count while a sibling
