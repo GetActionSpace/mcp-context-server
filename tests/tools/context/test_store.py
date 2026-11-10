@@ -20,6 +20,7 @@ import app.tools
 from app.access_scope import AccessScope
 from app.backends.base import BackendAccess
 from app.repositories.context_repository.records import DuplicateCandidate
+from app.tools._store_transaction import StoreOutcome
 from tests.helpers import as_principal
 from tests.tools._read_only import read_only_caller
 
@@ -271,7 +272,7 @@ class TestStoreScope:
             patch(
                 'app.tools.context.store.execute_store_in_transaction',
                 new_callable=AsyncMock,
-                return_value=('dup-id', True, False),
+                return_value=StoreOutcome('dup-id', True, False, 'ready'),
             ) as mock_store,
         ):
             result = await store_context(thread_id='scope-thread', source='user', text='Re-sent text')
@@ -315,7 +316,7 @@ class TestStoreWithoutDeduplication:
             patch(
                 'app.tools.context.store.execute_store_in_transaction',
                 new_callable=AsyncMock,
-                return_value=('new-id', False, True),
+                return_value=StoreOutcome('new-id', False, True, 'ready'),
             ) as mock_store,
         ):
             result = await store_context(thread_id='kb:handbook', source='user', text=text, deduplicate=False)

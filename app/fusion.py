@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING
 from typing import Any
 
 if TYPE_CHECKING:
+    from app.types import HybridFusedResultDict
     from app.types import HybridScoresDict
-    from app.types import HybridSearchResultDict
 
 
 def reciprocal_rank_fusion(
@@ -18,7 +18,7 @@ def reciprocal_rank_fusion(
     semantic_results: list[dict[str, Any]],
     k: int = 60,
     limit: int = 50,
-) -> 'list[HybridSearchResultDict]':
+) -> 'list[HybridFusedResultDict]':
     """Combine FTS and semantic search results using Reciprocal Rank Fusion (RRF).
 
     RRF Formula: score(d) = sum(1 / (k + rank_i(d))) for each result list i
@@ -117,7 +117,7 @@ def reciprocal_rank_fusion(
     ][:limit]
 
     # Build result list with scores breakdown
-    results: list[HybridSearchResultDict] = []
+    results: list[HybridFusedResultDict] = []
     for doc in sorted_docs:
         data = doc['data']
 
@@ -132,7 +132,7 @@ def reciprocal_rank_fusion(
         }
 
         # Build result entry
-        result_entry: HybridSearchResultDict = {
+        result_entry: HybridFusedResultDict = {
             'id': data.get('id'),
             'thread_id': data.get('thread_id', ''),
             'source': data.get('source', ''),

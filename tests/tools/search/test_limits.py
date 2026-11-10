@@ -20,6 +20,7 @@ from pydantic.fields import FieldInfo
 
 import app.tools
 from tests.helpers import argument_errors
+from tests.tools._generation_jobs import InMemoryGenerationJobs
 
 _SEARCH_TOOLS: list[Callable[..., object]] = [
     app.tools.search_context,
@@ -192,6 +193,7 @@ class TestTagsFilterUpperBound:
         at_cap = [f'tag-{i}' for i in range(MAX_FILTER_TAGS)]
         repos = MagicMock()
         repos.context.search_contexts = AsyncMock(return_value=([], {}))
+        repos.generation_jobs = InMemoryGenerationJobs()
         with patch('app.tools.search.browse.ensure_repositories', AsyncMock(return_value=repos)):
             result = await app.tools.search_context(tags=at_cap)
 
@@ -341,6 +343,7 @@ class TestMetadataFilterCapsUpperBound:
         at_cap = [{'key': 'status', 'operator': 'eq', 'value': 'x'}] * MAX_METADATA_FILTERS
         repos = MagicMock()
         repos.context.search_contexts = AsyncMock(return_value=([], {}))
+        repos.generation_jobs = InMemoryGenerationJobs()
         with patch('app.tools.search.browse.ensure_repositories', AsyncMock(return_value=repos)):
             result = await app.tools.search_context(metadata_filters=at_cap)
 

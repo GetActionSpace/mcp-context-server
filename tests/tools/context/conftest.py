@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from app.repositories.context_repository.records import EntryProbe
+from tests.tools._generation_jobs import InMemoryGenerationJobs
 
 
 @pytest.fixture
@@ -68,5 +69,8 @@ def mock_repositories():
     repos.index_nodes = Mock()
     repos.index_nodes.replace_nodes_for_context = AsyncMock(return_value=None)
     repos.index_nodes.get_nodes_for_context = AsyncMock(return_value={})
+
+    # Generation job repository: no entry holds a job, so every entry reads ready.
+    repos.generation_jobs = InMemoryGenerationJobs()
 
     return repos

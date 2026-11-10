@@ -37,6 +37,16 @@ class TestCliArgs:
         actions = {action.dest for action in parser._actions}
         assert {'source_url', 'target_url', 'dry_run', 'report', 'reassign_owner'}.issubset(actions)
 
+    @pytest.mark.parametrize('flag', ['--embed-missing', '--re-embed'])
+    def test_the_embedding_modes_say_they_complete_the_generation_jobs_first(self, flag: str) -> None:
+        """The help of both embedding modes says they complete the deferred writes' generation jobs first."""
+        parser = build_parser()
+        help_text = next(action.help for action in parser._actions if flag in action.option_strings)
+
+        assert help_text is not None
+        assert 'defer_generation' in help_text
+        assert 'generation jobs' in help_text
+
 
 class TestSettingsValidationExitCode:
     """A settings ValidationError exits EX_CONFIG (78) on every CLI path.

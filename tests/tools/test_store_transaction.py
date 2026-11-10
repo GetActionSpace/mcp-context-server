@@ -1,4 +1,4 @@
-"""Tests for execute_store_in_transaction in app.tools._transactions."""
+"""Tests for execute_store_in_transaction in app.tools._store_transaction."""
 
 from typing import cast
 from unittest.mock import AsyncMock
@@ -10,9 +10,11 @@ from fastmcp.exceptions import ToolError
 from app.access_scope import AccessScope
 from app.repositories.embedding_repository.records import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
+from app.tools._store_transaction import StoreOutcome
+from app.tools._store_transaction import execute_store_in_transaction
 from app.tools._transactions import EmbeddingsReconcileRequiredError
-from app.tools._transactions import execute_store_in_transaction
 from tests.helpers import LOCAL_SCOPE
+from tests.tools._generation_jobs import InMemoryGenerationJobs
 
 
 class TestExecuteStoreInTransaction:
@@ -29,6 +31,7 @@ class TestExecuteStoreInTransaction:
         repos.images.replace_images_for_context = AsyncMock()
         repos.embeddings.exists = AsyncMock(return_value=False)
         repos.embeddings.store_chunked = AsyncMock()
+        repos.generation_jobs = InMemoryGenerationJobs()
         return repos
 
     @pytest.fixture
@@ -43,7 +46,7 @@ class TestExecuteStoreInTransaction:
         self, mock_repos: MagicMock, mock_txn: MagicMock,
     ) -> None:
         """Store a new entry with no tags, images, or embeddings."""
-        context_id, was_updated, embedding_stored = await execute_store_in_transaction(
+        outcome = await execute_store_in_transaction(
             mock_repos, mock_txn,
             scope=LOCAL_SCOPE,
             visibility='private',
@@ -56,13 +59,13 @@ class TestExecuteStoreInTransaction:
             tags=None,
             validated_images=[],
             images_provided=False,
-            deduplicate=True,
+            deduplicate=True, defer_generation=False,
             chunk_embeddings=None,
             embedding_model='test-model',
         )
-        assert context_id == '42'
-        assert was_updated is False
-        assert embedding_stored is False
+        assert outcome.context_id == '42'
+        assert outcome.was_updated is False
+        assert outcome.embedding_stored is False
         mock_repos.context.store_with_deduplication.assert_called_once()
 
     @pytest.mark.asyncio
@@ -76,7 +79,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=['tag1', 'tag2'], validated_images=[], images_provided=False, deduplicate=True,
+            tags=['tag1', 'tag2'], validated_images=[], images_provided=False, deduplicate=True, defer_generation=False,
             chunk_embeddings=None, embedding_model='m',
         )
         mock_repos.tags.store_tags.assert_called_once_with('42', ['tag1', 'tag2'], txn=mock_txn, scope=LOCAL_SCOPE)
@@ -94,7 +97,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=['tag1'], validated_images=[], images_provided=False, deduplicate=True,
+            tags=['tag1'], validated_images=[], images_provided=False, deduplicate=True, defer_generation=False,
             chunk_embeddings=None, embedding_model='m',
         )
         mock_repos.tags.replace_tags_for_context.assert_called_once_with(42, ['tag1'], txn=mock_txn, scope=LOCAL_SCOPE)
@@ -117,7 +120,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=[], validated_images=[], images_provided=False, deduplicate=True,
+            tags=[], validated_images=[], images_provided=False, deduplicate=True, defer_generation=False,
             chunk_embeddings=None, embedding_model='m',
         )
         mock_repos.tags.replace_tags_for_context.assert_called_once_with('42', [], txn=mock_txn, scope=LOCAL_SCOPE)
@@ -135,7 +138,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[], images_provided=False, deduplicate=True,
+            tags=None, validated_images=[], images_provided=False, deduplicate=True, defer_generation=False,
             chunk_embeddings=None, embedding_model='m',
         )
         mock_repos.tags.replace_tags_for_context.assert_not_called()
@@ -153,7 +156,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[], images_provided=True, deduplicate=True,
+            tags=None, validated_images=[], images_provided=True, deduplicate=True, defer_generation=False,
             chunk_embeddings=None, embedding_model='m',
         )
         mock_repos.images.replace_images_for_context.assert_called_once_with('42', [], txn=mock_txn, scope=LOCAL_SCOPE)
@@ -174,7 +177,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[], images_provided=False, deduplicate=True,
+            tags=None, validated_images=[], images_provided=False, deduplicate=True, defer_generation=False,
             chunk_embeddings=None, embedding_model='m',
         )
         mock_repos.images.replace_images_for_context.assert_not_called()
@@ -192,8 +195,6 @@ class TestExecuteStoreInTransaction:
         may describe different text; the transaction must abort via the
         reconcile signal so the caller regenerates it for THIS text.
         """
-        from app.tools._transactions import EmbeddingsReconcileRequiredError
-
         mock_repos.context.store_with_deduplication = AsyncMock(return_value=('42', False))
         with pytest.raises(EmbeddingsReconcileRequiredError):
             await execute_store_in_transaction(
@@ -202,7 +203,7 @@ class TestExecuteStoreInTransaction:
                 visibility='private',
                 thread_id='t', source='user', content_type='text',
                 text_content='text', metadata_str=None, summary='reused summary',
-                tags=None, validated_images=[], images_provided=False, deduplicate=True,
+                tags=None, validated_images=[], images_provided=False, deduplicate=True, defer_generation=False,
                 chunk_embeddings=None, embedding_model='m',
                 summary_pending=True,
             )
@@ -213,16 +214,16 @@ class TestExecuteStoreInTransaction:
     ) -> None:
         """New entry stores embeddings and returns embedding_stored=True."""
         chunk_embeddings = cast(list[ChunkEmbedding], [MagicMock()])
-        context_id, was_updated, embedding_stored = await execute_store_in_transaction(
+        outcome = await execute_store_in_transaction(
             mock_repos, mock_txn,
             scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[], images_provided=False, deduplicate=True,
+            tags=None, validated_images=[], images_provided=False, deduplicate=True, defer_generation=False,
             chunk_embeddings=chunk_embeddings, embedding_model='m',
         )
-        assert embedding_stored is True
+        assert outcome.embedding_stored is True
         mock_repos.embeddings.store_chunked.assert_called_once()
 
     @pytest.mark.asyncio
@@ -233,16 +234,16 @@ class TestExecuteStoreInTransaction:
         mock_repos.context.store_with_deduplication = AsyncMock(return_value=(42, True))
         mock_repos.embeddings.exists = AsyncMock(return_value=True)
         chunk_embeddings = cast(list[ChunkEmbedding], [MagicMock()])
-        context_id, was_updated, embedding_stored = await execute_store_in_transaction(
+        outcome = await execute_store_in_transaction(
             mock_repos, mock_txn,
             scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[], images_provided=False, deduplicate=True,
+            tags=None, validated_images=[], images_provided=False, deduplicate=True, defer_generation=False,
             chunk_embeddings=chunk_embeddings, embedding_model='m',
         )
-        assert embedding_stored is False
+        assert outcome.embedding_stored is False
         mock_repos.embeddings.store_chunked.assert_not_called()
 
     @pytest.mark.asyncio
@@ -258,7 +259,7 @@ class TestExecuteStoreInTransaction:
                 visibility='private',
                 thread_id='t', source='user', content_type='text',
                 text_content='text', metadata_str=None, summary=None,
-                tags=None, validated_images=[], images_provided=False, deduplicate=True,
+                tags=None, validated_images=[], images_provided=False, deduplicate=True, defer_generation=False,
                 chunk_embeddings=None, embedding_model='m',
             )
 
@@ -281,7 +282,7 @@ class TestExecuteStoreInTransaction:
                 visibility='private',
                 thread_id='t', source='user', content_type='text',
                 text_content='reconcile me', metadata_str=None, summary=None,
-                tags=None, validated_images=[], images_provided=False, deduplicate=True,
+                tags=None, validated_images=[], images_provided=False, deduplicate=True, defer_generation=False,
                 chunk_embeddings=None, embedding_model='m',
                 embedding_generation_enabled=True,
             )
@@ -295,18 +296,18 @@ class TestExecuteStoreInTransaction:
     ) -> None:
         """A dedup UPDATE with skipped embeddings does NOT trigger reconciliation."""
         mock_repos.context.store_with_deduplication = AsyncMock(return_value=('42', True))
-        _, was_updated, embedding_stored = await execute_store_in_transaction(
+        outcome = await execute_store_in_transaction(
             mock_repos, mock_txn,
             scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[], images_provided=False, deduplicate=True,
+            tags=None, validated_images=[], images_provided=False, deduplicate=True, defer_generation=False,
             chunk_embeddings=None, embedding_model='m',
             embedding_generation_enabled=True,
         )
-        assert was_updated is True
-        assert embedding_stored is False
+        assert outcome.was_updated is True
+        assert outcome.embedding_stored is False
 
     @pytest.mark.asyncio
     async def test_store_no_reconcile_when_embeddings_present(
@@ -314,18 +315,18 @@ class TestExecuteStoreInTransaction:
     ) -> None:
         """A new INSERT that already carries embeddings does NOT reconcile."""
         chunk_embeddings = cast(list[ChunkEmbedding], [MagicMock()])
-        _, was_updated, embedding_stored = await execute_store_in_transaction(
+        outcome = await execute_store_in_transaction(
             mock_repos, mock_txn,
             scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[], images_provided=False, deduplicate=True,
+            tags=None, validated_images=[], images_provided=False, deduplicate=True, defer_generation=False,
             chunk_embeddings=chunk_embeddings, embedding_model='m',
             embedding_generation_enabled=True,
         )
-        assert was_updated is False
-        assert embedding_stored is True
+        assert outcome.was_updated is False
+        assert outcome.embedding_stored is True
         mock_repos.embeddings.store_chunked.assert_called_once()
 
     @pytest.mark.asyncio
@@ -333,18 +334,18 @@ class TestExecuteStoreInTransaction:
         self, mock_repos: MagicMock, mock_txn: MagicMock,
     ) -> None:
         """With generation disabled (default), a new INSERT with no embeddings is allowed."""
-        _, was_updated, embedding_stored = await execute_store_in_transaction(
+        outcome = await execute_store_in_transaction(
             mock_repos, mock_txn,
             scope=LOCAL_SCOPE,
             visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[], images_provided=False, deduplicate=True,
+            tags=None, validated_images=[], images_provided=False, deduplicate=True, defer_generation=False,
             chunk_embeddings=None, embedding_model='m',
             embedding_generation_enabled=False,
         )
-        assert was_updated is False
-        assert embedding_stored is False
+        assert outcome.was_updated is False
+        assert outcome.embedding_stored is False
         mock_repos.embeddings.store_chunked.assert_not_called()
 
     @pytest.mark.asyncio
@@ -359,7 +360,7 @@ class TestExecuteStoreInTransaction:
             visibility='private',
             thread_id='t', source='user', content_type='multimodal',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=images, images_provided=True, deduplicate=True,
+            tags=None, validated_images=images, images_provided=True, deduplicate=True, defer_generation=False,
             chunk_embeddings=None, embedding_model='m',
         )
         mock_repos.images.store_images.assert_called_once_with('42', images, txn=mock_txn, scope=LOCAL_SCOPE)
@@ -377,7 +378,7 @@ class TestExecuteStoreInTransaction:
             visibility='public',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[], images_provided=False, deduplicate=True,
+            tags=None, validated_images=[], images_provided=False, deduplicate=True, defer_generation=False,
             chunk_embeddings=None, embedding_model='m',
         )
         call = mock_repos.context.store_with_deduplication.await_args
@@ -400,7 +401,7 @@ class TestExecuteStoreInTransaction:
             author_group_grants=frozenset({'team-x'}),
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[], images_provided=False, deduplicate=True,
+            tags=None, validated_images=[], images_provided=False, deduplicate=True, defer_generation=False,
             chunk_embeddings=None, embedding_model='m',
         )
         assert mock_repos.grants.store_group_read_grants.await_count == expected_grants
@@ -427,6 +428,7 @@ class TestExecuteStoreWithoutDeduplication:
         repos.embeddings.exists = AsyncMock(return_value=True)
         repos.embeddings.store_chunked = AsyncMock()
         repos.index_nodes.replace_nodes_for_context = AsyncMock()
+        repos.generation_jobs = InMemoryGenerationJobs()
         return repos
 
     @pytest.fixture
@@ -441,15 +443,15 @@ class TestExecuteStoreWithoutDeduplication:
         """The entry is inserted by insert_entry with the caller's scope; the deduplicating store never runs."""
         bob = AccessScope('bob', frozenset({'team-x'}))
 
-        result = await execute_store_in_transaction(
+        outcome = await execute_store_in_transaction(
             mock_repos, mock_txn, scope=bob, visibility='public',
             thread_id='kb:handbook', source='agent', content_type='text',
             text_content='same text twice', metadata_str='{"k": 1}', summary='a summary',
-            tags=None, validated_images=[], images_provided=False, deduplicate=False,
+            tags=None, validated_images=[], images_provided=False, deduplicate=False, defer_generation=False,
             chunk_embeddings=None, embedding_model='m',
         )
 
-        assert result == ('43', False, False)
+        assert outcome == StoreOutcome(context_id='43', was_updated=False, embedding_stored=False, generation_status='ready')
         mock_repos.context.insert_entry.assert_awaited_once_with(
             'kb:handbook', 'agent', 'text', 'same text twice',
             scope=bob, visibility='public', metadata='{"k": 1}', summary='a summary', txn=mock_txn,
@@ -463,17 +465,17 @@ class TestExecuteStoreWithoutDeduplication:
         chunk_embeddings = cast(list[ChunkEmbedding], [MagicMock()])
         index_nodes = cast(list[IndexNodeRow], [MagicMock()])
 
-        _, was_updated, embedding_stored = await execute_store_in_transaction(
+        outcome = await execute_store_in_transaction(
             mock_repos, mock_txn, scope=LOCAL_SCOPE, visibility='private',
             author_group_grants=frozenset({'team-x'}),
             thread_id='kb:handbook', source='agent', content_type='multimodal',
             text_content='text', metadata_str=None, summary=None,
-            tags=['guide'], validated_images=images, images_provided=True, deduplicate=False,
+            tags=['guide'], validated_images=images, images_provided=True, deduplicate=False, defer_generation=False,
             chunk_embeddings=chunk_embeddings, embedding_model='m',
             embedding_generation_enabled=True, index_nodes=index_nodes,
         )
 
-        assert (was_updated, embedding_stored) == (False, True)
+        assert (outcome.was_updated, outcome.embedding_stored) == (False, True)
         mock_repos.grants.store_group_read_grants.assert_awaited_once_with(
             '43', frozenset({'team-x'}), scope=LOCAL_SCOPE, txn=mock_txn,
         )
@@ -497,7 +499,7 @@ class TestExecuteStoreWithoutDeduplication:
                 mock_repos, mock_txn, scope=LOCAL_SCOPE, visibility='private',
                 thread_id='kb:handbook', source='agent', content_type='text',
                 text_content='text', metadata_str=None, summary=None,
-                tags=None, validated_images=[], images_provided=False, deduplicate=False,
+                tags=None, validated_images=[], images_provided=False, deduplicate=False, defer_generation=False,
                 chunk_embeddings=None, embedding_model='m', embedding_generation_enabled=True,
             )
         mock_repos.embeddings.store_chunked.assert_not_awaited()
@@ -505,14 +507,14 @@ class TestExecuteStoreWithoutDeduplication:
     @pytest.mark.asyncio
     async def test_deduplicate_true_runs_the_deduplicating_store(self, mock_repos: MagicMock, mock_txn: MagicMock) -> None:
         """With deduplicate true the deduplicating store decides and insert_entry never runs."""
-        context_id, was_updated, _ = await execute_store_in_transaction(
+        outcome = await execute_store_in_transaction(
             mock_repos, mock_txn, scope=LOCAL_SCOPE, visibility='private',
             thread_id='t', source='user', content_type='text',
             text_content='text', metadata_str=None, summary=None,
-            tags=None, validated_images=[], images_provided=False, deduplicate=True,
+            tags=None, validated_images=[], images_provided=False, deduplicate=True, defer_generation=False,
             chunk_embeddings=None, embedding_model='m',
         )
 
-        assert (context_id, was_updated) == ('42', True)
+        assert (outcome.context_id, outcome.was_updated) == ('42', True)
         mock_repos.context.store_with_deduplication.assert_awaited_once()
         mock_repos.context.insert_entry.assert_not_awaited()

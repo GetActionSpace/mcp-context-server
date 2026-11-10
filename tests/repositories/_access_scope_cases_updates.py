@@ -1,4 +1,4 @@
-"""Two-principal cases of the update statements and the in-transaction write gate (S6, W1-W5).
+"""Two-principal cases of the update statements and the in-transaction write gate (S6, W1-W6).
 
 Every update statement re-asserts the caller's access inside the statement itself: a
 content edit requires the caller to own the row or hold a write grant on it, and a
@@ -23,6 +23,8 @@ for the writes, what the rows hold afterwards through raw SQL.
   may modify, and only those rows change their content type.
 - W5: ``get_content_type`` reads the content type of exactly the rows the caller may
   modify, outside and inside a transaction.
+- W6: ``has_summary`` reports whether a summary is stored for exactly the rows the caller
+  may modify, outside and inside a transaction.
 """
 
 import json
@@ -331,6 +333,35 @@ def _expected_content_types(scope_name: str) -> tuple[Outcome, ...]:
     )
 
 
+async def _summarize_every_row(db: ScopedDb) -> None:
+    """Store a summary on every seed row through the seed channel."""
+    await db.execute('UPDATE context_entries SET summary = ?', ['A stored summary.'])
+
+
+async def _summary_presence_each(db: ScopedDb, scope: Scope) -> tuple[Outcome, ...]:
+    """Ask whether every target holds a summary as the scope, after every seed row received one."""
+    await _summarize_every_row(db)
+    outcomes: list[Outcome] = [
+        (label, await db.repos.context.has_summary(_id_of(db, label), scope=scope)) for label in _TARGET_LABELS
+    ]
+    return tuple(outcomes)
+
+
+async def _summary_presence_each_in_transaction(db: ScopedDb, scope: Scope) -> tuple[Outcome, ...]:
+    """Ask whether every target holds a summary on a transaction connection as the scope."""
+    await _summarize_every_row(db)
+    async with db.backend.begin_transaction(access_scope=scope) as txn:
+        outcomes: list[Outcome] = [
+            (label, await db.repos.context.has_summary(_id_of(db, label), scope=scope, txn=txn)) for label in _TARGET_LABELS
+        ]
+        return tuple(outcomes)
+
+
+def _expected_summary_presence(scope_name: str) -> tuple[Outcome, ...]:
+    """True for every row the scope may modify, None for every other target."""
+    return tuple((label, True if label in WRITABLE[scope_name] else None) for label in _TARGET_LABELS)
+
+
 UPDATE_CASES: tuple[AccessCase, ...] = (
     AccessCase('S6', _exists_each, per_scope(_expected_writable_flags)),
     AccessCase('S6', _exists_each_in_transaction, per_scope(_expected_writable_flags), variant='in-transaction'),
@@ -342,6 +373,10 @@ UPDATE_CASES: tuple[AccessCase, ...] = (
     AccessCase('W4', _touch_and_retype, per_scope(_expected_touch_and_retype)),
     AccessCase('W5', _content_type_each, per_scope(_expected_content_types)),
     AccessCase('W5', _content_type_each_in_transaction, per_scope(_expected_content_types), variant='in-transaction'),
+    AccessCase('W6', _summary_presence_each, per_scope(_expected_summary_presence)),
+    AccessCase(
+        'W6', _summary_presence_each_in_transaction, per_scope(_expected_summary_presence), variant='in-transaction',
+    ),
 )
 
 # The cases only row-level security runs: the database enforces the publish right, which the

@@ -20,6 +20,15 @@ Scope -- model change at the SAME dimension:
     database at the new dimension, re-store the data); see
     ``docs/migration-v2-to-v3.md``.
 
+Generation jobs:
+    Before the re-embed, the command completes the generation jobs that
+    writes made with ``defer_generation`` left outstanding, failed jobs
+    included (:mod:`app.cli._generation_drain`), with the configured
+    embedding and summary providers. The re-embed then covers the entries
+    that hold no job, the completed jobs' entries among them: an entry whose
+    job a running server holds, or whose attempt failed, keeps its job and
+    is left to it.
+
 Layouts:
     Works for both fp32 and compressed databases. The delete and store paths
     branch on ``ENABLE_EMBEDDING_COMPRESSION`` internally
@@ -56,8 +65,17 @@ from app.cli._embedding_introspect import embedding_metadata_table_exists
 from app.cli._embedding_runtime import EmbeddingPipelineUnavailableError
 from app.cli._embedding_runtime import initialize_cli_embedding_pipeline
 from app.cli._embedding_runtime import shutdown_cli_embedding_pipeline
+from app.cli._generation_drain import HOLDS_NO_JOB
+from app.cli._generation_drain import JobCounts
+from app.cli._generation_drain import complete_generation_jobs
+from app.cli._generation_drain import count_generation_jobs
+from app.cli._generation_drain import generation_jobs_table_exists
+from app.cli._summary_runtime import SummaryProviderUnavailableError
+from app.cli._summary_runtime import initialize_cli_summary_provider
+from app.cli._summary_runtime import shutdown_cli_summary_provider
 from app.embeddings.base import EmbeddingProvider
 from app.settings import get_settings
+from app.summary.base import SummaryProvider
 
 logger = logging.getLogger(__name__)
 
@@ -70,12 +88,15 @@ def _print_warning(*, source_url: str, dry_run: bool) -> None:
         'and regenerates it with the configured EMBEDDING_MODEL, issuing',
         'live embedding-provider requests for every entry. Cost (API',
         'requests, latency) scales with the TOTAL number of entries.',
+        'Outstanding generation jobs of deferred writes are completed',
+        'first, which also calls the summary provider when summary',
+        'generation is enabled.',
         'Back up the database before running without --dry-run.',
         '-' * 60,
         f'Source: {source_url}',
     ]
     if dry_run:
-        lines.append('DRY-RUN: provider is not called; only the plan is reported')
+        lines.append('DRY-RUN: providers are not called; only the plan is reported')
     lines.append('=' * 60)
     print('\n'.join(lines), file=sys.stderr)
 
@@ -116,7 +137,7 @@ def run_reembed(source_url: str, *, dry_run: bool) -> int:
 
 
 async def _reembed_async(source_url: str, *, dry_run: bool) -> int:
-    """Async body: validate, then delete + regenerate per entry atomically.
+    """Async body: validate, complete the generation jobs, then delete + regenerate per entry atomically.
 
     Defers imports of ``app.tools._generation`` and ``app.repositories`` until
     runtime so the module can be imported by the CLI dispatcher without
@@ -128,7 +149,7 @@ async def _reembed_async(source_url: str, *, dry_run: bool) -> int:
 
     Returns:
         Process exit code: 0 on success or no-op, 1 on a structural or
-        configuration error.
+        configuration error or when a provider the work needs is unavailable.
     """
     masked = mask_credentials(source_url)
     backend = make_backend(source_url)
@@ -169,13 +190,18 @@ async def _reembed_async(source_url: str, *, dry_run: bool) -> int:
             return 1
 
         existing_models = await distinct_embedding_models(backend)
-        entries = await _find_all_entries(backend)
+        # A database prepared before deferred generation has no job table and
+        # therefore no jobs; every entry is then re-embedded.
+        jobs_table = await generation_jobs_table_exists(backend)
+        jobs = await count_generation_jobs(backend) if jobs_table else JobCounts(pending=0, failed=0)
+        entries = await _find_all_entries(backend, skip_job_holders=jobs_table)
 
         print(
-            f'Re-embedding {len(entries)} entries with model '
-            f'{configured_model!r} on {masked}.',
+            f'Re-embedding {len(entries)} entries without a generation job, with model '
+            f'{configured_model!r}, on {masked}.',
             file=sys.stderr,
         )
+        print(f'Found {jobs.describe()}.', file=sys.stderr)
         changing_models = sorted(m for m in existing_models if m != configured_model)
         if changing_models:
             print(
@@ -183,24 +209,33 @@ async def _reembed_async(source_url: str, *, dry_run: bool) -> int:
                 f'replacing all with {configured_model!r}.',
                 file=sys.stderr,
             )
-        if not entries:
+        if not entries and not jobs.total:
             return 0
         if dry_run:
             print(
                 '[DRY-RUN] Provider not called; rerun without --dry-run '
-                'to re-embed.',
+                'to complete the generation jobs and re-embed.',
                 file=sys.stderr,
             )
             return 0
 
         provider: EmbeddingProvider | None = None
+        summary_provider: SummaryProvider | None = None
         try:
-            provider = await initialize_cli_embedding_pipeline()
-        except EmbeddingPipelineUnavailableError as exc:
-            print(f'[ERROR] {exc}', file=sys.stderr)
-            return 1
+            try:
+                provider = await initialize_cli_embedding_pipeline()
+                if jobs.total:
+                    summary_provider = await initialize_cli_summary_provider()
+            except (EmbeddingPipelineUnavailableError, SummaryProviderUnavailableError) as exc:
+                print(f'[ERROR] {exc}', file=sys.stderr)
+                return 1
 
-        try:
+            if jobs.total:
+                await complete_generation_jobs(repos, max_attempts=settings.generation_jobs.max_attempts)
+                # The completed jobs' entries are re-embedded with the rest; the
+                # entries whose job remains are left to it.
+                entries = await _find_all_entries(backend, skip_job_holders=True)
+
             start = time.perf_counter()
             succeeded = 0
             for i, (entry_id, text) in enumerate(entries, start=1):
@@ -253,12 +288,13 @@ async def _reembed_async(source_url: str, *, dry_run: bool) -> int:
             )
             return 0
         finally:
+            await shutdown_cli_summary_provider(summary_provider)
             await shutdown_cli_embedding_pipeline(provider)
     finally:
         await shutdown_backend(backend)
 
 
-async def _find_all_entries(backend: StorageBackend) -> list[tuple[str, str]]:
+async def _find_all_entries(backend: StorageBackend, *, skip_job_holders: bool) -> list[tuple[str, str]]:
     """Find every context_entries row with non-NULL ``text_content``.
 
     ``ORDER BY ce.id`` produces a deterministic order for stable progress
@@ -266,29 +302,29 @@ async def _find_all_entries(backend: StorageBackend) -> list[tuple[str, str]]:
 
     Args:
         backend: Storage backend to query.
+        skip_job_holders: Leave out the entries that hold a generation job,
+            whose job generates their embeddings; False only for a database
+            without the ``generation_jobs`` table.
 
     Returns:
         List of ``(id, text_content)`` tuples for every row that has a
-        non-NULL ``text_content`` (the full corpus, regardless of whether the
-        row currently has embeddings).
+        non-NULL ``text_content``, regardless of whether the row currently
+        has embeddings.
     """
+    job_filter = f' AND {HOLDS_NO_JOB}' if skip_job_holders else ''
+    sql = (
+        'SELECT ce.id, ce.text_content FROM context_entries ce '
+        f'WHERE ce.text_content IS NOT NULL{job_filter} ORDER BY ce.id ASC'
+    )
     if backend.backend_type == 'sqlite':
 
         def _read_sqlite(conn: sqlite3.Connection) -> list[tuple[str, str]]:
-            cursor = conn.execute(
-                'SELECT id, text_content FROM context_entries '
-                'WHERE text_content IS NOT NULL ORDER BY id ASC',
-            )
-            return [(str(r[0]), str(r[1])) for r in cursor.fetchall()]
+            return [(str(r[0]), str(r[1])) for r in conn.execute(sql).fetchall()]
 
         return await backend.execute_read(_read_sqlite, access_scope=MAINTENANCE)
 
     async def _read_pg(conn: asyncpg.Connection) -> list[tuple[str, str]]:
-        rows = await conn.fetch(
-            'SELECT id, text_content FROM context_entries '
-            'WHERE text_content IS NOT NULL ORDER BY id ASC',
-        )
-        return [(str(r['id']), str(r['text_content'])) for r in rows]
+        return [(str(r['id']), str(r['text_content'])) for r in await conn.fetch(sql)]
 
     return await backend.execute_read(cast(Any, _read_pg), access_scope=MAINTENANCE)
 

@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from app.settings import get_settings
+from tests.tools._generation_jobs import InMemoryGenerationJobs
 
 QUERY_INSTRUCTION = 'Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:'
 
@@ -49,6 +50,7 @@ def _mock_repos() -> MagicMock:
     repos.embeddings.search = AsyncMock(return_value=([], {}))
     repos.tags.get_tags_for_context = AsyncMock(return_value=[])
     repos.images.get_images_for_context = AsyncMock(return_value=[])
+    repos.generation_jobs = InMemoryGenerationJobs()
     return repos
 
 

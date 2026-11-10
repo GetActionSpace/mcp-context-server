@@ -9,8 +9,8 @@ rules hold:
    ``entry_exists`` keeps the base name because it locks the row it reads.
 2. Every ``_readable`` call passes string literals for a routable table and its alias,
    so the relation a statement reads is visible in its source.
-3. Child writers and system methods never call ``_readable``: they write, or run outside
-   any request, and name their tables directly.
+3. Child writers, worker methods and system methods never call ``_readable``: they write,
+   or run outside any request, and name their tables directly.
 4. In the methods rule 1 covers, every relation an f-string interpolates after ``FROM``
    or ``JOIN`` is a name bound to a ``self._readable(...)`` call; to an f-string that
    starts with such a relation and reads only such relations after its own ``FROM`` and
@@ -56,7 +56,7 @@ RELATION_FOLLOWS = re.compile(r'\b(?:FROM|JOIN)\s*$', re.IGNORECASE)
 LOCKING_READ = 'app.repositories.context_repository.reads:ContextReadMixin.entry_exists'
 
 ROUTED = frozenset({*GUARDED, Seam.CHILD_BY_TRUSTED_ID})
-UNROUTED = frozenset({Seam.CHILD_WRITER, Seam.SYSTEM})
+UNROUTED = frozenset({Seam.CHILD_WRITER, Seam.WORKER, Seam.SYSTEM})
 ROUTED_KEYS = [key for key in registry_keys(*ROUTED) if key != LOCKING_READ]
 
 ALIAS = re.compile(r'[a-z_][a-z0-9_]*')
@@ -295,7 +295,7 @@ def test_seam_call_passes_literal_table_and_alias(location: str) -> None:
 
 @pytest.mark.parametrize('key', registry_keys(*UNROUTED))
 def test_child_writers_and_system_methods_never_route(key: str) -> None:
-    """A writer or a system method names its tables directly, never through the seam."""
+    """A writer, a worker method or a system method names its tables directly, never through the seam."""
     node: FunctionNode = repository_methods()[key][0]
 
     assert _seam_calls(node) == []

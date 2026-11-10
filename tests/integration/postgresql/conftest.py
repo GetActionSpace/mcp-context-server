@@ -21,6 +21,9 @@ no listening interface beyond loopback for the test session lifetime and
 its data directory is mounted on tmpfs. The same holds for the login roles
 ``initdb/02-roles.sql`` creates, whose password is the role name;
 :func:`pg_rls_db` hands out one connection string per role.
+
+On that database, :func:`matrix_db` seeds the row-level security policy matrix of
+:mod:`tests.integration.postgresql._rls_matrix`, and :func:`app_conn` connects to it as the request login role ``mcp_app``.
 """
 
 from __future__ import annotations
@@ -46,6 +49,10 @@ import pytest
 import pytest_asyncio
 
 from tests.helpers import RlsCredentials
+from tests.integration.postgresql._rls_matrix import rls_matrix_db
+from tests.integration.postgresql._rls_urls import RlsUrls
+from tests.repositories._access_scope_cases import Layout
+from tests.repositories._access_scope_cases import ScopedDb
 
 COMPOSE_FILE = Path(__file__).parent / 'docker-compose.test.yml'
 
@@ -368,26 +375,6 @@ async def pg_non_default_schema_db(pg_test_url: str) -> AsyncIterator[str]:
         await admin.close()
 
 
-@dataclass(frozen=True, slots=True)
-class RlsUrls:
-    """Connection strings of one row-level security test database, one per role.
-
-    Attributes:
-        admin: ``mcp_test``, the bootstrap superuser: database administration and the
-            oracle channel that reads every row whatever the policies say.
-        maintenance: ``mcp_owner``, the non-superuser login role that owns the database
-            and therefore every table the maintenance backend creates in it.
-        app: ``mcp_app``, the request login role, an inheriting member of the policy role
-            ``mcp_context_request``.
-        outsider: ``mcp_outsider``, a login role that is a member of no role.
-    """
-
-    admin: str
-    maintenance: str
-    app: str
-    outsider: str
-
-
 _RLS_DATABASE = 'mcp_rls'
 
 # What a server on the ``pg_rls_db`` database starts with to run with row-level security:
@@ -435,6 +422,37 @@ async def pg_rls_db(pg_test_url: str) -> AsyncIterator[RlsUrls]:
             await admin.execute(f'DROP DATABASE IF EXISTS {_RLS_DATABASE} WITH (FORCE)')
     finally:
         await admin.close()
+
+
+@pytest_asyncio.fixture
+async def matrix_db(
+    request: pytest.FixtureRequest, pg_rls_db: RlsUrls, monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[ScopedDb]:
+    """The row-level security policy matrix database of :func:`~tests.integration.postgresql._rls_matrix.rls_matrix_db`.
+
+    The layout is the one a test passes by parametrizing this fixture indirectly, and ``fp32`` otherwise.
+
+    Yields:
+        The seeded database with a pending job on every seed entry and the row-level security objects installed.
+    """
+    layout: Layout = getattr(request, 'param', 'fp32')
+    async with rls_matrix_db(pg_rls_db, layout=layout, monkeypatch=monkeypatch) as db:
+        yield db
+
+
+@pytest_asyncio.fixture
+async def app_conn(matrix_db: ScopedDb, pg_rls_db: RlsUrls) -> AsyncIterator[asyncpg.Connection]:
+    """A raw connection of the request login role ``mcp_app`` to the matrix database.
+
+    Yields:
+        The open connection, closed afterwards.
+    """
+    _ = matrix_db
+    conn = await asyncpg.connect(pg_rls_db.app)
+    try:
+        yield conn
+    finally:
+        await conn.close()
 
 
 async def apply_non_default_search_path(conn: asyncpg.Connection) -> None:

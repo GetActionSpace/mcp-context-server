@@ -228,7 +228,11 @@ class TestUpdateContextBatchWithSummary:
             patch('app.tools.batch.update.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
-            patch('app.tools.batch.update.generate_index_nodes_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch(
+                'app.tools.batch._update_generation.generate_index_nodes_with_timeout',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
             patch('app.tools._generation.settings', _settings_with_node_summaries(True)),
         ):
             result = await update_context_batch(updates=updates, atomic=True)
@@ -260,7 +264,11 @@ class TestUpdateContextBatchWithSummary:
             patch('app.tools.batch.update.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.compute_summary_total_timeout', return_value=1.0),
-            patch('app.tools.batch.update.generate_index_nodes_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch(
+                'app.tools.batch._update_generation.generate_index_nodes_with_timeout',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
             patch('app.tools._generation.settings', _settings_with_node_summaries(False)),
         ):
             result = await update_context_batch(updates=updates, atomic=True)

@@ -62,6 +62,7 @@ ROUTABLE_TABLES = frozenset({
     'vec_context_embeddings',
     'vec_context_embeddings_compressed',
     'context_index_nodes',
+    'generation_jobs',
 })
 
 _RELATION_ALIAS = re.compile(r'[a-z_][a-z0-9_]*')

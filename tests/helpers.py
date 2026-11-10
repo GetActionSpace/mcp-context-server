@@ -284,6 +284,19 @@ def patch_database_setup_steps() -> AbstractContextManager[Any]:
     )
 
 
+def patch_generation_worker_phase() -> AbstractContextManager[Any]:
+    """Neutralize the generation worker start and stop the server lifespan runs.
+
+    A lifespan test that runs on a MagicMock backend with an active embedding or summary
+    provider would otherwise start a worker whose first statement awaits that backend and
+    raises ``object MagicMock can't be used in 'await'``.
+
+    Returns:
+        The ``patch.multiple`` context manager replacing both phases in ``app.server``.
+    """
+    return patch.multiple('app.server', start_generation_worker=AsyncMock(), stop_generation_worker=AsyncMock())
+
+
 def argument_errors(exc_info: 'pytest.ExceptionInfo[FastMCPValidationError]') -> 'list[ErrorDetails]':
     """Return the pydantic error details behind a FastMCP argument-validation failure.
 

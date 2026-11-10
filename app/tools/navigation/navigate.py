@@ -5,8 +5,8 @@ carries ``char_start``/``char_end`` in the Unicode code-point offset contract th
 ``read_context_range`` reads, and a node's ``node_id`` addresses the same span
 there -- navigate, then extract.
 
-The response reports the entry's ``visibility`` and whether the caller owns it
-(``is_owner``).
+The response reports the entry's ``visibility``, whether the caller owns it
+(``is_owner``) and the state of its generated outputs (``generation_status``).
 """
 
 import asyncio
@@ -28,6 +28,7 @@ from app.services.text_lines import should_offload_line_scan
 from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.tools._responses import entry_access_fields
+from app.tools._responses import generation_statuses
 from app.types import EntryAccessFields
 from app.types import NavigateContextResultDict
 from app.types import OutlineNodeDict
@@ -58,7 +59,7 @@ def _outline_to_dict(node: OutlineNode, stored_nodes: StoredNodeSummaries) -> Ou
     for the SAME section -- spans derive from the text rather than the slug,
     and node rows are replaced on every text change, so an exact-span match
     against the same revision is deterministic. The caller overrides the
-    root node's summary with the entry summary afterwards.
+    root node's summary with the entry summary afterward.
 
     Returns:
         The node as an OutlineNodeDict, children converted recursively.
@@ -119,8 +120,11 @@ async def navigate_context(
         NavigateContextResultDict with ``context_id``, ``total_chars``,
         ``node_count`` (headings, excluding the root), ``root`` -- a recursive
         node carrying ``node_id``, ``level``, ``ordinal``, ``title``, ``char_start``,
-        ``char_end``, ``summary`` and ``children`` -- and the entry's ``visibility``
-        and ``is_owner`` (whether the caller owns it).
+        ``char_end``, ``summary`` and ``children`` -- and the entry's ``visibility``,
+        ``is_owner`` (whether the caller owns it) and ``generation_status``
+        ('ready' once the entry's embeddings and summaries are generated,
+        'pending' while their generation waits or runs, 'failed' when it gave up
+        after its retries).
 
     Raises:
         ToolError: If the id is invalid or the entry is not found.
@@ -215,6 +219,8 @@ async def navigate_context(
         # excludes the root explicitly.
         root_dict['summary'] = root_summary
 
+        statuses = await generation_statuses([resolved_id], repos, scope=scope)
+
         return {
             'context_id': resolved_id,
             'total_chars': len(text),
@@ -222,6 +228,7 @@ async def navigate_context(
             'root': root_dict,
             'visibility': access['visibility'],
             'is_owner': access['is_owner'],
+            'generation_status': statuses[resolved_id],
         }
     except ToolError:
         raise

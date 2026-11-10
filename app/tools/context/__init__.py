@@ -7,7 +7,7 @@ This package contains the core context management tools:
 - update.py: update_context, update an existing context entry
 - delete.py: delete_context, delete context entries by ID or by thread
 
-Generation-First Transactional Integrity:
+Generation-First Transactional Integrity (the default):
 The store and update tools implement atomic generation + data storage. When embedding or summary
 generation is enabled, all generation runs OUTSIDE any database transaction via
 run_generation() (app.tools._generation), which drives three concurrent legs:
@@ -22,8 +22,17 @@ cancelled and awaited before the transaction opens. A node-summary failure or ti
 never aborts the store. Only when both abort-mandatory legs succeed do ALL database
 operations occur in a SINGLE atomic transaction.
 
+Deferred generation:
+With defer_generation=True, while an embedding or a summary provider is active, a store or a text
+update generates nothing before its transaction: the transaction commits the entry together with
+a generation job, and the generation worker (app.generation_jobs) generates and stores the outputs
+after the commit. The response's generation_status is 'pending' until the job completes ('ready')
+or spends every attempt ('failed').
+
 Infrastructure shared with the batch tools in app/tools/batch/ lives in single-purpose modules: embedding/summary generation in
-app.tools._generation, transaction execution, heartbeat, and connection error classification in
-app.tools._transactions, input and image validation in app.tools._validation, delete-path embedding
-cleanup in app.tools._delete_cleanup, and response message builders in app.tools._responses.
+app.tools._generation, the store and update transactions in app.tools._store_transaction and
+app.tools._update_transaction, the heartbeat, connection error classification and control-flow
+exceptions they share in app.tools._transactions, input and image validation in app.tools._validation,
+delete-path embedding cleanup in app.tools._delete_cleanup, and response message builders in
+app.tools._responses.
 """

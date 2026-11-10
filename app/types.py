@@ -23,6 +23,10 @@ type MetadataDict = dict[str, JsonValue]
 # The stored visibility of an entry, as every entry read reports it.
 type EntryVisibility = Literal['private', 'public']
 
+# The state of an entry's generated outputs: 'ready' when the entry holds no generation job,
+# 'pending' while its job waits or runs, 'failed' when its job spent every attempt.
+type GenerationStatus = Literal['ready', 'pending', 'failed']
+
 
 class EntryAccessFields(TypedDict):
     """The access fields every entry-carrying read response reports for one entry.
@@ -64,7 +68,8 @@ class ContextEntryDict(TypedDict, total=False):
     """Type definition for context entry responses.
 
     Uses total=False to handle optional fields properly; ``visibility`` and
-    ``is_owner`` (see :class:`EntryAccessFields`) are required on every entry.
+    ``is_owner`` (see :class:`EntryAccessFields`) and ``generation_status`` are
+    required on every entry.
     """
 
     id: str
@@ -81,6 +86,7 @@ class ContextEntryDict(TypedDict, total=False):
     is_text_content_truncated: bool | None
     visibility: Required[EntryVisibility]
     is_owner: Required[bool]
+    generation_status: Required[GenerationStatus]
 
 
 class ClampedLimitDict(TypedDict):
@@ -122,16 +128,17 @@ class SearchContextResponseDict(TypedDict, total=False):
 
 
 class GrepFileDict(TypedDict):
-    """A grep result row in ``files_with_matches`` mode (locator only), with the entry's access fields."""
+    """A grep result row in ``files_with_matches`` mode (locator only), with the entry's access fields and generation state."""
 
     context_id: str
     match_count: int
     visibility: EntryVisibility
     is_owner: bool
+    generation_status: GenerationStatus
 
 
 class GrepContentMatchDict(TypedDict):
-    """A grep result row in ``content`` mode (one per match), with the access fields of the matched entry.
+    """A grep result row in ``content`` mode (one per match), with the access fields and generation state of the matched entry.
 
     Offsets are Unicode code-point indices into the entry's ``text_content`` and
     compose directly with ``read_context_range`` (start_char/end_char).
@@ -146,15 +153,17 @@ class GrepContentMatchDict(TypedDict):
     after: list[str]
     visibility: EntryVisibility
     is_owner: bool
+    generation_status: GenerationStatus
 
 
 class GrepCountDict(TypedDict):
-    """A grep result row in ``count`` mode (per-entry match tally), with the entry's access fields."""
+    """A grep result row in ``count`` mode (per-entry match tally), with the entry's access fields and generation state."""
 
     context_id: str
     count: int
     visibility: EntryVisibility
     is_owner: bool
+    generation_status: GenerationStatus
 
 
 class GrepContextResultDict(TypedDict, total=False):
@@ -183,7 +192,7 @@ class ReadContextRangeDict(TypedDict):
     Echoes the RESOLVED span actually returned (after clamping out-of-range
     offsets to ``[0, len]``) so a caller always knows exactly what it received.
     Offsets are Unicode code-point indices. ``visibility`` and ``is_owner`` are the
-    entry's access fields.
+    entry's access fields and ``generation_status`` its generation state.
     """
 
     context_id: str
@@ -194,6 +203,7 @@ class ReadContextRangeDict(TypedDict):
     text: str
     visibility: EntryVisibility
     is_owner: bool
+    generation_status: GenerationStatus
 
 
 class OutlineNodeDict(TypedDict, total=False):
@@ -217,8 +227,9 @@ class OutlineNodeDict(TypedDict, total=False):
 class NavigateContextResultDict(TypedDict, total=False):
     """Type definition for the navigate_context response.
 
-    ``visibility`` and ``is_owner`` are the entry's access fields, reported at the
-    top level only, never on an outline node.
+    ``visibility`` and ``is_owner`` are the entry's access fields and
+    ``generation_status`` its generation state, reported at the top level only,
+    never on an outline node.
     """
 
     context_id: str
@@ -227,24 +238,33 @@ class NavigateContextResultDict(TypedDict, total=False):
     root: OutlineNodeDict
     visibility: Required[EntryVisibility]
     is_owner: Required[bool]
+    generation_status: Required[GenerationStatus]
 
 
 class StoreContextSuccessDict(TypedDict):
-    """Type definition for successful store context response."""
+    """Type definition for successful store context response.
+
+    ``generation_status`` is the entry's generation state as the store left it.
+    """
 
     success: bool
     context_id: str
     thread_id: str
     message: str
+    generation_status: GenerationStatus
 
 
 class UpdateContextSuccessDict(TypedDict):
-    """Type definition for successful update context response."""
+    """Type definition for successful update context response.
+
+    ``generation_status`` is the entry's generation state as the update left it.
+    """
 
     success: bool
     context_id: str
     updated_fields: list[str]
     message: str
+    generation_status: GenerationStatus
 
 
 # Sharing TypedDicts
@@ -302,12 +322,17 @@ class ListContextGrantsResultDict(TypedDict):
 
 
 class BulkStoreResultItemDict(TypedDict):
-    """Type definition for a single result in bulk store response."""
+    """Type definition for a single result in bulk store response.
+
+    ``generation_status`` is the entry's generation state as the store left it; None for
+    an entry that was not stored.
+    """
 
     index: int
     success: bool
     context_id: str | None
     error: str | None
+    generation_status: GenerationStatus | None
 
 
 class BulkStoreResponseDict(TypedDict):
@@ -322,13 +347,18 @@ class BulkStoreResponseDict(TypedDict):
 
 
 class BulkUpdateResultItemDict(TypedDict):
-    """Type definition for a single result in bulk update response."""
+    """Type definition for a single result in bulk update response.
+
+    ``generation_status`` is the entry's generation state as the update left it; None for
+    an update that failed.
+    """
 
     index: int
     context_id: str
     success: bool
     updated_fields: list[str] | None
     error: str | None
+    generation_status: GenerationStatus | None
 
 
 class BulkUpdateResponseDict(TypedDict):
@@ -394,7 +424,8 @@ class FtsSearchResultDict(TypedDict, total=False):
     - fts_rank: Always null for standalone FTS (no ranking)
     - rerank_score: Present when reranking is enabled (HIGHER = better)
 
-    ``visibility`` and ``is_owner`` (see :class:`EntryAccessFields`) are required on every result.
+    ``visibility`` and ``is_owner`` (see :class:`EntryAccessFields`) and ``generation_status`` are
+    required on every result.
     """
 
     id: str
@@ -413,6 +444,7 @@ class FtsSearchResultDict(TypedDict, total=False):
     images: list[ImageDict] | None
     visibility: Required[EntryVisibility]
     is_owner: Required[bool]
+    generation_status: Required[GenerationStatus]
 
 
 class FtsSearchResponseDict(TypedDict, total=False):
@@ -442,7 +474,8 @@ class SemanticSearchResultDict(TypedDict, total=False):
     - semantic_rank: Always null for standalone semantic (no ranking)
     - rerank_score: Present when reranking is enabled (HIGHER = better)
 
-    ``visibility`` and ``is_owner`` (see :class:`EntryAccessFields`) are required on every result.
+    ``visibility`` and ``is_owner`` (see :class:`EntryAccessFields`) and ``generation_status`` are
+    required on every result.
     """
 
     id: str
@@ -460,6 +493,7 @@ class SemanticSearchResultDict(TypedDict, total=False):
     images: list[ImageDict] | None
     visibility: Required[EntryVisibility]
     is_owner: Required[bool]
+    generation_status: Required[GenerationStatus]
 
 
 class SemanticSearchResponseDict(TypedDict, total=False):
@@ -515,12 +549,13 @@ class HybridScoresDict(TypedDict, total=False):
     rerank_score: float | None  # Cross-encoder reranking score (HIGHER = better, 0.0-1.0)
 
 
-class HybridSearchResultDict(TypedDict, total=False):
-    """Type definition for hybrid search result entry.
+class HybridFusedResultDict(TypedDict, total=False):
+    """A hybrid search result as reciprocal rank fusion builds it from the two legs.
 
     Combines fields from both FTS and semantic search results with
     hybrid-specific scoring information; ``visibility`` and ``is_owner``
-    (see :class:`EntryAccessFields`) are required on every result.
+    (see :class:`EntryAccessFields`) are required on every result. The search
+    display format turns it into a :class:`HybridSearchResultDict`.
     """
 
     id: str
@@ -539,6 +574,17 @@ class HybridSearchResultDict(TypedDict, total=False):
     images: list[ImageDict] | None
     visibility: Required[EntryVisibility]
     is_owner: Required[bool]
+
+
+class HybridSearchResultDict(HybridFusedResultDict, total=False):
+    """Type definition for hybrid search result entry.
+
+    A fused result (see :class:`HybridFusedResultDict`) with its entry's
+    ``generation_status``, which is required on every result beside
+    ``visibility`` and ``is_owner``.
+    """
+
+    generation_status: Required[GenerationStatus]
 
 
 # Hybrid Search Stats TypedDicts (for explain_query parameter)

@@ -167,7 +167,7 @@ storage:
 
 ### Row-Level Security
 
-With `storage.postgresql.rls.enabled: true`, PostgreSQL enforces the access model through row-level security in addition to the server (see [Row-level security (PostgreSQL)](../database-backends.md#row-level-security-postgresql)). Requests then connect as `storage.postgresql.user`, a login role that is a member of the policy role and is neither superuser nor `BYPASSRLS`, while `storage.postgresql.migration.user` owns the tables and runs the migrations inside the server pod at startup; the chart adds no hook Job. Rendering fails when `rls.enabled` is set with `storage.backend` other than `postgresql`, or without `migration.user`, mirroring the checks the server applies at startup. Each migration value renders only when it is set.
+With `storage.postgresql.rls.enabled: true`, PostgreSQL enforces the access model through row-level security in addition to the server (see [Row-level security (PostgreSQL)](../database-backends.md#row-level-security-postgresql)). Requests then connect as `storage.postgresql.user`, a login role that is a member of the policy role and is neither superuser nor `BYPASSRLS`, while `storage.postgresql.migration.user` owns the tables and runs the migrations inside the server pod at startup and, while an embedding or summary provider is active, the writes of the generation worker for the pod's lifetime (see [Deferred Generation Jobs](../database-backends.md#deferred-generation-jobs)); the chart adds no hook Job. Rendering fails when `rls.enabled` is set with `storage.backend` other than `postgresql`, or without `migration.user`, mirroring the checks the server applies at startup. Each migration value renders only when it is set.
 
 **Enabling:**
 
@@ -195,7 +195,7 @@ With `storage.postgresql.rls.enabled: true`, PostgreSQL enforces the access mode
          enabled: true
    ```
 
-3. Apply the values with `helm upgrade`. The first pod installs the policies and the read view; pods still running the old configuration keep working during the rollout when they connect as the table owner. Pods that already connect as the login role with the flag off, for example after the disabling steps below, read only `public` entries and can no longer store, update or delete any entry once the first pod with the flag on has started, so in that case scale the Deployment to zero before `helm upgrade` (`kubectl scale deployment -l app.kubernetes.io/instance=mcp --replicas=0`), as the disabling steps do, and scale it back to its replica count afterwards.
+3. Apply the values with `helm upgrade`. The first pod installs the policies and the read view; pods still running the old configuration keep working during the rollout when they connect as the table owner. Pods that already connect as the login role with the flag off, for example after the disabling steps below, read only `public` entries and can no longer store, update or delete any entry once the first pod with the flag on has started, so in that case scale the Deployment to zero before `helm upgrade` (`kubectl scale deployment -l app.kubernetes.io/instance=mcp --replicas=0`), as the disabling steps do, and scale it back to its replica count afterward.
 
 **Rotating the login role:** create the new login role and grant it the policy role (`CREATE ROLE mcp_app_2 LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS; GRANT mcp_context_request TO mcp_app_2;`), change `storage.postgresql.user` and its password, and `helm upgrade`. The policies name the policy role, so no DDL runs.
 
@@ -520,7 +520,7 @@ ingress:
         - mcp.example.com
 ```
 
-The three `nginx.ingress.kubernetes.io` annotations raise ingress-nginx's defaults of a 1 MiB request body and 60-second timeouts: the server accepts request bodies up to 4 MiB, and a batch call with generation on, such as one `mcp-context-ingest` sends, can run far longer than a minute, so the timeouts should be at least the client's `--call-timeout` (see [Limits](../knowledge-base.md#limits)).
+The three `nginx.ingress.kubernetes.io` annotations raise ingress-nginx's defaults of a 1 MiB request body and 60-second timeouts: the server accepts request bodies up to 4 MiB, and a batch call that generates before it returns, such as one `mcp-context-ingest` sends without `--defer-generation`, can run far longer than a minute, so the timeouts should be at least the client's `--call-timeout` (see [Limits](../knowledge-base.md#limits)).
 
 Install with:
 

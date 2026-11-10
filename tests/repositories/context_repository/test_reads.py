@@ -1,4 +1,4 @@
-"""Tests for ContextRepository by-id reads and the existence and content-type probes."""
+"""Tests for ContextRepository by-id reads and the existence, content-type and summary probes."""
 
 import re
 from collections.abc import Awaitable
@@ -417,3 +417,49 @@ class TestContextRepositoryUpdate:
 
         new_type = await repos.context.get_content_type(ctx_id, scope=LOCAL_SCOPE)
         assert new_type == 'multimodal'
+
+
+class TestHasSummary:
+    """has_summary reports whether an entry the scope may modify holds a summary."""
+
+    @pytest.mark.asyncio
+    async def test_entry_with_a_summary(self, repos: RepositoryContainer) -> None:
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            scope=LOCAL_SCOPE, visibility='private', thread_id='summary_thread', source='user',
+            content_type='text', text_content='Summarized text', summary='A summary.',
+        )
+
+        assert await repos.context.has_summary(ctx_id, scope=LOCAL_SCOPE) is True
+
+    @pytest.mark.asyncio
+    async def test_entry_without_a_summary(self, repos: RepositoryContainer) -> None:
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            scope=LOCAL_SCOPE, visibility='private', thread_id='summary_thread', source='user',
+            content_type='text', text_content='Unsummarized text',
+        )
+
+        assert await repos.context.has_summary(ctx_id, scope=LOCAL_SCOPE) is False
+
+    @pytest.mark.asyncio
+    async def test_absent_entry(self, repos: RepositoryContainer) -> None:
+        assert await repos.context.has_summary(generate_id(), scope=LOCAL_SCOPE) is None
+
+    @pytest.mark.asyncio
+    async def test_entry_the_scope_may_only_read(self, repos: RepositoryContainer) -> None:
+        """Another principal's public entry is readable but not modifiable, so it reads as absent."""
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            scope=AccessScope('alice', frozenset()), visibility='public', thread_id='summary_thread',
+            source='user', content_type='text', text_content='Public text', summary='A summary.',
+        )
+
+        assert await repos.context.has_summary(ctx_id, scope=LOCAL_SCOPE) is None
+
+    @pytest.mark.asyncio
+    async def test_reads_the_transaction_s_own_write(self, repos: RepositoryContainer) -> None:
+        """Inside a transaction the read sees the summary the same transaction wrote."""
+        async with repos.context.backend.begin_transaction(access_scope=LOCAL_SCOPE) as txn:
+            ctx_id, _ = await repos.context.store_with_deduplication(
+                scope=LOCAL_SCOPE, visibility='private', thread_id='summary_thread', source='user',
+                content_type='text', text_content='Written in the transaction', summary='Fresh.', txn=txn,
+            )
+            assert await repos.context.has_summary(ctx_id, scope=LOCAL_SCOPE, txn=txn) is True

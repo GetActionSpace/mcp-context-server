@@ -75,7 +75,7 @@ The CLI honors the same `POSTGRESQL_*` environment variables the server uses for
 
 ### Cross-Backend Migration
 
-The CLI supports SQLite -> PostgreSQL and PostgreSQL -> SQLite. Vector embeddings (the binary `embedding` BLOBs in SQLite's `vec_context_embeddings` table and the corresponding PostgreSQL `pgvector` values) are NOT portable across backends because their binary representations differ. When cross-backend migration is requested, the CLI emits a warning and DROPS **only** the vector embeddings -- you must re-embed the target database after migration (either by storing entries again or by running the standard server startup path with embedding generation enabled, which fills in missing embeddings for entries that lack them).
+The CLI supports SQLite -> PostgreSQL and PostgreSQL -> SQLite. Vector embeddings (the binary `embedding` BLOBs in SQLite's `vec_context_embeddings` table and the corresponding PostgreSQL `pgvector` values) are NOT portable across backends because their binary representations differ. When cross-backend migration is requested, the CLI emits a warning and DROPS **only** the vector embeddings -- you must re-embed the target database after migration with `mcp-context-server-migrate --embed-missing` (see [Cross-Backend Vector Embedding Warning](#cross-backend-vector-embedding-warning)).
 
 All other data is copied: `context_entries` (with `summary` and `content_hash`), `tags`, and `image_attachments` (image payloads are portable -- BYTEA on PostgreSQL maps to BLOB on SQLite). The target schema is auto-initialized when absent (the SQLite target via the existing initializer; the PostgreSQL target via the base schema, without the vector tables, which the server creates at your configured `EMBEDDING_DIM` when you re-embed). Full-text search is provisioned on the target regardless of direction even though the FTS data itself is not portable: for PostgreSQL -> SQLite the SQLite target's FTS5 index is rebuilt from the copied rows, and for SQLite -> PostgreSQL the PostgreSQL target's `text_search_vector` is a generated column created during target initialization, so it is populated automatically as rows are copied (no separate rebuild step).
 
@@ -170,11 +170,7 @@ PostgreSQL does not have a State 2 equivalent. Its `text_search_vector` column i
 
 ### Cross-Backend Vector Embedding Warning
 
-If you ran a cross-backend migration (SQLite to PostgreSQL or vice versa) and saw the warning `cross-backend migration drops vector embeddings; re-embed the target after migration`, your target database contains all rows and metadata but no vector embeddings. To restore embeddings, in order of preference:
-
-- **Recommended:** Run `mcp-context-server-migrate --source-url <target-url> --embed-missing` against the target database. The `--embed-missing` flag invokes the configured embedding provider (`EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`) for every entry that lacks an `embedding_metadata` row. When `ENABLE_EMBEDDING_COMPRESSION=true` is set (the default in v3.0.0), the new embeddings land directly in `vec_context_embeddings_compressed`; otherwise they land in `vec_context_embeddings`. Run with `--dry-run` first to count missing entries without calling the provider. See the [Backfilling missing embeddings](embedding-compression.md#backfilling-missing-embeddings) section of the Embedding Compression Guide for details.
-- Re-store the affected entries via the live server (each successful `store_context` call triggers embedding generation when generation is enabled), OR
-- Run `mcp-context-server` against the target with `ENABLE_EMBEDDING_GENERATION=true` and trigger any operation that touches the affected entries.
+If you ran a cross-backend migration (SQLite to PostgreSQL or vice versa) and saw the warning `cross-backend migration drops vector embeddings; re-embed the target after migration`, your target database contains all rows and metadata but no vector embeddings. The server never backfills embeddings on its own, so restore them with the migration CLI: run `mcp-context-server-migrate --source-url <target-url> --embed-missing` against the target database. The `--embed-missing` flag invokes the configured embedding provider (`EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`) for every entry that lacks an `embedding_metadata` row. When `ENABLE_EMBEDDING_COMPRESSION=true` is set (the default in v3.0.0), the new embeddings land directly in `vec_context_embeddings_compressed`; otherwise they land in `vec_context_embeddings`. Run with `--dry-run` first to count missing entries without calling the provider. See the [Backfilling missing embeddings](embedding-compression.md#backfilling-missing-embeddings) section of the Embedding Compression Guide for details.
 
 ### Second-Precision Source Data
 
@@ -297,13 +293,13 @@ Steps:
 
 1. **Stop the server** and **back up the database** (`--re-embed` deletes and rewrites every embedding).
 2. **Set the new `EMBEDDING_MODEL`** in the environment, leaving `EMBEDDING_DIM` unchanged, and ensure `ENABLE_EMBEDDING_GENERATION=true`.
-3. **Preview** with `--dry-run` -- it reports how many entries will be re-embedded and the existing model(s) being replaced, without calling the provider:
+3. **Preview** with `--dry-run` -- it reports how many entries will be re-embedded, the pending and failed generation jobs of deferred writes the command completes first, and the existing model(s) being replaced, without calling a provider:
 
    ```bash
    mcp-context-server-migrate --source-url sqlite:////path/to/db.sqlite --re-embed --dry-run
    ```
 
-4. **Execute** by re-running without `--dry-run`. Each entry's delete + regenerate runs inside one transaction, so an entry is never left without embeddings. On a compressed database the new payloads land in `vec_context_embeddings_compressed`; on an fp32 database they land in `vec_context_embeddings`.
+4. **Execute** by re-running without `--dry-run`. The outstanding generation jobs are completed first (see [Completing deferred generation jobs](embedding-compression.md#completing-deferred-generation-jobs)); an entry whose job remains is not re-embedded. Each entry's delete + regenerate runs inside one transaction, so an entry is never left without embeddings. On a compressed database the new payloads land in `vec_context_embeddings_compressed`; on an fp32 database they land in `vec_context_embeddings`.
 5. **Restart the server** with the new `EMBEDDING_MODEL` (and the same `COMPRESSION_*` values, if compression is enabled).
 
 `--re-embed` requires `ENABLE_EMBEDDING_GENERATION=true`, is mutually exclusive with `--compress` / `--decompress`, and supersedes `--embed-missing`. Related: the `--embed-missing` flag now refuses to backfill into a database whose existing embeddings use a different model or dimension than the configured values (mixing embedding spaces would corrupt semantic search); it points you here when it detects a model change.

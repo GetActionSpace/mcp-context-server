@@ -8,12 +8,12 @@ from typing import Any
 
 from app.fusion import count_unique_results
 from app.fusion import reciprocal_rank_fusion
-from app.types import HybridSearchResultDict
+from app.types import HybridFusedResultDict
 
 
 def _fuse(
     fts_results: list[dict[str, Any]], semantic_results: list[dict[str, Any]], *, k: int, limit: int,
-) -> list[HybridSearchResultDict]:
+) -> list[HybridFusedResultDict]:
     """Fuse leg rows that carry the access fields every ranked statement selects.
 
     The scenarios vary ids, scores and text; each row gains the visibility and the

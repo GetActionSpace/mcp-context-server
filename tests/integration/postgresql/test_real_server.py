@@ -46,8 +46,8 @@ from tests.integration._harness import MCPServerIntegrationTest
 from tests.integration._harness.core import CLIENT_MODES
 from tests.integration._harness.core import ClientMode
 from tests.integration.postgresql._rls_catalog import assert_served_with_row_level_security
+from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.integration.postgresql.conftest import RLS_CREDENTIALS
-from tests.integration.postgresql.conftest import RlsUrls
 
 pytestmark = [
     pytest.mark.requires_docker_postgres,

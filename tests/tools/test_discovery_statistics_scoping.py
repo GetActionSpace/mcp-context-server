@@ -20,6 +20,7 @@ import app.startup
 import app.tools
 from app.access_scope import AccessScope
 from tests.helpers import as_principal
+from tests.tools._generation_jobs import seed_generation_jobs
 
 # The tool functions are plain coroutines that lifespan() registers with FastMCP at startup; tests call them directly.
 store_context = app.tools.store_context
@@ -92,6 +93,31 @@ class TestStatisticsScoping:
             'total_entries': 2, 'total_threads': 2, 'total_images': 1, 'unique_tags': 2,
         }
         assert alice['by_content_type'] == {'text': 1, 'multimodal': 1}
+
+    @pytest.mark.asyncio
+    async def test_generation_counts_follow_the_caller(self) -> None:
+        """Each caller counts the pending and failed generation of the entries it may read; a running job is pending."""
+        stored: dict[str, str] = {}
+        entries: tuple[tuple[str, Literal['private', 'public']], ...] = (
+            ('private', 'private'), ('public-running', 'public'), ('public-failed', 'public'),
+        )
+        for label, visibility in entries:
+            with as_principal('alice'):
+                result = await store_context(
+                    thread_id='generation-statistics', source='agent', text=f'alice {label} entry', visibility=visibility,
+                )
+            stored[label] = result['context_id']
+        repos = await app.startup.ensure_repositories()
+        await seed_generation_jobs(
+            repos.context.backend,
+            {stored['private']: 'pending', stored['public-running']: 'running', stored['public-failed']: 'failed'},
+        )
+
+        bob = await _statistics_as('bob')
+        alice = await _statistics_as('alice')
+
+        assert bob['generation'] == {'pending': 1, 'failed': 1}
+        assert alice['generation'] == {'pending': 2, 'failed': 1}
 
     @pytest.mark.asyncio
     async def test_deployment_level_keys_are_the_same_for_every_caller(self, temp_db_path: Path) -> None:

@@ -60,7 +60,7 @@ class TestDefaults:
         assert config.thread_id == 'kb:handbook'
         assert config.includes == ('**/*.md',)
         assert (config.excludes, config.tags, dict(config.metadata)) == ((), (), {})
-        assert config.visibility == 'private'
+        assert (config.visibility, config.defer_generation) == ('private', False)
         assert (config.token_file, config.token_env, config.report) == (None, None, None)
         assert (config.dry_run, config.allow_empty_corpus) == (False, False)
         assert (config.batch_size, config.max_request_bytes, config.call_timeout) == (10, 3_145_728, 3600.0)
@@ -73,14 +73,14 @@ class TestDefaults:
             '--include', 'docs/**', '--include', '*.txt', '--exclude', 'drafts/**', '--tag', 'guide', '--tag', 'ops',
             '--metadata-json', '{"team": "docs", "level": 2}', '--visibility', 'public', '--token-env', 'INGEST_TOKEN',
             '--dry-run', '--allow-empty-corpus', '--report', str(tmp_path / 'report.json'), '--batch-size', '100',
-            '--max-request-bytes', '4194304', '--call-timeout', '90.5', '--concurrency', '4',
+            '--max-request-bytes', '4194304', '--call-timeout', '90.5', '--concurrency', '4', '--defer-generation',
         ))
 
         assert config.includes == ('docs/**', '*.txt')
         assert config.excludes == ('drafts/**',)
         assert config.tags == ('guide', 'ops')
         assert dict(config.metadata) == {'team': 'docs', 'level': 2}
-        assert (config.visibility, config.token_env) == ('public', 'INGEST_TOKEN')
+        assert (config.visibility, config.token_env, config.defer_generation) == ('public', 'INGEST_TOKEN', True)
         assert (config.dry_run, config.allow_empty_corpus) == (True, True)
         assert config.report == tmp_path / 'report.json'
         assert (config.batch_size, config.max_request_bytes, config.call_timeout) == (100, 4_194_304, 90.5)
@@ -187,7 +187,7 @@ class TestValidation:
         for flag in (
             '--server', '--corpus', '--source-dir', '--include', '--exclude', '--tag', '--metadata-json',
             '--visibility', '--token-file', '--token-env', '--dry-run', '--allow-empty-corpus', '--report',
-            '--batch-size', '--max-request-bytes', '--call-timeout', '--concurrency',
+            '--batch-size', '--max-request-bytes', '--call-timeout', '--concurrency', '--defer-generation',
         ):
             assert flag in printed
 
@@ -214,6 +214,25 @@ class TestMain:
         assert captured.err == ''
         written = json.loads(report_path.read_text(encoding='utf-8'))
         assert (written['exit_code'], written['counts']['created']) == (EXIT_CONVERGED, 1)
+
+    def test_a_deferring_run_exits_0_and_counts_the_pending_entries(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Entries left pending are counted in the summary and the report, and the run still converges."""
+        corpus_root = tmp_path / 'corpus'
+        corpus_root.mkdir()
+        (corpus_root / 'a.md').write_text('alpha', encoding='utf-8')
+        report_path = tmp_path / 'report.json'
+        _fake_run(FakeServer(), monkeypatch)
+
+        code = main(_required(corpus_root, '--defer-generation', '--report', str(report_path)))
+
+        captured = capsys.readouterr()
+        assert code == EXIT_CONVERGED
+        assert 'withheld 0, generation pending 1' in captured.out
+        assert captured.out.rstrip().endswith('exit 0: completed')
+        written = json.loads(report_path.read_text(encoding='utf-8'))
+        assert (written['exit_code'], written['counts']['generation_pending']) == (EXIT_CONVERGED, 1)
 
     def test_run_errors_go_to_stderr_and_set_the_exit_code(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],

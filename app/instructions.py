@@ -69,6 +69,7 @@ Batch: `store_context_batch`, `update_context_batch`, `delete_context_batch` (up
 - Add tags for cross-cutting categorization.
 - Add `metadata.references.context_ids` to metadata linking to entries your work builds upon.
 - Use `metadata_patch` (not `metadata`) in `update_context` to preserve fields you do not change.
+- Set `defer_generation: true` (per entry in the batch tools) when you need not wait for embeddings and summaries: the entry is stored at once, readable and full-text searchable, and its `generation_status` in write and read results stays `pending` until background generation finishes (`ready`, from then on semantic search finds it) or gives up (`failed`).
 
 **Retrieving:**
 - All search tools return truncated `text_content` with `is_text_content_truncated` flag, plus a `summary` field (empty string when not generated). You can query many entries without hurting the context window. Always call `get_context_by_ids` for full content of relevant entries.

@@ -83,8 +83,10 @@ async def search_context(
     Returns:
         Dict with results (list of ContextEntryDict with truncated text_content,
         summary always present as string, is_text_content_truncated flag, visibility,
-        and is_owner telling whether the caller owns the entry), count (int), and
-        stats (dict, only when explain_query=True).
+        is_owner telling whether the caller owns the entry, and generation_status:
+        'ready' once the entry's embeddings and summaries are generated, 'pending'
+        while their generation waits or runs, 'failed' when it gave up after its
+        retries), count (int), and stats (dict, only when explain_query=True).
 
     Raises:
         ToolError: If search operation fails.
@@ -190,9 +192,6 @@ async def search_context(
             else:
                 entry['tags'] = []
 
-            # Apply unified search display formatting, the entry's access fields included
-            apply_search_display_format(cast(dict[str, Any], entry))
-
             # Fetch images if requested and applicable
             if include_images and entry.get('content_type') == 'multimodal':
                 entry_id = str(entry.get('id', ''))
@@ -200,6 +199,9 @@ async def search_context(
                 entry['images'] = images_result
 
             entries.append(entry)
+
+        # Apply unified search display formatting, the entries' access fields and generation states included
+        await apply_search_display_format(cast(list[dict[str, Any]], entries), repos, scope=scope)
 
         # Return dict with results, count, and optional stats
         response: dict[str, Any] = {'results': entries, 'count': len(entries)}

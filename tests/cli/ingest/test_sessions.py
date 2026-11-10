@@ -26,9 +26,9 @@ class _Session:
     name: str
     closed: bool = False
 
-    async def preflight(self) -> None:
+    async def preflight(self, *, defer_generation: bool = False) -> None:
         """Never called by these tests."""
-        raise AssertionError('preflight is not part of sending batches')
+        raise AssertionError(f'preflight is not part of sending batches: {defer_generation}')
 
     async def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object] | ToolFailure:
         """Never called by these tests."""

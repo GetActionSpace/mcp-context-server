@@ -28,6 +28,24 @@ settings = get_settings()
 _BOOL: TypeAdapter[bool] = TypeAdapter(bool)
 
 
+def _defer_generation(entry: dict[str, Any]) -> tuple[bool, str | None]:
+    """Read an entry's defer_generation flag as the single-entry write tools read their parameter.
+
+    Args:
+        entry: The raw caller-supplied entry dict.
+
+    Returns:
+        ``(flag, None)``, the flag False when the key is absent, or ``(False, error_message)``
+        when the value is not one the single-entry parameter accepts.
+    """
+    if 'defer_generation' not in entry:
+        return False, None
+    try:
+        return _BOOL.validate_python(entry['defer_generation']), None
+    except ValidationError:
+        return False, 'defer_generation must be a boolean'
+
+
 def validate_store_entry(
     entry: dict[str, Any],
     idx: int,
@@ -37,9 +55,9 @@ def validate_store_entry(
 
     The single-entry store_context is Pydantic-typed at the tool boundary; the
     batch path takes untyped dicts, so this helper re-imposes the same
-    rejections (types, the deduplicate flag, image validity, tag caps, metadata
-    storability, the visibility enum, and the publish gate) so both paths accept
-    and refuse identical inputs.
+    rejections (types, the deduplicate and defer_generation flags, image validity,
+    tag caps, metadata storability, the visibility enum, and the publish gate) so
+    both paths accept and refuse identical inputs.
 
     Args:
         entry: The raw caller-supplied entry dict.
@@ -49,9 +67,9 @@ def validate_store_entry(
     Returns:
         ``(validated_entry, None)`` on success -- the dict carries the
         normalized fields the transaction phase consumes, including the
-        entry's EFFECTIVE visibility and its deduplicate flag (True when the
-        key is absent) -- or ``(None, error_message)`` on the first failed
-        check.
+        entry's EFFECTIVE visibility, its deduplicate flag (True when the
+        key is absent) and its defer_generation flag (False when the key is
+        absent) -- or ``(None, error_message)`` on the first failed check.
     """
     # Validate required fields
     if 'thread_id' not in entry or not entry.get('thread_id'):
@@ -70,6 +88,9 @@ def validate_store_entry(
             deduplicate = _BOOL.validate_python(entry['deduplicate'])
         except ValidationError:
             return None, 'deduplicate must be a boolean'
+    defer_generation, defer_error = _defer_generation(entry)
+    if defer_error is not None:
+        return None, defer_error
 
     # Clean input strings. Reject non-strings instead of str()-coercing:
     # coercion would silently persist the Python repr of a truthy dict/
@@ -193,6 +214,7 @@ def validate_store_entry(
         'images_provided': images_provided,
         'visibility': effective_visibility,
         'deduplicate': deduplicate,
+        'defer_generation': defer_generation,
     }, None
 
 
@@ -207,9 +229,9 @@ async def validate_update_entry(
 
     The single-entry update_context is Pydantic-typed at the tool boundary; the
     batch path takes untyped dicts, so this helper re-imposes the same
-    rejections (id resolution, mutual exclusivity, types, image validity, tag
-    caps, metadata storability, and the visibility enum) so both paths accept
-    and refuse identical inputs. The owner-only visibility authorization runs
+    rejections (id resolution, mutual exclusivity, types, the defer_generation
+    flag, image validity, tag caps, metadata storability, and the visibility
+    enum) so both paths accept and refuse identical inputs. The owner-only visibility authorization runs
     later, in the existence phase, once the entry's stamped owner is known.
 
     Args:
@@ -237,6 +259,10 @@ async def validate_update_entry(
         context_id = await resolve_or_normalize_id(context_id_raw, context_repo, scope=scope)
     except ValueError as e:
         return None, context_id_raw, f'Invalid context_id: {e}'
+
+    defer_generation, defer_error = _defer_generation(update)
+    if defer_error is not None:
+        return None, context_id, defer_error
 
     # Validate mutual exclusivity of metadata and metadata_patch
     if update.get('metadata') is not None and update.get('metadata_patch') is not None:
@@ -346,4 +372,5 @@ async def validate_update_entry(
         'tags': update.get('tags'),
         'images': images,
         'visibility': visibility_field,
+        'defer_generation': defer_generation,
     }, context_id, None

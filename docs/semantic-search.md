@@ -737,7 +737,7 @@ RuntimeError: Embedding dimension mismatch detected!
 
 4. **Restart server** - new tables created automatically
 
-5. **Re-store data** - embeddings are generated at `store_context` and `store_context_batch` time (and regenerated when text changes via `update_context` or `update_context_batch`)
+5. **Re-store data** - embeddings are generated at `store_context` and `store_context_batch` time (and regenerated when text changes via `update_context` or `update_context_batch`), or by the generation job of a write made with `defer_generation=true`
 
 ## Usage
 
@@ -775,6 +775,7 @@ When registered (by default, whenever an embedding provider is available), the `
       "is_text_content_truncated": true,
       "visibility": "private",
       "is_owner": true,
+      "generation_status": "ready",
       "scores": {
         "semantic_distance": 0.234,
         "semantic_rank": null,
@@ -803,51 +804,7 @@ When registered (by default, whenever an embedding provider is available), the `
 - `semantic_rank`: Always null for standalone semantic search (no ranking)
 - `rerank_score`: Cross-encoder relevance score (HIGHER = better, 0.0-1.0), present when reranking is enabled
 
-### Automatic Embedding Generation
-
-Embeddings are generated automatically:
-
-- **On `store_context`**: Embeddings generated before the entry is written
-- **On `store_context_batch`**: Embeddings generated for each entry
-- **On `update_context`**: Embeddings regenerated when text changes
-- **On `update_context_batch`**: Embeddings regenerated for entries with text changes
-- **On `delete_context`**: Embeddings cascade deleted
-
-### Batched Document Embedding
-
-The server embeds a chunked document in batches, one provider request per batch, instead of sending every chunk in one request. The retry policy and the timeouts apply to each batch:
-
-- `EMBEDDING_TIMEOUT_S` bounds one attempt of one batch, and `EMBEDDING_RETRY_MAX_ATTEMPTS` retries re-send only the batch that failed, never the chunks already embedded.
-- The total timeout derived from those settings (every attempt plus the backoff between them, with a 10% margin) also applies to each batch. A document's size sets how many batches it takes, not how long any single request may run, so a large document needs no larger timeout.
-
-`EMBEDDING_BATCH_SIZE` chooses the batch size. With the default `auto`, the first batch carries 4 chunks. After each batch the server adds the batch's measured time and its characters of chunk text to running totals in which earlier batches count for less, and their ratio is the seconds per character; the next batch takes the document's next chunks for as long as their predicted time stays within `EMBEDDING_BATCH_TARGET_S` (default 5 seconds), between 1 and 64 chunks. Counting characters rather than chunks keeps a short text, such as a one-line message embedded as a single chunk, from making a large document's full-size chunks look cheap. The rate comes from the provider's observed speed, queueing at the provider included, so it needs no setting tied to the CPU, GPU, or hosted service behind the provider, and it carries over from one document to the next. An integer from 1 to 512 fixes the size instead.
-
-Each batch holds one of the `EMBEDDING_MAX_CONCURRENT` slots and releases it between batches, and waiting callers receive slots in arrival order. When every slot is taken, a store or update that arrives gets the next slot a finishing batch frees, instead of waiting for the rest of a running document.
-
-When a batch fails or runs out of time, nothing is saved (see [Embedding-First Transactional Integrity](#embedding-first-transactional-integrity)) and the error names the batch and the progress made:
-
-```text
-Embedding generation failed: <provider message> (batch 3 of 41, chunks 9-15 of 280; 8 chunks embedded in 12.3 s)
-Embedding generation exceeded total timeout (1341s) on batch 3 of 41 (chunks 9-15 of 280; 8 chunks embedded in 12.3 s). This may indicate the embedding provider is overloaded or unreachable.
-```
-
-In `auto` mode the batch count is projected from the size of the failing batch. The time runs from the start of the document's embedding to its last embedded chunk, so it leaves out the failing batch's attempts, backoff and timeout. The server logs the start of each document's embedding (text length, chunk count, batch mode) and its completion (chunks, batches, elapsed time) at INFO, and every batch at DEBUG.
-
-## Embedding-First Transactional Integrity
-
-**CRITICAL:** When `ENABLE_EMBEDDING_GENERATION=true` (default when semantic search is enabled), embedding generation follows an "embedding-first" pattern:
-
-1. Embeddings are generated FIRST (outside any database transaction)
-2. If embedding generation fails, **NO data is saved** (operation returns error immediately)
-3. If embedding generation succeeds, ALL database operations occur in a SINGLE atomic transaction
-
-This ensures data consistency: you never have context entries without their corresponding embeddings when embedding generation is enabled.
-
-**Key Implications:**
-- Embedding failures prevent data storage (not graceful degradation)
-- Network issues with embedding provider will cause store_context to fail
-- A batch that still fails after its retries fails the whole store; the batches already embedded are discarded with it
-- Consider retry logic in client code for transient embedding failures
+**Generation state**: each result also carries `generation_status` (`ready`, `pending` or `failed`; see [Generation Status](api-reference.md#generation-status)). Semantic search ranks only entries that have embeddings, so an entry a deferred store inserted, or one whose text a deferred update replaced, is not a result until its generation job has stored the new embeddings (see [Deferred Generation](#deferred-generation)).
 
 ### Example Use Cases
 
@@ -881,6 +838,93 @@ This ensures data consistency: you never have context entries without their corr
 - **Similarity Search**: O(n * d) where n = filtered entries, d = dimensions
 - **Acceptable Scale**: <100K context entries
 - **Storage Impact**: ~4 bytes per dimension per entry
+
+### Automatic Embedding Generation
+
+The write tools generate embeddings automatically:
+
+- **On `store_context` and `store_context_batch`**: for every new entry
+- **On `update_context` and `update_context_batch`**: for every text change
+- **On `delete_context` and `delete_context_batch`**: the embeddings are deleted with the entry
+
+By default a write generates the embeddings before it stores anything; a write with `defer_generation=true` stores the entry first and leaves the embeddings to a background job (see [Generation Modes](#generation-modes)).
+
+### Batched Document Embedding
+
+The server embeds a chunked document in batches, one provider request per batch, instead of sending every chunk in one request. The retry policy and the timeouts apply to each batch:
+
+- `EMBEDDING_TIMEOUT_S` bounds one attempt of one batch, and `EMBEDDING_RETRY_MAX_ATTEMPTS` retries re-send only the batch that failed, never the chunks already embedded.
+- The total timeout derived from those settings (every attempt plus the backoff between them, with a 10% margin) also applies to each batch. A document's size sets how many batches it takes, not how long any single request may run, so a large document needs no larger timeout.
+
+`EMBEDDING_BATCH_SIZE` chooses the batch size. With the default `auto`, the first batch carries 4 chunks. After each batch the server adds the batch's measured time and its characters of chunk text to running totals in which earlier batches count for less, and their ratio is the seconds per character; the next batch takes the document's next chunks for as long as their predicted time stays within `EMBEDDING_BATCH_TARGET_S` (default 5 seconds), between 1 and 64 chunks. Counting characters rather than chunks keeps a short text, such as a one-line message embedded as a single chunk, from making a large document's full-size chunks look cheap. The rate comes from the provider's observed speed, queueing at the provider included, so it needs no setting tied to the CPU, GPU, or hosted service behind the provider, and it carries over from one document to the next. An integer from 1 to 512 fixes the size instead.
+
+Each batch holds one of the `EMBEDDING_MAX_CONCURRENT` slots and releases it between batches, and waiting callers receive slots in arrival order. When every slot is taken, a store or update that arrives gets the next slot a finishing batch frees, instead of waiting for the rest of a running document. The generation worker's jobs take the same slots batch by batch, so a deferred document never holds a slot for its whole length either.
+
+When a batch fails or runs out of time, a synchronous write saves nothing (see [Synchronous Generation (Default)](#synchronous-generation-default)) and a deferred job's attempt fails (see [Retries and Failed Jobs](#retries-and-failed-jobs)). The error names the batch and the progress made:
+
+```text
+Embedding generation failed: <provider message> (batch 3 of 41, chunks 9-15 of 280; 8 chunks embedded in 12.3 s)
+Embedding generation exceeded total timeout (1341s) on batch 3 of 41 (chunks 9-15 of 280; 8 chunks embedded in 12.3 s). This may indicate the embedding provider is overloaded or unreachable.
+```
+
+In `auto` mode the batch count is projected from the size of the failing batch. The time runs from the start of the document's embedding to its last embedded chunk, so it leaves out the failing batch's attempts, backoff and timeout. The server logs the start of each document's embedding (text length, chunk count, batch mode) and its completion (chunks, batches, elapsed time) at INFO, and every batch at DEBUG.
+
+## Generation Modes
+
+Each write chooses when its entry's embeddings, summary and section summaries are generated: before the write commits (the default) or afterward, by a background job (`defer_generation=true`). The [Summary Generation Guide](summary-generation.md) covers the summaries.
+
+### Synchronous Generation (Default)
+
+**CRITICAL:** When `ENABLE_EMBEDDING_GENERATION=true` (the default), a write that does not defer generation follows an "embedding-first" pattern:
+
+1. Embeddings are generated FIRST (outside any database transaction)
+2. If embedding generation fails, **NO data is saved** (operation returns error immediately)
+3. If embedding generation succeeds, ALL database operations occur in a SINGLE atomic transaction
+
+This ensures data consistency: an entry written this way never lacks its embeddings while embedding generation is enabled.
+
+**Key Implications:**
+- Embedding failures prevent data storage (not graceful degradation)
+- Network issues with the embedding provider make `store_context` fail
+- A batch that still fails after its retries fails the whole store; the batches already embedded are discarded with it
+- Consider retry logic in client code for transient embedding failures, or defer generation for documents whose embedding takes longer than the client can wait
+
+### Deferred Generation
+
+With `defer_generation=true` on `store_context` or `update_context`, or the `defer_generation` key on an entry of `store_context_batch` or `update_context_batch`, the write commits the entry, its tags and images and a generation job in one transaction and returns at once, reporting `generation_status` `pending`. The job takes the place of generating first: it commits together with the entry, so every entry whose outputs are outstanding has a job, and the server's generation worker runs the job until it succeeds or uses all of its attempts.
+
+- **Search while pending.** The full-text index covers the entry as soon as the write commits, so `fts_search_context`, `search_context`, `grep_context` and the full-text leg of `hybrid_search_context` find it at once. Semantic search ranks only entries that have embeddings, so it does not return an entry a deferred store inserted until the job has stored its embeddings.
+- **Text updates.** A deferred text update deletes the old text's embeddings, summary and section summaries in the transaction that stores the new text, so semantic search never matches the new text through the old vectors. The entry returns to semantic results once its job stores the new embeddings. A text update made while a job runs supersedes the job, which then discards what it generated.
+- **The worker.** A server runs a generation worker while an embedding or a summary provider is active; a server with neither has nothing to generate, and a deferring write there is an ordinary write that reports `ready`. The worker takes the oldest claimable job first and runs up to `EMBEDDING_MAX_CONCURRENT` jobs at once (`SUMMARY_MAX_CONCURRENT` on a server without an embedding provider). It looks for work whenever a write on the same server queues a job, and every 5 seconds otherwise. A job generates only the outputs its entry lacks, through the same batched embedding, summary and section-summary steps a synchronous write uses, and stores them, deletes the job and advances the entry's `updated_at` in one transaction.
+- **Several servers.** Servers that share a database share its queue. PostgreSQL servers claim jobs with `FOR UPDATE SKIP LOCKED`, and SQLite processes on one database file claim through the database's write lock, so each job runs in one server at a time. A claim holds a 120-second lease that the running server renews every 30 seconds. A server that stops gives its running jobs back, waiting at most 10 seconds; a job it could not give back, like a job of a server that died, becomes claimable again once its lease ends.
+- **Over stdio** a server runs only while its client's session lasts. A job that a session leaves behind waits until a server on the same database runs again, such as the next session's, or until `mcp-context-server-migrate --embed-missing` runs it (see [Completing deferred generation jobs](embedding-compression.md#completing-deferred-generation-jobs)).
+
+### Retries and Failed Jobs
+
+One attempt of a job runs every step the job needs, with the providers' own retries inside it: each embedding batch gets its `EMBEDDING_RETRY_MAX_ATTEMPTS` attempts of up to `EMBEDDING_TIMEOUT_S` each, and the summary gets the summary provider's retries. The attempt fails when the embedding step (compression included) or the summary step still fails after those retries, or when storing the outputs fails, and the worker then discards everything the attempt generated. A failed section summary never fails an attempt: the section stays without one, as it would after a synchronous write.
+
+The worker counts an attempt when it claims the job. After a failed attempt the job waits before the next one: 30 seconds after the first, 120 seconds after the second, and 480 seconds after any later one. Once the job has failed `GENERATION_JOB_MAX_ATTEMPTS` attempts (3 by default, at most 10), it stays `failed`: the entry stays readable and full-text searchable, semantic search does not return it, and every read reports `generation_status` `failed`. A server that stops gives its running jobs back without counting their attempts. The attempt a dying server was in does count, and a job that has none left after it fails with the error `the process running this job stopped before it finished`.
+
+A failed job runs again in two ways. Every start of a server whose worker runs returns the failed jobs to the queue with no attempts counted, and before their own pass `mcp-context-server-migrate --embed-missing` and `--re-embed` return every failed job to the queue with its attempts reset, then run claimable jobs until none is left. A job still in its backoff, or held by a running server, stays for later, and their pass leaves its entry out (see [Completing deferred generation jobs](embedding-compression.md#completing-deferred-generation-jobs)).
+
+### Monitoring Deferred Generation
+
+1. **Watch the counts.** `get_statistics` reports a `generation` block, `{"pending": N, "failed": M}`, over the entries the caller may read. A `pending` count that returns to 0 is the worker doing its work; a `failed` count above 0 needs your attention.
+2. **Read the log.** The server logs each job that runs out of attempts at ERROR, which the default `LOG_LEVEL=ERROR` shows:
+
+   ```text
+   Deferred generation for context entry <id> failed after 3 attempt(s): <error>. The entry stays readable and FTS-searchable; restart the server or run mcp-context-server-migrate --embed-missing to retry.
+   ```
+
+   Each earlier failed attempt is a WARNING line naming the attempt and the seconds until the next one, which you see from `LOG_LEVEL=WARNING`. The worker's start line (`Generation worker started: up to 3 job(s) at a time, 3 attempt(s) per job`) and the count of failed jobs it returned to the queue are INFO lines, which you see only from `LOG_LEVEL=INFO`.
+3. **Fix the cause.** The error is the provider's, the same one a synchronous write would report: an unreachable host, a missing model, a rejected key, a timeout, or a text the model cannot take (see [Troubleshooting](#troubleshooting)).
+4. **Retry.** Restart the server, or run `mcp-context-server-migrate --embed-missing` against the database with the server's provider and model settings.
+5. **Inspect the queue.** The table `generation_jobs` holds one row per entry whose generation is outstanding or failed: `status` is `pending`, `running` (reported to clients as `pending`) or `failed`, `attempts` counts the attempts spent, and `last_error` keeps the last failure, at most 2,000 characters, which no tool returns. Query it on SQLite directly, and on PostgreSQL as the table owner, which row-level security does not filter:
+
+   ```sql
+   SELECT status, count(*) FROM generation_jobs GROUP BY status;
+   SELECT context_entry_id, attempts, last_error FROM generation_jobs WHERE status = 'failed';
+   ```
 
 ## Verification
 
@@ -1016,6 +1060,14 @@ brew install python
 source .venv/bin/activate
 uv sync --extra embeddings-ollama
 ```
+
+### Entry Missing from Semantic Search
+
+**Symptom**: `fts_search_context` or `search_context` finds an entry that `semantic_search_context` never returns.
+
+**Cause**: the entry has no embeddings yet. Its `generation_status` is `pending` while its generation job waits or runs, or `failed` once the job used all of its attempts.
+
+**Solution**: a `pending` entry joins the semantic results once its job completes. For a `failed` entry, follow [Monitoring Deferred Generation](#monitoring-deferred-generation).
 
 ### Common Error Messages
 

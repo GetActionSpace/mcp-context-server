@@ -6,7 +6,9 @@ and ``tests/integration/postgresql/test_ingest_cli.py``) start each server with
 ``build_env`` or ``build_jwt_env`` builds on the MCP SDK's ``get_default_environment()``,
 and hand the scenario the server's origin. A scenario writes a corpus directory, runs
 the command against the server and reads the result back through the sync tools as
-the principal the command ran as.
+the principal the command ran as. Every server these scenarios use runs with generation
+off; the deferred-generation scenario, whose server generates, is in
+:mod:`tests.integration._ingest_cli_deferral`.
 
 The command runs as a child process of the test's own interpreter, as
 ``python -m app.cli.ingest.cli`` or, in one run, as the installed console script; never

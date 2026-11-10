@@ -147,7 +147,7 @@ class TestBatchMessageAccuracy:
             patch('app.tools.batch.store.get_summary_provider', return_value=mock_summary),
             patch('app.tools._generation.get_summary_provider', return_value=mock_summary),
             patch(
-                'app.tools.batch.store.generate_embeddings_with_timeout',
+                'app.tools.batch._store_generation.generate_embeddings_with_timeout',
                 new=AsyncMock(side_effect=ToolError('embedding: provider unavailable')),
             ),
         ):
@@ -191,7 +191,7 @@ class TestBatchMessageAccuracy:
             patch('app.startup.get_chunking_service', return_value=None),
             patch('app.tools._generation.get_chunking_service', return_value=None),
             patch(
-                'app.tools.batch.store.execute_store_in_transaction',
+                'app.tools.batch._store_commit.execute_store_in_transaction',
                 new=AsyncMock(side_effect=ToolError('Failed to store context')),
             ),
         ):
@@ -240,7 +240,7 @@ class TestBatchMessageAccuracy:
             patch('app.startup.get_chunking_service', return_value=None),
             patch('app.tools._generation.get_chunking_service', return_value=None),
             patch(
-                'app.tools.batch.store.execute_store_in_transaction',
+                'app.tools.batch._store_commit.execute_store_in_transaction',
                 new=AsyncMock(side_effect=ToolError('Failed to store context')),
             ),
         ):
@@ -282,7 +282,7 @@ class TestBatchMessageAccuracy:
             patch('app.startup.get_chunking_service', return_value=None),
             patch('app.tools._generation.get_chunking_service', return_value=None),
             patch(
-                'app.tools.batch.update.execute_update_in_transaction',
+                'app.tools.batch._update_commit.execute_update_in_transaction',
                 new=AsyncMock(side_effect=ToolError('Failed to update context')),
             ),
         ):

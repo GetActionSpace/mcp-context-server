@@ -52,6 +52,9 @@ from tests.migrations._rls_fakes import rendered_view
 from tests.migrations._rls_fakes import rls_settings
 
 TABLES = {'context_entries': True, 'context_entry_grants': True, 'tags': True}
+# Managed tables a later boot creates: the node summaries switched on, and the generation
+# jobs of a database secured before that table existed.
+LATE_TABLES = ('context_index_nodes', 'generation_jobs')
 CHANGED_OUT_OF_BAND = 'f' * 64
 # The sha of a statement this module no longer renders, as an object created by an earlier release carries it.
 EARLIER_STATEMENT = 'e' * 64
@@ -136,16 +139,17 @@ class TestPlanOfACurrentDatabase:
         assert not plan.view_acl
         assert plan.drifted == ()
 
-    def test_a_table_created_since_the_last_boot_gets_its_policies_and_nothing_else_changes(self) -> None:
+    @pytest.mark.parametrize('table', LATE_TABLES)
+    def test_a_table_created_since_the_last_boot_gets_its_policies_and_nothing_else_changes(self, table: str) -> None:
         state = installed_state(TABLES)
-        state = dataclasses.replace(state, tables={**state.tables, 'context_index_nodes': False})
+        state = dataclasses.replace(state, tables={**state.tables, table: False})
 
         plan = plan_rls(state, schema=SCHEMA, role_name=ROLE_NAME)
 
-        policies = table_policies('context_index_nodes', schema=SCHEMA, role=ROLE)
+        policies = table_policies(table, schema=SCHEMA, role=ROLE)
         assert plan.tables == (
             TableRepair(
-                table='context_index_nodes',
+                table=table,
                 policies=tuple((policy, False if policy.name.endswith('_read') else None) for policy in policies),
                 enable=True,
             ),
@@ -431,22 +435,25 @@ class TestDoubleCheckedLock:
         assert any(read.target in message and 'outside the server' in message for message in messages)
         assert any(insert.target in message and 'outside the server' in message for message in messages)
 
+    @pytest.mark.parametrize('table', LATE_TABLES)
     @pytest.mark.asyncio
-    async def test_a_table_created_since_the_last_boot_is_the_only_change(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_a_table_created_since_the_last_boot_is_the_only_change(
+        self, table: str, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         recorded = record_ddl(monkeypatch, [rls_module])
         state = installed_state(TABLES)
-        state = dataclasses.replace(state, tables={**state.tables, 'context_index_nodes': False})
+        state = dataclasses.replace(state, tables={**state.tables, table: False})
         _serve(monkeypatch, state, state)
         conn = CatalogConnection()
 
         await rls_module.apply_rls(cast(StorageBackend, FakeBackend(conn)), rls_settings())
 
         expected = [LOCK]
-        for policy in table_policies('context_index_nodes', schema=SCHEMA, role=ROLE):
+        for policy in table_policies(table, schema=SCHEMA, role=ROLE):
             preenabled = False if policy.name.endswith('_read') else None
             comment = await fingerprinted(conn, policy, preenabled=preenabled)
             expected.extend([policy.drop_statement, policy.statement, comment])
-        expected.append(enable_statement('context_index_nodes', schema=SCHEMA))
+        expected.append(enable_statement(table, schema=SCHEMA))
         assert recorded == expected
 
     @pytest.mark.asyncio

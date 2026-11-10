@@ -2,14 +2,16 @@
 
 Runs the scenarios of :mod:`tests.integration._ingest_cli` against real HTTP servers,
 each serving a temporary SQLite file with generation off: a server that requires no
-authentication, one that verifies minted JWTs, and one that does not offer corpus sync.
-The same scenarios run against PostgreSQL in
+authentication, one that verifies minted JWTs, and one that does not offer corpus sync;
+and the scenario of :mod:`tests.integration._ingest_cli_deferral` against a server that
+generates embeddings through a stub endpoint. The same scenarios run against PostgreSQL in
 ``tests/integration/postgresql/test_ingest_cli.py``; the unreachable-server scenario
 needs no server and runs here only.
 """
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 from fastmcp.server.auth.providers.jwt import RSAKeyPair
@@ -28,6 +30,11 @@ from tests.integration._ingest_cli import verify_token_rotation
 from tests.integration._ingest_cli import verify_unlistable_directory
 from tests.integration._ingest_cli import verify_unreachable_server
 from tests.integration._ingest_cli import verify_unusable_files_are_kept
+from tests.integration._ingest_cli_deferral import STUB_EMBEDDING_DIM
+from tests.integration._ingest_cli_deferral import verify_deferred_generation
+from tests.integration._ollama_stub import OllamaStub
+from tests.integration._ollama_stub import serve_ollama_embeddings
+from tests.integration._ollama_stub import stub_generation_env
 
 pytestmark = pytest.mark.integration
 
@@ -71,6 +78,29 @@ def sync_disabled_server(tmp_path: Path) -> Iterator[str]:
         yield base_url
 
 
+class GeneratingServer(NamedTuple):
+    """A server that generates embeddings, and the stub endpoint it embeds through."""
+
+    base_url: str
+    embedder: OllamaStub
+
+
+@pytest.fixture
+def generating_server(tmp_path: Path) -> Iterator[GeneratingServer]:
+    """Run a server that requires no authentication and generates embeddings through a stub endpoint.
+
+    Yields:
+        The server origin URL and the stub.
+    """
+    with serve_ollama_embeddings(STUB_EMBEDDING_DIM) as embedder:
+        env = {
+            **build_env(backend='sqlite', database=str(tmp_path / 'generating.db'), port=free_port(), auth=False),
+            **stub_generation_env(embedder),
+        }
+        with running_http_server(env) as base_url:
+            yield GeneratingServer(base_url, embedder)
+
+
 @pytest.mark.asyncio
 async def test_corpus_lifecycle(open_server: str, tmp_path: Path) -> None:
     """Bootstrap, rerun, dry run, edit, removal, tag change, duplicate and emptying converge as planned."""
@@ -93,6 +123,14 @@ async def test_corpus_above_the_request_limit_converges(open_server: str, tmp_pa
 async def test_server_without_corpus_sync_exits_2(sync_disabled_server: str, tmp_path: Path) -> None:
     """A server with ENABLE_CONTEXT_SYNC=false stops the run at preflight."""
     await verify_sync_disabled_server(sync_disabled_server, tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_deferred_generation_converges_before_the_worker_generates(
+    generating_server: GeneratingServer, tmp_path: Path,
+) -> None:
+    """A deferring run exits 0 with its entries pending, and the server's worker then generates them."""
+    await verify_deferred_generation(generating_server.base_url, generating_server.embedder, tmp_path)
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,14 @@ Implements the ``--embed-missing`` CLI flag of
 lack an embedding_metadata row and runs the live embedding pipeline
 against their ``text_content`` to fill the gap.
 
+Generation jobs:
+    Before the backfill, the command completes the generation jobs that
+    writes made with ``defer_generation`` left outstanding, failed jobs
+    included (:mod:`app.cli._generation_drain`), with the configured
+    embedding and summary providers. The backfill then covers the entries
+    that hold no job: an entry whose job a running server holds, or whose
+    attempt failed, keeps its job and is left to it.
+
 Modes:
     Standalone:
         Backfills against the existing storage layout. When
@@ -46,8 +54,17 @@ from app.cli._embedding_introspect import embedding_metadata_table_exists
 from app.cli._embedding_runtime import EmbeddingPipelineUnavailableError
 from app.cli._embedding_runtime import initialize_cli_embedding_pipeline
 from app.cli._embedding_runtime import shutdown_cli_embedding_pipeline
+from app.cli._generation_drain import HOLDS_NO_JOB
+from app.cli._generation_drain import JobCounts
+from app.cli._generation_drain import complete_generation_jobs
+from app.cli._generation_drain import count_generation_jobs
+from app.cli._generation_drain import generation_jobs_table_exists
+from app.cli._summary_runtime import SummaryProviderUnavailableError
+from app.cli._summary_runtime import initialize_cli_summary_provider
+from app.cli._summary_runtime import shutdown_cli_summary_provider
 from app.embeddings.base import EmbeddingProvider
 from app.settings import get_settings
+from app.summary.base import SummaryProvider
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +76,14 @@ def _print_warning(*, source_url: str, dry_run: bool) -> None:
         'EMBEDDING BACKFILL -- this operation issues live embedding-',
         'provider requests against text_content for every entry that',
         'lacks an embedding. Cost (API requests, latency) scales with',
-        'the number of missing entries.',
+        'the number of missing entries. Outstanding generation jobs of',
+        'deferred writes are completed first, which also calls the',
+        'summary provider when summary generation is enabled.',
         '-' * 60,
         f'Source: {source_url}',
     ]
     if dry_run:
-        lines.append('DRY-RUN: provider is not called; only the count is reported')
+        lines.append('DRY-RUN: providers are not called; only the counts are reported')
     lines.append('=' * 60)
     print('\n'.join(lines), file=sys.stderr)
 
@@ -105,7 +124,7 @@ def run_embed_missing(source_url: str, *, dry_run: bool) -> int:
 
 
 async def _embed_missing_async(source_url: str, *, dry_run: bool) -> int:
-    """Async body: identify missing entries, generate, store atomically.
+    """Async body: complete the generation jobs, then identify missing entries, generate, store atomically.
 
     Defers imports of ``app.tools._generation`` and ``app.repositories`` until
     runtime so the module can be imported by the CLI dispatcher without
@@ -117,7 +136,9 @@ async def _embed_missing_async(source_url: str, *, dry_run: bool) -> int:
 
     Returns:
         Process exit code: 0 on success or no-op, 1 when the
-        ``embedding_metadata`` table is absent from the source database.
+        ``embedding_metadata`` table is absent from the source database, the
+        existing embeddings disagree with the configuration, or a provider
+        the work needs is unavailable.
     """
     masked = mask_credentials(source_url)
     backend = make_backend(source_url)
@@ -164,33 +185,48 @@ async def _embed_missing_async(source_url: str, *, dry_run: bool) -> int:
             print(f'[ERROR] {conflict}', file=sys.stderr)
             return 1
 
-        missing = await _find_missing_entries(backend)
+        # A database prepared before deferred generation has no job table and
+        # therefore no jobs; every entry lacking embeddings is then backfilled.
+        jobs_table = await generation_jobs_table_exists(backend)
+        jobs = await count_generation_jobs(backend) if jobs_table else JobCounts(pending=0, failed=0)
+        missing = await _find_missing_entries(backend, skip_job_holders=jobs_table)
         print(
-            f'Found {len(missing)} entries with missing embeddings on {masked}.',
+            f'Found {len(missing)} entries with missing embeddings and no generation job on {masked}.',
             file=sys.stderr,
         )
-        if not missing:
+        print(f'Found {jobs.describe()}.', file=sys.stderr)
+        if not missing and not jobs.total:
             return 0
         if dry_run:
             print(
                 '[DRY-RUN] Provider not called; rerun without --dry-run '
-                'to backfill.',
+                'to complete the generation jobs and backfill.',
                 file=sys.stderr,
             )
             return 0
 
         # The CLI does not run the server lifespan, so the global embedding
-        # provider + chunking service are unset. Initialize them exactly as
-        # the server does; without this, get_embedding_provider() returns None
-        # and every entry would be silently skipped.
+        # provider + chunking service, and the summary provider the generation
+        # jobs need, are unset. Initialize them exactly as the server does;
+        # without this, get_embedding_provider() returns None and every entry
+        # would be silently skipped.
         provider: EmbeddingProvider | None = None
+        summary_provider: SummaryProvider | None = None
         try:
-            provider = await initialize_cli_embedding_pipeline()
-        except EmbeddingPipelineUnavailableError as exc:
-            print(f'[ERROR] {exc}', file=sys.stderr)
-            return 1
+            try:
+                provider = await initialize_cli_embedding_pipeline()
+                if jobs.total:
+                    summary_provider = await initialize_cli_summary_provider()
+            except (EmbeddingPipelineUnavailableError, SummaryProviderUnavailableError) as exc:
+                print(f'[ERROR] {exc}', file=sys.stderr)
+                return 1
 
-        try:
+            if jobs.total:
+                await complete_generation_jobs(repos, max_attempts=settings.generation_jobs.max_attempts)
+                # The completed jobs' entries now hold their outputs; the entries
+                # whose job remains are left to it.
+                missing = await _find_missing_entries(backend, skip_job_holders=True)
+
             start = time.perf_counter()
             succeeded = 0
             for i, (entry_id, text) in enumerate(missing, start=1):
@@ -240,6 +276,7 @@ async def _embed_missing_async(source_url: str, *, dry_run: bool) -> int:
             )
             return 0
         finally:
+            await shutdown_cli_summary_provider(summary_provider)
             await shutdown_cli_embedding_pipeline(provider)
     finally:
         await shutdown_backend(backend)
@@ -291,42 +328,39 @@ async def _embedding_consistency_error(
     return None
 
 
-async def _find_missing_entries(backend: StorageBackend) -> list[tuple[str, str]]:
+async def _find_missing_entries(backend: StorageBackend, *, skip_job_holders: bool) -> list[tuple[str, str]]:
     """Find context_entries rows lacking an embedding_metadata row.
 
-    Backend-specific SQL because PostgreSQL UUID and SQLite TEXT have
-    different binding shapes. ORDER BY ``ce.id`` produces a deterministic
-    order for stable progress reporting and reproducible test runs.
+    ORDER BY ``ce.id`` produces a deterministic order for stable progress
+    reporting and reproducible test runs.
 
     Args:
         backend: Storage backend to query.
+        skip_job_holders: Leave out the entries that hold a generation job,
+            whose job generates their embeddings; False only for a database
+            without the ``generation_jobs`` table.
 
     Returns:
         List of ``(id, text_content)`` tuples for rows that have no
         corresponding ``embedding_metadata`` entry and a non-NULL
         ``text_content``.
     """
+    job_filter = f' AND {HOLDS_NO_JOB}' if skip_job_holders else ''
+    sql = (
+        'SELECT ce.id, ce.text_content FROM context_entries ce '
+        'LEFT JOIN embedding_metadata em ON em.context_id = ce.id '
+        f'WHERE em.context_id IS NULL AND ce.text_content IS NOT NULL{job_filter} '
+        'ORDER BY ce.id ASC'
+    )
     if backend.backend_type == 'sqlite':
 
         def _read_sqlite(conn: sqlite3.Connection) -> list[tuple[str, str]]:
-            cursor = conn.execute(
-                'SELECT ce.id, ce.text_content FROM context_entries ce '
-                'LEFT JOIN embedding_metadata em ON em.context_id = ce.id '
-                'WHERE em.context_id IS NULL AND ce.text_content IS NOT NULL '
-                'ORDER BY ce.id ASC',
-            )
-            return [(str(r[0]), str(r[1])) for r in cursor.fetchall()]
+            return [(str(r[0]), str(r[1])) for r in conn.execute(sql).fetchall()]
 
         return await backend.execute_read(_read_sqlite, access_scope=MAINTENANCE)
 
     async def _read_pg(conn: asyncpg.Connection) -> list[tuple[str, str]]:
-        rows = await conn.fetch(
-            'SELECT ce.id, ce.text_content FROM context_entries ce '
-            'LEFT JOIN embedding_metadata em ON em.context_id = ce.id '
-            'WHERE em.context_id IS NULL AND ce.text_content IS NOT NULL '
-            'ORDER BY ce.id ASC',
-        )
-        return [(str(r['id']), str(r['text_content'])) for r in rows]
+        return [(str(r['id']), str(r['text_content'])) for r in await conn.fetch(sql)]
 
     return await backend.execute_read(cast(Any, _read_pg), access_scope=MAINTENANCE)
 

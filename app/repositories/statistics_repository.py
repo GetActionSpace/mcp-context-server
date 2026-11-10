@@ -8,10 +8,12 @@ thread information, and database metrics.
 
 import logging
 import sqlite3
+from collections.abc import Iterable
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
+from typing import Protocol
 from typing import cast
 
 from anyio import Path as AsyncPath
@@ -21,6 +23,7 @@ from app.access_scope import Scope
 from app.access_scope import build_access_predicate
 from app.access_scope import build_readable_parent_predicate
 from app.backends.base import StorageBackend
+from app.discovery_types import GenerationStatsDict
 from app.discovery_types import ThreadInfoDict
 from app.ids import normalize_id
 from app.repositories._collation import byte_ordered_text
@@ -55,6 +58,32 @@ def _to_float(value: float | Decimal | None, default: float = 0.0) -> float:
     if value is None:
         return default
     return round(float(value), 2)
+
+
+class _Row(Protocol):
+    """A row read by column name: a ``sqlite3.Row`` or an ``asyncpg.Record``."""
+
+    def __getitem__(self, key: str, /) -> object: ...
+
+
+def _generation_counts(rows: Iterable[_Row]) -> GenerationStatsDict:
+    """Fold job counts by status into the entries whose generation is pending and failed.
+
+    A running job's outputs are still outstanding, so it counts as pending.
+
+    Args:
+        rows: One row per job status, with the status and its job count.
+
+    Returns:
+        ``pending`` and ``failed``, each zero when no job has that state.
+    """
+    counts: GenerationStatsDict = {'pending': 0, 'failed': 0}
+    for row in rows:
+        if row['status'] == 'failed':
+            counts['failed'] += int(str(row['count']))
+        else:
+            counts['pending'] += int(str(row['count']))
+    return counts
 
 
 class StatisticsRepository(BaseRepository):
@@ -174,9 +203,12 @@ class StatisticsRepository(BaseRepository):
         """Get database statistics over the entries the scope may read.
 
         Every figure derived from stored entries -- the totals, the source and content-type
-        breakdowns, the image, tag and thread counts and the two top-N lists -- counts only
-        the rows the READ predicate admits. Image and tag figures count only the rows whose
-        parent entry the predicate admits. The predicate filters rows before GROUP BY and LIMIT,
+        breakdowns, the image, tag and thread counts, the two top-N lists and the
+        ``generation`` counts -- counts only the rows the READ predicate admits. Image, tag
+        and generation job figures count only the rows whose parent entry the predicate
+        admits; ``generation`` reports the entries whose generated outputs are still
+        outstanding (``pending``, a running job included) and whose generation gave up
+        (``failed``). The predicate filters rows before GROUP BY and LIMIT,
         so each top-N list holds the scope's own top items. ``database_size_mb`` is the size
         of the whole database, the same for every scope.
 
@@ -206,8 +238,9 @@ class StatisticsRepository(BaseRepository):
         )
         image_rows = self._readable('image_attachments', alias='i')
         tag_rows = self._readable('tags', alias='t')
+        job_rows = self._readable('generation_jobs', alias='gj')
         if backend_type == 'sqlite':
-            # Image and tag rows are matched against the readable parent ids rather than
+            # Image, tag and job rows are matched against the readable parent ids rather than
             # joined to their parent rows (see build_readable_parent_predicate).
             images = build_readable_parent_predicate(
                 scope, child_key='i.context_entry_id', parent_key='id', backend_type=backend_type,
@@ -215,14 +248,21 @@ class StatisticsRepository(BaseRepository):
             tags = build_readable_parent_predicate(
                 scope, child_key='t.context_entry_id', parent_key='id', backend_type=backend_type,
             )
+            jobs = build_readable_parent_predicate(
+                scope, child_key='gj.context_entry_id', parent_key='id', backend_type=backend_type,
+            )
             readable_images = f'{image_rows}{images.where_clause()}'
             readable_tags = f'{tag_rows}{tags.where_clause()}'
+            readable_jobs = f'{job_rows}{jobs.where_clause()}'
             unique_tags_sql = f'SELECT COUNT(DISTINCT t.tag) AS count FROM {readable_tags}'
         else:
-            images = tags = build_access_predicate(scope, mode=AccessMode.READ, backend_type=backend_type, outer='ce')
+            images = tags = jobs = build_access_predicate(
+                scope, mode=AccessMode.READ, backend_type=backend_type, outer='ce',
+            )
             parent_rows = self._readable('context_entries', alias='ce')
             readable_images = f'{image_rows} JOIN {parent_rows} ON ce.id = i.context_entry_id{images.where_clause()}'
             readable_tags = f'{tag_rows} JOIN {parent_rows} ON ce.id = t.context_entry_id{tags.where_clause()}'
+            readable_jobs = f'{job_rows} JOIN {parent_rows} ON ce.id = gj.context_entry_id{jobs.where_clause()}'
             # Counted through a DISTINCT subquery, which PostgreSQL can plan as a read of the
             # tags in tag order from idx_tags_tag with no sort. For COUNT(DISTINCT) it costs a
             # sort of every readable tag row about the same as that ordered read and can pick
@@ -242,6 +282,7 @@ class StatisticsRepository(BaseRepository):
             f'SELECT t.tag AS tag, COUNT(*) AS count FROM {readable_tags} '
             f'GROUP BY t.tag ORDER BY count DESC, {tag_order} ASC LIMIT 10'
         )
+        generation_sql = f'SELECT gj.status AS status, COUNT(*) AS count FROM {readable_jobs} GROUP BY gj.status'
 
         if backend_type == 'sqlite':
 
@@ -278,6 +319,9 @@ class StatisticsRepository(BaseRepository):
                 cursor.execute(top_tags_sql, tags.params)
                 stats['top_tags'] = [{'tag': row['tag'], 'count': row['count']} for row in cursor.fetchall()]
 
+                cursor.execute(generation_sql, jobs.params)
+                stats['generation'] = _generation_counts(cursor.fetchall())
+
                 stats['backend'] = 'sqlite'
                 return stats
 
@@ -305,6 +349,8 @@ class StatisticsRepository(BaseRepository):
 
                 rows = await conn.fetch(top_tags_sql, *tags.params)
                 stats['top_tags'] = [{'tag': row['tag'], 'count': row['count']} for row in rows]
+
+                stats['generation'] = _generation_counts(await conn.fetch(generation_sql, *jobs.params))
 
                 stats['backend'] = 'postgresql'
                 return stats

@@ -450,3 +450,30 @@ class TestPreflight:
                 'a sync inserts: upgrade the server'
             ),
         )
+
+    @pytest.mark.asyncio
+    async def test_a_deferring_run_needs_the_defer_generation_parameter(self) -> None:
+        """A server whose store_context cannot defer generation stops a deferring run."""
+        async with serving(context_server(defer_generation=False)) as served, ingest_client(served) as client:
+            with pytest.raises(IngestExitError) as raised:
+                await client.preflight(defer_generation=True)
+
+        assert (raised.value.code, raised.value.message) == (
+            EXIT_CONFIG,
+            (
+                "the server's store_context has no defer_generation parameter, so it cannot defer generation: "
+                'upgrade the server or run without --defer-generation'
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_deferring_run_passes_on_a_server_that_defers(self, exchange: Exchange) -> None:
+        """A server whose store_context has the parameter passes a deferring run's preflight."""
+        async with ingest_client(exchange) as client:
+            await client.preflight(defer_generation=True)
+
+    @pytest.mark.asyncio
+    async def test_a_run_without_deferral_needs_no_defer_generation_parameter(self) -> None:
+        """Only a deferring run checks the parameter, so a server that always generates still serves a plain run."""
+        async with serving(context_server(defer_generation=False)) as served, ingest_client(served) as client:
+            await client.preflight()

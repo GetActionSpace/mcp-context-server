@@ -3,9 +3,10 @@
 Covers the visibility vocabulary both batch validators share with the
 single-entry write tools: 'private' and 'public' pass, and any other value fails
 the entry with one fixed message. Covers the per-entry deduplicate flag, read with
-the same lax boolean rules as store_context's parameter. Also covers the update
-validator's id resolution, which resolves a prefix over the entries the caller may
-read.
+the same lax boolean rules as store_context's parameter, and the per-entry
+defer_generation flag both validators read with the rules of the single-entry
+parameters. Also covers the update validator's id resolution, which resolves a
+prefix over the entries the caller may read.
 """
 
 from typing import get_type_hints
@@ -23,6 +24,7 @@ from app.repositories.context_repository import ContextRepository
 from app.tools.batch.entry_validation import validate_store_entry
 from app.tools.batch.entry_validation import validate_update_entry
 from app.tools.context.store import store_context
+from app.tools.context.update import update_context
 from tests.helpers import LOCAL_SCOPE
 
 _VISIBILITY_ERROR = "visibility must be one of 'private', 'public'"
@@ -94,6 +96,98 @@ class TestValidateStoreEntryDeduplicate:
         assert validate_store_entry(_dedup_entry(value), 4, _PRINCIPAL) == (None, _DEDUPLICATE_ERROR)
         with pytest.raises(ValidationError):
             _STORE_DEDUPLICATE_PARAMETER.validate_python(value)
+
+
+_DEFER_ERROR = 'defer_generation must be a boolean'
+# The single-entry boundaries the batch key mirrors, validated by FastMCP with pydantic in lax mode.
+_STORE_DEFER_PARAMETER: TypeAdapter[bool] = TypeAdapter(
+    get_type_hints(store_context, include_extras=True)['defer_generation'],
+)
+_UPDATE_DEFER_PARAMETER: TypeAdapter[bool] = TypeAdapter(
+    get_type_hints(update_context, include_extras=True)['defer_generation'],
+)
+_LAX_BOOLEANS = [
+    (True, True), (False, False), (1, True), (0, False), ('true', True), ('false', False),
+    ('1', True), ('0', False), ('yes', True), ('no', False), ('on', True), ('off', False), ('FALSE', False),
+]
+_NON_BOOLEANS = [2, -1, 'maybe', '', None, [], {}]
+
+
+def _deferred_store_entry(value: object) -> dict[str, object]:
+    return {'thread_id': 'validation-thread', 'source': 'agent', 'text': 'entry body', 'defer_generation': value}
+
+
+class TestValidateStoreEntryDeferGeneration:
+    """validate_store_entry reads the per-entry defer_generation flag exactly as store_context's parameter does."""
+
+    def test_absent_key_defaults_to_false(self) -> None:
+        """An entry without the key generates before it is stored, as store_context does by default."""
+        validated, error = validate_store_entry(_store_entry('private'), 0, _PRINCIPAL)
+        assert error is None
+        assert validated is not None
+        assert validated['defer_generation'] is False
+
+    @pytest.mark.parametrize(('value', 'expected'), _LAX_BOOLEANS)
+    def test_lax_boolean_values_accepted(self, value: object, *, expected: bool) -> None:
+        validated, error = validate_store_entry(_deferred_store_entry(value), 0, _PRINCIPAL)
+        assert error is None
+        assert validated is not None
+        assert validated['defer_generation'] is expected
+        assert _STORE_DEFER_PARAMETER.validate_python(value) is expected
+
+    @pytest.mark.parametrize('value', _NON_BOOLEANS)
+    def test_non_boolean_values_refused(self, value: object) -> None:
+        assert validate_store_entry(_deferred_store_entry(value), 2, _PRINCIPAL) == (None, _DEFER_ERROR)
+        with pytest.raises(ValidationError):
+            _STORE_DEFER_PARAMETER.validate_python(value)
+
+
+class TestValidateUpdateEntryDeferGeneration:
+    """validate_update_entry reads the per-entry defer_generation flag exactly as update_context's parameter does."""
+
+    @pytest.mark.asyncio
+    async def test_absent_key_defaults_to_false(self) -> None:
+        context_id = generate_id()
+        validated, _, error = await validate_update_entry(
+            {'context_id': context_id, 'text': 'new text'}, 0, MagicMock(spec=ContextRepository), scope=LOCAL_SCOPE,
+        )
+        assert error is None
+        assert validated is not None
+        assert validated['defer_generation'] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(('value', 'expected'), _LAX_BOOLEANS)
+    async def test_lax_boolean_values_accepted(self, value: object, *, expected: bool) -> None:
+        context_id = generate_id()
+        validated, _, error = await validate_update_entry(
+            {'context_id': context_id, 'text': 'new text', 'defer_generation': value}, 0,
+            MagicMock(spec=ContextRepository), scope=LOCAL_SCOPE,
+        )
+        assert error is None
+        assert validated is not None
+        assert validated['defer_generation'] is expected
+        assert _UPDATE_DEFER_PARAMETER.validate_python(value) is expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('value', _NON_BOOLEANS)
+    async def test_non_boolean_values_refused(self, value: object) -> None:
+        context_id = generate_id()
+        result = await validate_update_entry(
+            {'context_id': context_id, 'text': 'new text', 'defer_generation': value}, 0,
+            MagicMock(spec=ContextRepository), scope=LOCAL_SCOPE,
+        )
+        assert result == (None, context_id, _DEFER_ERROR)
+        with pytest.raises(ValidationError):
+            _UPDATE_DEFER_PARAMETER.validate_python(value)
+
+    @pytest.mark.asyncio
+    async def test_the_key_alone_is_no_update(self) -> None:
+        """The flag changes how a text update generates; without a field to update the entry still fails."""
+        context_id = generate_id()
+        result = await validate_update_entry(
+            {'context_id': context_id, 'defer_generation': True}, 0, MagicMock(spec=ContextRepository), scope=LOCAL_SCOPE,
+        )
+        assert result == (None, context_id, 'At least one field must be provided for update')
 
 
 class TestValidateUpdateEntryVisibility:

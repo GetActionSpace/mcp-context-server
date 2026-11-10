@@ -3,18 +3,21 @@ Server initialization and lifecycle management for mcp-context-server.
 
 This package contains:
 - Database initialization (init_database)
-- Global state management (_backend, _repositories, _embedding_provider, _reranking_provider, _summary_provider)
+- Global state management (_backend, _repositories, _embedding_provider, _reranking_provider, _summary_provider,
+  _generation_worker)
 - Lazy initialization helpers (ensure_backend, ensure_repositories)
 - Configuration constants (DB_PATH, MAX_IMAGE_SIZE_MB, MAX_TOTAL_SIZE_MB)
 - The server lifespan's startup phases, in submodules this package never imports
-  (tool_registration imports app.tools, which imports this package):
-  database_setup, rls_posture, providers, tool_registration
+  (tool_registration imports app.tools, and generation_worker the executor, which imports app.tools;
+  app.tools imports this package): database_setup, rls_posture, providers, tool_registration,
+  generation_worker
 
 Global State Architecture:
-    The _backend, _repositories, _embedding_provider, _reranking_provider, and _summary_provider variables
-    are module-level singletons that are initialized once during server lifespan and
-    accessed by MCP tool functions. Direct mutation is allowed from the server lifespan
-    (app/server.py) and its provider phase (app/startup/providers.py).
+    The _backend, _repositories, _embedding_provider, _reranking_provider, _summary_provider and
+    _generation_worker variables are module-level singletons that are initialized once during
+    server lifespan and accessed by MCP tool functions. Direct mutation is allowed from the
+    server lifespan (app/server.py), its provider phase (app/startup/providers.py) and its
+    generation worker phase (app/startup/generation_worker.py).
 
 Usage:
     # In the server lifespan (app/server.py), on SQLite:
@@ -41,6 +44,7 @@ Usage:
 import logging
 import sqlite3
 from pathlib import Path
+from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 
@@ -59,6 +63,9 @@ from app.settings import get_settings
 from app.startup.compression_validator import validate_compression_provenance
 from app.summary import SummaryProvider
 
+if TYPE_CHECKING:
+    from app.generation_jobs.worker import GenerationWorker
+
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
@@ -74,6 +81,7 @@ _embedding_provider: EmbeddingProvider | None = None
 _reranking_provider: RerankingProvider | None = None
 _chunking_service: ChunkingService | None = None
 _summary_provider: SummaryProvider | None = None
+_generation_worker: 'GenerationWorker | None' = None
 
 
 def set_backend(backend: StorageBackend | None) -> None:
@@ -162,6 +170,26 @@ def set_summary_provider(provider: SummaryProvider | None) -> None:
 def get_summary_provider() -> SummaryProvider | None:
     """Get the current summary provider instance (read-only access)."""
     return _summary_provider
+
+
+def set_generation_worker(worker: 'GenerationWorker | None') -> None:
+    """Set the global generation worker instance.
+
+    Called from app.startup.generation_worker when the worker starts and when it stops.
+    """
+    global _generation_worker
+    _generation_worker = worker
+
+
+def get_generation_worker() -> 'GenerationWorker | None':
+    """Get the running generation worker, or None when none runs (read-only access)."""
+    return _generation_worker
+
+
+def notify_generation_worker() -> None:
+    """Wake the generation worker after a write enqueued a job; without a running worker nothing happens."""
+    if _generation_worker is not None:
+        _generation_worker.notify()
 
 
 async def init_database(backend: StorageBackend) -> None:
@@ -436,6 +464,7 @@ __all__ = [
     '_reranking_provider',
     '_chunking_service',
     '_summary_provider',
+    '_generation_worker',
     # Setters (for lifespan initialization)
     'set_backend',
     'set_repositories',
@@ -443,6 +472,7 @@ __all__ = [
     'set_reranking_provider',
     'set_chunking_service',
     'set_summary_provider',
+    'set_generation_worker',
     # Getters (read-only access)
     'get_backend',
     'get_repositories',
@@ -450,6 +480,8 @@ __all__ = [
     'get_reranking_provider',
     'get_chunking_service',
     'get_summary_provider',
+    'get_generation_worker',
+    'notify_generation_worker',
     # Initialization functions
     'init_database',
     'ensure_backend',

@@ -19,6 +19,7 @@ import app.tools.search.hybrid as search_hybrid
 import app.tools.search.limits as search_limits
 import app.tools.search.semantic as search_semantic
 from app.backends.base import BackendAccess
+from tests.tools._generation_jobs import InMemoryGenerationJobs
 
 CORPUS_SIZE = 25
 
@@ -103,6 +104,7 @@ class _FakeTagsRepo:
 
 class _FakeRepos:
     tags = _FakeTagsRepo()
+    generation_jobs = InMemoryGenerationJobs()
 
 
 @pytest.fixture

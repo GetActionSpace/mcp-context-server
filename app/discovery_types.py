@@ -212,10 +212,22 @@ class IndexTreeStatsDict(TypedDict, total=False):
     node_count: int
 
 
+class GenerationStatsDict(TypedDict):
+    """Type definition for the ``generation`` block in get_statistics.
+
+    Counts the caller's readable entries whose generated outputs are outstanding:
+    ``pending`` while their generation job waits or runs, ``failed`` once it spent
+    every attempt. An entry whose outputs are complete is in neither count.
+    """
+
+    pending: int
+    failed: int
+
+
 class StatisticsResponseDict(TypedDict):
     """Type definition for the get_statistics tool response.
 
-    Top-level fields come from
+    Top-level fields and the ``generation`` block come from
     ``StatisticsRepository.get_database_statistics``; sub-blocks
     (``semantic_search``, ``fts``, ``chunking``, ``reranking``,
     ``summary``, ``compression``, ``index_tree``) are added by
@@ -241,6 +253,7 @@ class StatisticsResponseDict(TypedDict):
     most_active_threads: list[MostActiveThreadDict]
     top_tags: list[TopTagDict]
     backend: str
+    generation: GenerationStatsDict
     database_size_mb: NotRequired[float]  # Whole DB on PostgreSQL; on-disk file on SQLite
     # Embedding vector payload size (not byte-comparable across backends)
     embeddings_size_mb: NotRequired[float]

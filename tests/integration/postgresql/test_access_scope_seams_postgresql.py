@@ -40,7 +40,7 @@ from app.backends.postgresql_backend.session_profiles import SessionProfile
 from tests.integration.postgresql._rls_matrix import POLICY_ROLE
 from tests.integration.postgresql._rls_matrix import PUBLIC_ROWS
 from tests.integration.postgresql._rls_profiles import PinnedIdentityProfile
-from tests.integration.postgresql.conftest import RlsUrls
+from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import READABLE
 from tests.repositories._access_scope_cases import SCOPES
 from tests.repositories._access_scope_cases import AccessCase

@@ -5,8 +5,10 @@ prepared and seeded by the table owner ``mcp_owner`` on the ``pg_rls_db`` databa
 :data:`MATRIX_ROWS`: a private row owned by the empty principal, a row granted to the empty
 principal and the empty group, rows granted to groups whose ids hold a comma, a double quote,
 braces and a backslash, and a decoy row granted to the fragments a lossy group serialization
-would produce. The policy role then receives its privileges and the policies are installed, so
-``mcp_app`` connections reach rows through the policies alone.
+would produce. Every seed entry also carries a pending generation job, so the jobs table, like
+every other child table, holds rows each scope may reach and rows it may not. The policy role
+then receives its privileges and the policies are installed, so ``mcp_app`` connections reach
+rows through the policies alone.
 
 :data:`MATRIX_SCOPES` names every identity the policy tests bind, ``unset`` (no bind at all)
 included, and :data:`MATRIX_VISIBILITY` holds the rows each one reads, modifies and owns.
@@ -31,10 +33,11 @@ from app.migrations import apply_request_role_grants
 from app.migrations import apply_rls
 from app.settings import AppSettings
 from app.settings import get_settings
-from tests.integration.postgresql.conftest import RlsUrls
+from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import OWNED
 from tests.repositories._access_scope_cases import READABLE
 from tests.repositories._access_scope_cases import SCOPES
+from tests.repositories._access_scope_cases import SEED_LABELS
 from tests.repositories._access_scope_cases import WRITABLE
 from tests.repositories._access_scope_cases import Grant
 from tests.repositories._access_scope_cases import Layout
@@ -64,6 +67,10 @@ MATRIX_ROWS: Final = (
     SeedRow('alice_private_backslash_write', 'alice', 'private', grants=(Grant('group', BACKSLASH_GROUP, 'write'),)),
     SeedRow('alice_private_decoy', 'alice', 'private', grants=tuple(Grant('group', group, 'write') for group in DECOY_GROUPS)),
 )
+
+
+# A pending generation job on one entry; an entry that already holds a job keeps it.
+SEED_JOB: Final = 'INSERT INTO generation_jobs (context_entry_id) VALUES (?) ON CONFLICT (context_entry_id) DO NOTHING'
 
 
 def _request_scope(name: str) -> AccessScope:
@@ -156,7 +163,7 @@ def rls_settings(*, policy_role: str = POLICY_ROLE) -> AppSettings:
 
 @asynccontextmanager
 async def rls_matrix_db(urls: RlsUrls, *, layout: Layout, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[ScopedDb]:
-    """Seed the matrix on ``urls``' database as its owner, grant the policy role and install the policies.
+    """Seed the matrix and its jobs on ``urls``' database as its owner, grant the policy role and install the policies.
 
     Args:
         urls: The ``pg_rls_db`` connection strings.
@@ -171,6 +178,8 @@ async def rls_matrix_db(urls: RlsUrls, *, layout: Layout, monkeypatch: pytest.Mo
     ) as db:
         for row in MATRIX_ROWS:
             await db.add_entry(row.label, owner=row.owner, visibility=row.visibility, grants=row.grants)
+        for label in SEED_LABELS:
+            await db.execute(SEED_JOB, (db.ids[label],))
         settings = rls_settings()
         await apply_request_role_grants(db.seed_backend, settings, request_role=REQUEST_ROLE)
         await apply_rls(db.seed_backend, settings)

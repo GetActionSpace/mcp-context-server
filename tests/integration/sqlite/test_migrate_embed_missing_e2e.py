@@ -520,3 +520,61 @@ def test_compress_then_embed_missing_composed(
     assert _count_table(db, 'embedding_metadata') == len(embedded_ids) + len(missing_ids)
     # The compressed table now holds all 4 rows.
     assert _count_table(db, 'vec_context_embeddings_compressed') == len(embedded_ids) + len(missing_ids)
+
+
+def _seed_job(db_path: Path, context_id: str, *, failed: bool) -> None:
+    """Give an entry a pending generation job, or one that failed after its attempts."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        if failed:
+            conn.execute(
+                "INSERT INTO generation_jobs (context_entry_id, status, attempts, last_error) "
+                "VALUES (?, 'failed', 3, 'provider down')",
+                (context_id,),
+            )
+        else:
+            conn.execute('INSERT INTO generation_jobs (context_entry_id) VALUES (?)', (context_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.mark.integration
+def test_embed_missing_completes_generation_jobs_with_the_real_pipeline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A pending and a failed job are completed through the generation pipeline before the backfill.
+
+    The drain embeds the two job entries and deletes their jobs; the backfill then embeds the
+    one entry that never held a job, so every entry ends with exactly one embedding.
+    """
+    db = tmp_path / 'embed_jobs.db'
+    ids = _seed_missing_database(db, monkeypatch, n_docs=3)
+    _seed_job(db, ids[0], failed=False)
+    _seed_job(db, ids[1], failed=True)
+
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'true')
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    monkeypatch.setenv('ENABLE_SUMMARY_GENERATION', 'false')
+    monkeypatch.setenv('ENABLE_CHUNKING', 'false')
+    get_settings.cache_clear()
+
+    provider = cast(EmbeddingProvider, _FakeEmbeddingProvider())
+    with patch('app.cli._embedding_runtime.create_embedding_provider', return_value=provider):
+        rc = run_embed_missing(f'sqlite:///{db}', dry_run=False)
+
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert 'Found 1 entries with missing embeddings and no generation job' in err
+    assert 'Found 1 pending and 1 failed generation jobs' in err
+    assert 'Generation jobs: 2 completed' in err
+    assert 'Backfill complete: 1/1 entries embedded' in err
+    assert _count_table(db, 'embedding_metadata') == len(ids)
+    assert _count_table(db, 'embedding_chunks') == len(ids)
+    conn = sqlite3.connect(str(db))
+    try:
+        assert conn.execute('SELECT COUNT(*) FROM generation_jobs').fetchone()[0] == 0
+    finally:
+        conn.close()

@@ -27,6 +27,7 @@ from tests.integration._harness.batch_conformance import BatchConformanceMixin
 from tests.integration._harness.chunking import ChunkingMixin
 from tests.integration._harness.delete import DeleteMixin
 from tests.integration._harness.discovery import DiscoveryMixin
+from tests.integration._harness.generation import GenerationMixin
 from tests.integration._harness.metadata_filters import MetadataFiltersMixin
 from tests.integration._harness.metadata_filters_indexed import MetadataFiltersIndexedMixin
 from tests.integration._harness.metadata_filters_membership import MetadataFiltersMembershipMixin
@@ -101,6 +102,7 @@ class MCPServerIntegrationTest(
     NavigationMixin,
     SyncMixin,
     SharingMixin,
+    GenerationMixin,
 ):
     """Integration test for real MCP Context Storage Server."""
 
@@ -360,6 +362,19 @@ class MCPServerIntegrationTest(
             # A second principal served from the same database reaches only the entries
             # the access model lets it read, and changes only those it may modify.
             ('Access Scoping Second Principal', self.test_access_scoping_second_principal),
+            # Deferred generation: the synchronous default, a deferred store and text update
+            # the worker completes, per-entry batch flags and the pending count, the failed
+            # state and its recovery at the next start, and a second principal reading the
+            # state of a public deferred entry and nothing of private ones.
+            ('Generation Synchronous Store Ready', self.test_generation_synchronous_store_ready),
+            ('Generation Deferred Store Turns Ready', self.test_generation_deferred_store_turns_ready),
+            ('Generation Deferred Update Replaces Vectors', self.test_generation_deferred_update_replaces_vectors),
+            ('Generation Deferred Batch Counts', self.test_generation_deferred_batch_counts),
+            ('Generation Failed Job Recovers On Restart', self.test_generation_failed_job_recovers_on_restart),
+            (
+                'Generation Second Principal Reads Public State',
+                self.test_generation_second_principal_reads_public_state,
+            ),
         ]
 
         print('\nRunning tests...\n')

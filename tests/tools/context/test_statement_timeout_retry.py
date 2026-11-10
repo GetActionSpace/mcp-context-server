@@ -15,6 +15,8 @@ import pytest
 
 from app.backends.base import BackendAccess
 from app.repositories.context_repository.records import EntryProbe
+from app.tools._store_transaction import StoreOutcome
+from app.tools._update_transaction import UpdateOutcome
 from app.tools.context.store import store_context
 from app.tools.context.update import update_context
 
@@ -60,7 +62,7 @@ class TestStatementTimeoutRetryToolLayer:
             patch('app.tools._generation.generate_compression_with_timeout', AsyncMock(side_effect=lambda x: x)),
             patch(
                 'app.tools.context.store.execute_store_in_transaction',
-                AsyncMock(return_value=('ctx-1', False, False)),
+                AsyncMock(return_value=StoreOutcome('ctx-1', False, False, 'ready')),
             ) as mock_exec,
             patch('asyncio.sleep', AsyncMock()),
         ):
@@ -113,7 +115,7 @@ class TestStatementTimeoutRetryToolLayer:
             patch('app.tools._generation.generate_compression_with_timeout', AsyncMock(side_effect=lambda x: x)),
             patch(
                 'app.tools.context.store.execute_store_in_transaction',
-                AsyncMock(return_value=('ctx-2', False, False)),
+                AsyncMock(return_value=StoreOutcome('ctx-2', False, False, 'ready')),
             ),
             patch('asyncio.sleep', AsyncMock()),
         ):
@@ -159,7 +161,7 @@ class TestStatementTimeoutRetryToolLayer:
             patch('app.tools._generation.generate_compression_with_timeout', AsyncMock(side_effect=lambda x: x)),
             patch(
                 'app.tools.context.update.execute_update_in_transaction',
-                AsyncMock(return_value=(['text'], False)),
+                AsyncMock(return_value=UpdateOutcome(['text'], False, 'ready')),
             ) as mock_exec,
             patch('asyncio.sleep', AsyncMock()),
         ):

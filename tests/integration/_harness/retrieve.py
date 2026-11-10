@@ -11,10 +11,10 @@ import tempfile
 from pathlib import Path
 
 from anyio import Path as AsyncPath
-from fastmcp.client.transports import PythonStdioTransport
 from mcp.client.stdio import get_default_environment
 
 from tests.integration._harness.core import HarnessCore
+from tests.integration._harness.core import server_transport
 
 
 class RetrieveMixin(HarnessCore):
@@ -252,10 +252,10 @@ class RetrieveMixin(HarnessCore):
             The MCP SDK helper mcp.client.stdio.get_default_environment() applies
             an OS-variable whitelist (PATH, SYSTEMROOT, ..., on Windows; HOME,
             LOGNAME, ..., on POSIX) when env=None is passed to the transport.
-            Constructing Client(wrapper_script) from a bare script path delegates to
+            Constructing a client from a bare script path delegates to
             this whitelist, so application-specific env vars (DB_PATH, MCP_TEST_MODE,
             GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY) DO NOT reach the subprocess. This
-            test builds the env dict explicitly via PythonStdioTransport(env=...),
+            test builds the env dict explicitly and hands it to ``server_transport``,
             on SQLite from the same whitelist plus the four app-specific vars and on
             PostgreSQL from the harness's PostgreSQL server environment, ensuring
             the subprocess actually runs with the toggle enabled.
@@ -265,7 +265,6 @@ class RetrieveMixin(HarnessCore):
         """
         test_name = 'get_context_by_ids_includes_summary_when_enabled'
 
-        wrapper_script = Path(__file__).parents[2] / 'run_server.py'
         tmp_dir = Path(tempfile.mkdtemp(prefix='mcp_summary_opt_in_'))
         tmp_db = tmp_dir / 'summary_opt_in.db'
 
@@ -300,11 +299,7 @@ class RetrieveMixin(HarnessCore):
             subprocess_env['STORAGE_BACKEND'] = 'sqlite'
             subprocess_env['GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY'] = 'true'
 
-        transport = PythonStdioTransport(
-            script_path=str(wrapper_script),
-            env=subprocess_env,
-        )
-        secondary_client = self._new_client(transport)
+        secondary_client = self._new_client(server_transport(subprocess_env))
         try:
             await secondary_client.__aenter__()
             await secondary_client.list_tools()
@@ -375,7 +370,7 @@ class RetrieveMixin(HarnessCore):
             with contextlib.suppress(Exception):
                 await secondary_client.__aexit__(None, None, None)
             # Best-effort cleanup (use anyio.Path for async-safe filesystem ops).
-            # The secondary server receives its env through PythonStdioTransport, so
+            # The secondary server, stopped above, receives its env through its transport, so
             # os.environ is never modified and needs no restoration.
             async_tmp_db = AsyncPath(tmp_db)
             async_tmp_dir = AsyncPath(tmp_dir)

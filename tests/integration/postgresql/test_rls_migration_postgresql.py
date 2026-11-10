@@ -10,9 +10,10 @@ policies on exactly the tables that exist; that a new policy role re-creates eve
 policy and the read view while a new member login role changes nothing; that an object
 altered outside the server, a column added to ``context_entries`` and an extra grantee
 on the view are repaired and named; that the policies and helper an earlier release
-renders differently or lacks are brought up to date without a WARNING; that the FTS
-language rebuild re-creates the view in its own transaction; and that a boot with the
-flag off over installed objects is refused.
+renders differently or lacks are brought up to date without a WARNING, and that the
+generation jobs table an earlier release lacked gets its policies and grants at the boot
+that creates it; that the FTS language rebuild re-creates the view in its own transaction;
+and that a boot with the flag off over installed objects is refused.
 """
 
 import asyncio
@@ -62,7 +63,7 @@ from tests.integration.postgresql._rls_catalog import view_columns
 from tests.integration.postgresql._rls_matrix import POLICY_ROLE
 from tests.integration.postgresql._rls_matrix import REQUEST_ROLE
 from tests.integration.postgresql._rls_matrix import rls_settings
-from tests.integration.postgresql.conftest import RlsUrls
+from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import Layout
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
@@ -72,6 +73,8 @@ SCHEMA: Final = '"public"'
 VIEW: Final = f'{SCHEMA}.context_entries_readable'
 ALT_POLICY_ROLE: Final = 'mcp_rls_alt_policy'
 ALT_LOGIN_ROLE: Final = 'mcp_rls_alt_login'
+JOBS_TABLE: Final = f'{SCHEMA}.generation_jobs'
+JOB_PRIVILEGES: Final = ('SELECT', 'INSERT', 'UPDATE', 'DELETE')
 INSERT_PUBLIC_ENTRY: Final = (
     'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, owner_id, visibility) '
     "VALUES ($1, 'rls-migration', 'agent', 'text', 'migration probe', 'alice', 'public')"
@@ -118,6 +121,14 @@ async def booted(pg_rls_db: RlsUrls, monkeypatch: pytest.MonkeyPatch) -> AsyncGe
         await prepare_database(backend, settings, request_role=None)
         await apply_request_role_grants(backend, settings, request_role=REQUEST_ROLE)
         yield backend
+
+
+async def _job_privileges(conn: asyncpg.Connection) -> dict[str, bool]:
+    """Return whether the policy role holds each privilege requests need on the jobs table."""
+    return {
+        privilege: bool(await conn.fetchval('SELECT has_table_privilege($1, $2, $3)', POLICY_ROLE, JOBS_TABLE, privilege))
+        for privilege in JOB_PRIVILEGES
+    }
 
 
 async def _managed_tables(conn: asyncpg.Connection) -> set[str]:
@@ -230,7 +241,7 @@ class TestTablesThatExist:
             await prepare_database(backend, settings, request_role=None)
 
         assert await _managed_tables(admin) == {
-            'context_entries', 'context_entry_grants', 'tags', 'image_attachments', 'context_index_nodes',
+            'context_entries', 'context_entry_grants', 'tags', 'image_attachments', 'context_index_nodes', 'generation_jobs',
         }
         await _assert_installed(admin)
 
@@ -514,6 +525,36 @@ class TestUpgrade:
         await install_ddl_log(admin)
         await apply_rls(booted, rls_settings())
         assert await ddl_log(admin) == []
+
+    @pytest.mark.asyncio
+    async def test_the_jobs_table_an_earlier_release_lacked_gets_its_policies_and_grants_at_the_next_boot(
+        self, booted: StorageBackend, pg_rls_db: RlsUrls, admin: asyncpg.Connection, owner: asyncpg.Connection,
+        monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        await owner.execute('DROP TABLE generation_jobs')
+        assert 'generation_jobs' not in await _managed_tables(admin)
+        await _assert_installed(admin)
+        before = await object_oids(admin, SCHEMA_NAME)
+
+        settings = configure_rls_layout(pg_rls_db, monkeypatch, layout='fp32', overrides={}, rls=True)
+        with caplog.at_level(logging.INFO, logger='app.migrations.rls'):
+            await prepare_database(booted, settings, request_role=None)
+
+        await _assert_installed(admin)
+        after = await object_oids(admin, SCHEMA_NAME)
+        assert {key: oid for key, oid in after.items() if key in before} == before
+        assert set(after) - set(before) == {f'policy generation_jobs.{name}' for name in policy_names('generation_jobs')}
+        read = (await policies(admin, SCHEMA_NAME))[('generation_jobs', 'generation_jobs_read')]
+        fingerprint = parse_fingerprint(read.comment)
+        assert fingerprint is not None
+        assert fingerprint.preenabled is False
+        records = [record for record in caplog.records if record.name == 'app.migrations.rls']
+        assert [record.levelno for record in records] == [logging.INFO]
+        assert records[0].getMessage().startswith('Applied row-level security')
+
+        assert await _job_privileges(admin) == dict.fromkeys(JOB_PRIVILEGES, False)
+        await apply_request_role_grants(booted, settings, request_role=REQUEST_ROLE)
+        assert await _job_privileges(admin) == dict.fromkeys(JOB_PRIVILEGES, True)
 
 
 class TestFtsLanguageRebuild:

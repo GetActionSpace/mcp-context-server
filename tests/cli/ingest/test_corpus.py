@@ -65,6 +65,7 @@ def _build(
     static_metadata: dict[str, object] | None = None,
     tags: Sequence[str] = (),
     visibility: Visibility = 'private',
+    defer_generation: bool = False,
     max_request_bytes: int = BUDGET,
 ) -> Corpus:
     """Build a corpus with the defaults the command uses."""
@@ -76,6 +77,7 @@ def _build(
         static_metadata=static_metadata or {},
         tags=tags,
         visibility=visibility,
+        defer_generation=defer_generation,
         max_request_bytes=max_request_bytes,
     )
 
@@ -270,6 +272,17 @@ class TestOversizedEntries:
         for change in ('text', 'metadata', 'both'):
             entry = document.update_entry(context_id='f' * 32, thread_id=THREAD_ID, synced_at=SYNCED_AT, change=change)
             assert request_bytes([entry]) <= size
+
+    def test_a_deferred_entry_is_measured_with_its_deferral(self, tmp_path: Path) -> None:
+        """The deferral key counts toward the budget, so an entry that fits exactly without it is kept with it."""
+        _write(tmp_path, 'big.md', '# Big\n\n' + 'x' * 5000)
+        document = _only_document(_build(tmp_path))
+        size = request_bytes([document.create_entry(thread_id=THREAD_ID, synced_at=SYNCED_AT)])
+
+        result = _build(tmp_path, defer_generation=True, max_request_bytes=size)
+
+        assert result.documents == []
+        assert [(failure.source_id, failure.keep) for failure in result.file_failures] == [('big.md', True)]
 
     def test_non_ascii_text_is_measured_in_bytes(self, tmp_path: Path) -> None:
         """The budget counts UTF-8 bytes, so four-byte characters weigh four bytes each."""
@@ -518,6 +531,39 @@ class TestEntries:
         if has_text:
             expected['text'] = 'body'
         assert entry == expected
+
+    def test_a_deferring_create_entry_asks_to_defer_generation(self, tmp_path: Path) -> None:
+        """With deferral a create entry carries defer_generation beside deduplicate; without it the key is absent."""
+        _write(tmp_path, 'doc.md', 'body')
+        immediate = _only_document(_build(tmp_path))
+        deferring = _only_document(_build(tmp_path, defer_generation=True))
+
+        entry = deferring.create_entry(thread_id=THREAD_ID, synced_at=SYNCED_AT)
+
+        assert entry == {**immediate.create_entry(thread_id=THREAD_ID, synced_at=SYNCED_AT), 'defer_generation': True}
+        assert 'defer_generation' not in immediate.create_entry(thread_id=THREAD_ID, synced_at=SYNCED_AT)
+
+    @pytest.mark.parametrize('change', ['text', 'both', 'metadata'])
+    def test_a_deferring_update_entry_asks_to_defer_generation(self, tmp_path: Path, change: SyncChange) -> None:
+        """With deferral every update entry carries defer_generation; the server applies it only to new text."""
+        _write(tmp_path, 'doc.md', 'body')
+        immediate = _only_document(_build(tmp_path))
+        deferring = _only_document(_build(tmp_path, defer_generation=True))
+        context_id = '0' * 32
+
+        entry = deferring.update_entry(context_id=context_id, thread_id=THREAD_ID, synced_at=SYNCED_AT, change=change)
+
+        plain = immediate.update_entry(context_id=context_id, thread_id=THREAD_ID, synced_at=SYNCED_AT, change=change)
+        assert entry == {**plain, 'defer_generation': True}
+        assert 'defer_generation' not in plain
+
+    def test_deferral_leaves_the_digests_alone(self, tmp_path: Path) -> None:
+        """Deferral is how a run writes, not what it stores, so the manifest digests do not change with it."""
+        _write(tmp_path, 'doc.md', 'body')
+        immediate = _only_document(_build(tmp_path))
+        deferring = _only_document(_build(tmp_path, defer_generation=True))
+
+        assert (deferring.text_digest, deferring.meta_digest) == (immediate.text_digest, immediate.meta_digest)
 
 
 class TestSyncedAt:

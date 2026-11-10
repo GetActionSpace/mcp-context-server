@@ -8,6 +8,8 @@ from unittest.mock import MagicMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from tests.tools._generation_jobs import InMemoryGenerationJobs
+
 
 def build_mock_repos() -> MagicMock:
     """Create a mock repository container with transaction support."""
@@ -30,6 +32,7 @@ def build_mock_repos() -> MagicMock:
     repos.tags = AsyncMock()
     repos.images = AsyncMock()
     repos.statistics = AsyncMock()
+    repos.generation_jobs = InMemoryGenerationJobs()
 
     repos.embeddings = AsyncMock()
     repos.embeddings.store_chunked = AsyncMock(return_value=None)

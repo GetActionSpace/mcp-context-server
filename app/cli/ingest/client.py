@@ -47,9 +47,11 @@ EXIT_CONFIG = 2
 EXIT_TRANSIENT = 69
 
 # The tools a sync calls. store_context is listed for its input schema: a server whose
-# store_context has a deduplicate parameter honors the per-entry key in a batch store.
+# store_context has a deduplicate or defer_generation parameter honors the per-entry key
+# of that name in the batch tools.
 SYNC_TOOLS = ('plan_context_sync', 'store_context', 'store_context_batch', 'update_context_batch', 'delete_context_batch')
 DEDUPLICATE_PARAMETER = 'deduplicate'
+DEFER_GENERATION_PARAMETER = 'defer_generation'
 LIMITS_SECTION = "docs/knowledge-base.md, 'Limits'"
 # Connect, write and pool timeout, the MCP SDK's own default.
 _CONNECT_TIMEOUT_SECONDS = 30.0
@@ -313,12 +315,17 @@ class IngestClient:
             failure = self._settle(error, 'the connection')
             raise IngestExitError(EXIT_CONFIG, failure.message) from error
 
-    async def preflight(self) -> None:
-        """Check that the server offers every tool a sync calls and inserts without merging.
+    async def preflight(self, *, defer_generation: bool = False) -> None:
+        """Check that the server offers every tool a sync calls, inserts without merging and, when asked, defers.
+
+        Args:
+            defer_generation: Whether the run asks the server to defer generation, which
+                needs a ``defer_generation`` parameter on ``store_context``.
 
         Raises:
             IngestExitError: A tool is missing, ``store_context`` has no ``deduplicate``
-                parameter, or the tool list could not be read.
+                parameter or, for a deferring run, no ``defer_generation`` parameter, or the
+                tool list could not be read.
         """
         listed = await self._exchange('the tool list', self._client.list_tools)
         if isinstance(listed, ToolFailure):
@@ -330,11 +337,18 @@ class IngestClient:
             if 'plan_context_sync' in missing:
                 message += '; a server offers plan_context_sync unless ENABLE_CONTEXT_SYNC=false'
             raise IngestExitError(EXIT_CONFIG, message)
-        if DEDUPLICATE_PARAMETER not in tools['store_context'].input_schema.get('properties', {}):
+        parameters = tools['store_context'].input_schema.get('properties', {})
+        if DEDUPLICATE_PARAMETER not in parameters:
             raise IngestExitError(
                 EXIT_CONFIG,
                 "the server's store_context has no deduplicate parameter, so it would merge the documents "
                 'a sync inserts: upgrade the server',
+            )
+        if defer_generation and DEFER_GENERATION_PARAMETER not in parameters:
+            raise IngestExitError(
+                EXIT_CONFIG,
+                "the server's store_context has no defer_generation parameter, so it cannot defer generation: "
+                'upgrade the server or run without --defer-generation',
             )
 
     async def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object] | ToolFailure:
@@ -448,7 +462,7 @@ class IngestClient:
             if self.recorder.last_status is None:
                 return IngestExitError(EXIT_TRANSIENT, f'{what} failed before the server answered: {error.message}')
             # The server answers a call with its SSE headers before the tool runs, so a
-            # restart or a proxy cutting the response afterwards closes an accepted call
+            # restart or a proxy cutting the response afterward closes an accepted call
             # whose result never arrives; the server may or may not have applied it.
             if error.code == CONNECTION_CLOSED:
                 return IngestExitError(

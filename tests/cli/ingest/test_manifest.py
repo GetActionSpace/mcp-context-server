@@ -40,6 +40,7 @@ def _document(source_id: str) -> Document:
         metadata={'title': source_id},
         tags=[],
         visibility='private',
+        defer_generation=False,
         text_digest=DIGEST,
         meta_digest=DIGEST,
     )

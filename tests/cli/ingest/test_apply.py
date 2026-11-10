@@ -184,7 +184,9 @@ class TestCreates:
         write_document(tmp_path, 'b.md', 'beta')
         server.answer_next(STORE, {
             'success': True, 'total': 2, 'succeeded': 1, 'failed': 0, 'message': 'Stored 1',
-            'results': [{'index': 0, 'success': True, 'context_id': '0190' + '0' * 28, 'error': None}],
+            'results': [{
+                'index': 0, 'success': True, 'context_id': '0190' + '0' * 28, 'error': None, 'generation_status': 'ready',
+            }],
         })
 
         report = await sync_directory(server, tmp_path)
@@ -203,6 +205,18 @@ class TestCreates:
 
         assert report.exit_code == EXIT_CONFIG
         assert any('store_context_batch with an unexpected result' in error for error in report.errors)
+
+    @pytest.mark.asyncio
+    async def test_results_without_a_generation_state_are_stored_and_none_pending(self, tmp_path: Path) -> None:
+        """A server that cannot defer generation names no generation state, and the run converges."""
+        server = FakeServer(reports_generation_status=False)
+        write_document(tmp_path, 'a.md', 'alpha')
+        write_document(tmp_path, 'b.md', 'beta')
+
+        report = await sync_directory(server, tmp_path)
+
+        assert (report.exit_code, report.errors) == (EXIT_CONVERGED, [])
+        assert (report.counts['created'], report.counts['generation_pending']) == (2, 0)
 
 
 class TestUpdates:
@@ -282,6 +296,20 @@ class TestUpdates:
 
         assert report.exit_code == EXIT_PARTIAL
         assert _failures(report) == [('a.md', f'Not authorized to modify context entry {context_id}')]
+
+    @pytest.mark.asyncio
+    async def test_update_results_without_a_generation_state_are_applied_and_none_pending(self, tmp_path: Path) -> None:
+        """A text update and a metadata update answered by a server that cannot defer generation both apply."""
+        server = FakeServer(reports_generation_status=False)
+        path = write_document(tmp_path, 'a.md', 'alpha')
+        write_document(tmp_path, 'b.md', 'beta')
+        await sync_directory(server, tmp_path)
+        path.write_text('alpha, revised', encoding='utf-8')
+
+        report = await sync_directory(server, tmp_path, tags=('guide',))
+
+        assert (report.exit_code, report.errors) == (EXIT_CONVERGED, [])
+        assert (report.counts['updated'], report.counts['generation_pending']) == (2, 0)
 
 
 class TestDeletes:

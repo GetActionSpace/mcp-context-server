@@ -302,9 +302,13 @@ async def hybrid_search_context(
         Dict with query (str), results (list with id, thread_id, source,
         text_content (truncated), summary, is_text_content_truncated,
         metadata, scores, tags, visibility, is_owner (whether the caller owns
-        the entry)), count (int), fusion_method (str), search_modes_used (list),
-        fts_count (int), semantic_count (int), stats (only when explain_query=True), and
-        rank_depth_limit (only when the requested window reaches past the ranked depth).
+        the entry), generation_status ('ready' once the entry's embeddings and
+        summaries are generated, 'pending' while their generation waits or runs,
+        'failed' when it gave up after its retries; an entry without embeddings
+        yet is found by the full-text leg only)), count (int), fusion_method (str),
+        search_modes_used (list), fts_count (int), semantic_count (int), stats (only
+        when explain_query=True), and rank_depth_limit (only when the requested
+        window reaches past the ranked depth).
 
     Raises:
         ToolError: If hybrid search is not available or all search modes fail.
@@ -703,9 +707,8 @@ async def hybrid_search_context(
             else:
                 result['tags'] = []
 
-        # Apply unified search display formatting
-        for result in final_results:
-            apply_search_display_format(result)
+        # Apply unified search display formatting, the results' generation states included
+        await apply_search_display_format(final_results, repos, scope=scope)
 
         logger.info(
             f'Hybrid search found {len(final_results)} results for query: "{query[:50]}..." '

@@ -108,7 +108,7 @@ Ollama runs summary models locally with no API costs. The default model `qwen3:0
 
 The Ollama provider sends every summary call, the document summary and each per-section summary alike, with the model's reasoning turned off: LangChain's `reasoning=False`, which sends Ollama's `think: false` request parameter. A model that can reason, such as Qwen3, then writes the summary straight away, so `SUMMARY_MAX_TOKENS` bounds the summary text instead of a hidden reasoning trace followed by the summary.
 
-Ollama turns reasoning off only for models that allow it. The hybrid Qwen3 builds `qwen3:0.6b`, `qwen3:1.7b` and `qwen3:8b` allow it. The builds the Ollama library currently serves as `qwen3:4b` and `qwen3:30b` reason on every call, so they are unsuitable while reasoning is off: Ollama returns their reasoning and the closing `</think>` tag as part of the answer, the stored summary starts with the model's reasoning, and the reasoning counts against `SUMMARY_MAX_TOKENS`. With any model, a call that uses the whole budget and returns no text fails: a failed document summary means the server does not store the entry (see [How It Works](#how-it-works)), and a failed per-section summary leaves that section without a summary while the entry is stored.
+Ollama turns reasoning off only for models that allow it. The hybrid Qwen3 builds `qwen3:0.6b`, `qwen3:1.7b` and `qwen3:8b` allow it. The builds the Ollama library currently serves as `qwen3:4b` and `qwen3:30b` reason on every call, so they are unsuitable while reasoning is off: Ollama returns their reasoning and the closing `</think>` tag as part of the answer, the stored summary starts with the model's reasoning, and the reasoning counts against `SUMMARY_MAX_TOKENS`. With any model, a call that uses the whole budget and returns no text fails: a failed document summary means the server does not store the entry (see [How It Works](#how-it-works)), or fails the attempt of a deferred write's generation job (see [Deferred Summaries](#deferred-summaries)), and a failed per-section summary leaves that section without a summary while the entry is stored.
 
 Reasoning off also removes the planning step that kept a small model from copying its input. Given low-entropy text, such as a document made of one repeated token, `qwen3:0.6b` echoes the text until the `SUMMARY_MAX_TOKENS` budget runs out, every attempt then exceeds `SUMMARY_TIMEOUT_S`, and the store fails once the retries are spent; a sampling temperature does not stop it. The Qwen3 model card's remedy is a presence penalty, so the provider sends `presence_penalty: 1.5` with every call to a `qwen3` model and no penalty to a model of another family, whose authors give no such guidance. `SUMMARY_OLLAMA_PRESENCE_PENALTY` (0-2) replaces that default for whatever model is configured, and `0` disables the penalty. The penalty lowers the odds of a token the output already contains, so a summary repeats a term a little less often; the model card notes that higher values occasionally mix languages. Each per-section summary runs under its own output budget, `INDEX_TREE_NODE_SUMMARY_MAX_TOKENS` (default 120, sized for a headline), and an answer that runs to that budget drops the section's summary instead of being stored cut off.
 
@@ -295,10 +295,19 @@ When using reasoning models for summary generation, each provider has specific l
 ## How It Works
 
 1. **On `store_context`**: Summary generation runs in parallel with embedding generation before the database transaction. Both must complete before data is saved. If summary generation fails, the entire operation fails (transactional integrity).
-2. **On `store_context_batch`**: Summary generation runs for each entry within its transaction. All generation completes before the entry is committed.
+2. **On `store_context_batch`**: Summary generation runs for each entry, beside its embedding generation, before the batch opens any transaction. A failure stores nothing of that entry, and nothing at all in atomic mode.
 3. **On `update_context`**: When `text` changes, summary and embedding are regenerated in parallel before the update transaction.
-4. **On `update_context_batch`**: Summary regenerated for entries with text changes within each entry's transaction.
+4. **On `update_context_batch`**: Summary regenerated for entries with text changes, before the batch opens any transaction.
 5. **Deduplication**: When a deduplicating store (`deduplicate` true, the default) finds that its likely duplicate already has a summary, summary generation is skipped and that summary is reused. A store with `deduplicate=false` always inserts a new entry and generates its summary like any other new entry.
+6. **Deferred generation**: A store or text update made with `defer_generation=true` generates no summary in the request; a background job generates it afterward (see [Deferred Summaries](#deferred-summaries)).
+
+### Deferred Summaries
+
+A write with `defer_generation=true` (see [Generation Status](api-reference.md#generation-status)) stores its entry without a summary and leaves the summary, the embeddings and the per-section summaries to a generation job that the server's worker runs in the background:
+
+- **Until the job completes** the entry has no summary: search results carry an empty `summary`, `get_context_by_ids` returns `''` when `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY=true`, and `navigate_context` reports a null root summary and no node summaries, even with `include_node_summaries=True`. A deferred text update clears the old text's summary and section summaries when it stores the new text, so no read ever pairs the new text with the old summary.
+- **The job generates what is missing.** It runs the summary leg when a summary provider is active and the entry has no summary, under the same `SUMMARY_MIN_CONTENT_LENGTH` rule as a synchronous write, so a short text stays without a summary. The section summaries follow the flat summary as they do in a request and share the same `SUMMARY_MAX_CONCURRENT` budget, which the worker shares with every synchronous request of the server.
+- **A summary failure fails the job's attempt.** When the summary still fails after its `SUMMARY_RETRY_MAX_ATTEMPTS` provider attempts, the worker discards the attempt's embeddings as well and retries the job after a backoff; after `GENERATION_JOB_MAX_ATTEMPTS` attempts (3 by default) the entry turns `failed` and keeps no summary until a server restart or `mcp-context-server-migrate --embed-missing` runs the job again (see [Retries and Failed Jobs](semantic-search.md#retries-and-failed-jobs)). A section-summary failure never fails the job: the section stays without a summary.
 
 ### Minimum Content Length
 
@@ -313,10 +322,11 @@ By default, summary generation is skipped for short text (fewer than 500 charact
 - **`store_context`** / **`store_context_batch`**: Text shorter than the threshold is stored without a summary (`summary` field is empty).
 - **`update_context`** / **`update_context_batch`**: When updated text is shorter than the threshold, any existing summary is cleared (set to NULL) since the summary no longer accurately represents the content.
 - **Deduplication**: When a deduplicating store (`deduplicate` true) updates a short-text duplicate without generating a summary, any pre-existing summary on the original entry is preserved via SQL `COALESCE`. With `deduplicate=false` the short text is stored as a new entry without a summary.
+- **Deferred generation**: The generation job applies the same threshold to the stored text, so a short text written with `defer_generation=true` turns `ready` without a summary.
 
 **Special values:**
 
-- `0` disables the threshold entirely — summaries are always generated regardless of text length.
+- `0` disables the threshold entirely: summaries are always generated regardless of text length.
 - The comparison uses strict `<` (text at exactly the threshold length IS summarized).
 
 ### Context Length and Truncation Control (Ollama)
@@ -390,6 +400,7 @@ The `summary` field appears in all search tool results when available:
       "is_text_content_truncated": true,
       "visibility": "private",
       "is_owner": true,
+      "generation_status": "ready",
       "metadata": {"agent_name": "developer", "status": "done"},
       "tags": ["implementation", "auth"]
     }
@@ -397,7 +408,7 @@ The `summary` field appears in all search tool results when available:
 }
 ```
 
-All search tools always return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 300 characters) with `is_text_content_truncated` flag. The `summary` field provides a dense LLM-generated summary (controlled by `SUMMARY_MAX_TOKENS`, default 4000 tokens) when summary generation is enabled, or an empty string when disabled or not yet generated. Use `get_context_by_ids` to retrieve the full, untruncated text content.
+All search tools always return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 300 characters) with `is_text_content_truncated` flag. The `summary` field provides a dense LLM-generated summary (controlled by `SUMMARY_MAX_TOKENS`, default 4000 tokens) when summary generation is enabled, or an empty string when disabled or not yet generated, as while an entry's `generation_status` is `pending`. Use `get_context_by_ids` to retrieve the full, untruncated text content.
 
 ## Disabling Summary Generation
 
@@ -458,14 +469,16 @@ uv sync --extra embeddings-ollama --extra summary-openai --extra reranking
 
 **Causes and solutions:**
 
-| Cause                             | Solution                                                  |
-|-----------------------------------|-----------------------------------------------------------|
-| `ENABLE_SUMMARY_GENERATION=false` | Set to `true` and install provider dependencies           |
-| Provider package not installed    | Run `uv sync --extra summary-ollama` or `summary-openai`  |
-| Ollama not running                | Start Ollama: `ollama serve`                              |
-| Model not pulled                  | Run `ollama pull qwen3:0.6b`                              |
-| Generation timed out              | Raise `SUMMARY_TIMEOUT_S` (default 240s) for slow models  |
-| API key missing                   | Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`               |
+| Cause                             | Solution                                                                                                                                                                               |
+|-----------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `ENABLE_SUMMARY_GENERATION=false` | Set to `true` and install provider dependencies                                                                                                                                        |
+| Provider package not installed    | Run `uv sync --extra summary-ollama` or `summary-openai`                                                                                                                               |
+| Ollama not running                | Start Ollama: `ollama serve`                                                                                                                                                           |
+| Model not pulled                  | Run `ollama pull qwen3:0.6b`                                                                                                                                                           |
+| Generation timed out              | Raise `SUMMARY_TIMEOUT_S` (default 240s) for slow models                                                                                                                               |
+| API key missing                   | Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`                                                                                                                                            |
+| `generation_status` is `pending`  | Wait for the entry's generation job; see [Deferred Summaries](#deferred-summaries)                                                                                                     |
+| `generation_status` is `failed`   | Fix the provider, then restart the server or run `mcp-context-server-migrate --embed-missing`; see [Monitoring Deferred Generation](semantic-search.md#monitoring-deferred-generation) |
 
 ### Server Won't Start
 

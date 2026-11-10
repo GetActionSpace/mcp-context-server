@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 import app.tools
+from app.tools._update_transaction import UpdateOutcome
 
 if TYPE_CHECKING:
     from app.settings import AppSettings
@@ -125,7 +126,7 @@ class TestUpdateContext:
 
         async def capture_update(_repos, _txn, **kwargs):
             captured['index_nodes'] = kwargs.get('index_nodes')
-            return (['text_content'], 1)
+            return UpdateOutcome(['text_content'], True, 'ready')
 
         with (
             patch('app.tools.context.update.settings', _settings_with_node_summaries(True)),
@@ -158,7 +159,7 @@ class TestUpdateContext:
 
         async def capture_update(_repos, _txn, **kwargs):
             captured['index_nodes'] = kwargs.get('index_nodes')
-            return (['text_content'], 1)
+            return UpdateOutcome(['text_content'], True, 'ready')
 
         with (
             patch('app.tools.context.update.settings', _settings_with_node_summaries(True)),
@@ -192,7 +193,7 @@ class TestUpdateContext:
 
         async def capture_update(_repos, _txn, **kwargs):
             captured['index_nodes'] = kwargs.get('index_nodes')
-            return (['text_content'], 1)
+            return UpdateOutcome(['text_content'], True, 'ready')
 
         with (
             patch('app.tools.context.update.settings', _settings_with_node_summaries(False)),

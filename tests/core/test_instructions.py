@@ -53,10 +53,10 @@ class TestDefaultInstructions:
         assert 'references' in DEFAULT_INSTRUCTIONS.lower()
 
     def test_default_instructions_character_budget(self) -> None:
-        """DEFAULT_INSTRUCTIONS should be within reasonable character budget (~2000-5800 chars)."""
+        """DEFAULT_INSTRUCTIONS should be within reasonable character budget (~2000-6300 chars)."""
         from app.instructions import DEFAULT_INSTRUCTIONS
 
-        assert 2000 < len(DEFAULT_INSTRUCTIONS) < 5800
+        assert 2000 < len(DEFAULT_INSTRUCTIONS) < 6300
 
     def test_default_instructions_lists_navigation_tools(self) -> None:
         """DEFAULT_INSTRUCTIONS must list the v3 navigation tools so clients discover them."""
@@ -84,6 +84,17 @@ class TestDefaultInstructions:
         assert (
             "- **Access**: entries are private to their owner unless public or shared; results carry "
             "`visibility` and `is_owner`, and only an entry's owner shares it."
+        ) in DEFAULT_INSTRUCTIONS
+
+    def test_default_instructions_explain_deferred_generation(self) -> None:
+        """DEFAULT_INSTRUCTIONS tells a storing agent how to defer generation and how to read its state."""
+        from app.instructions import DEFAULT_INSTRUCTIONS
+
+        assert (
+            '- Set `defer_generation: true` (per entry in the batch tools) when you need not wait for embeddings '
+            'and summaries: the entry is stored at once, readable and full-text searchable, and its '
+            '`generation_status` in write and read results stays `pending` until background generation finishes '
+            '(`ready`, from then on semantic search finds it) or gives up (`failed`).'
         ) in DEFAULT_INSTRUCTIONS
 
     def test_default_instructions_tool_rows_share_the_column_widths(self) -> None:

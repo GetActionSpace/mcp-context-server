@@ -43,7 +43,7 @@ from app.backends.postgresql_backend.session_profiles import RLS_READ_VIEWS
 from app.backends.postgresql_backend.session_profiles import RlsRequestProfile
 from app.ingest_sql import INGEST_INDEX_NAME
 from app.repositories import RepositoryContainer
-from tests.integration.postgresql.conftest import RlsUrls
+from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import ScopedDb
 from tests.repositories._access_scope_layouts import postgresql_rls_scoped_db
 from tests.repositories._access_scope_layouts import postgresql_scoped_db

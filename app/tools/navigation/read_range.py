@@ -4,8 +4,8 @@ It slices the full stored ``text_content`` directly, so it works for every entry
 and addresses it in the one Unicode code-point offset contract that ``grep_context``
 match offsets and ``navigate_context`` node offsets share -- locate, then extract.
 
-The response reports the entry's ``visibility`` and whether the caller owns it
-(``is_owner``).
+The response reports the entry's ``visibility``, whether the caller owns it
+(``is_owner``) and the state of its generated outputs (``generation_status``).
 """
 
 import asyncio
@@ -24,6 +24,7 @@ from app.services.text_lines import should_offload_line_scan
 from app.services.text_lines import split_lines_with_offsets
 from app.startup import ensure_repositories
 from app.tools._responses import entry_access_fields
+from app.tools._responses import generation_statuses
 from app.types import ReadContextRangeDict
 
 logger = logging.getLogger(__name__)
@@ -79,8 +80,11 @@ async def read_context_range(
     Returns:
         ReadContextRangeDict with ``context_id``, the resolved
         ``start_char``/``end_char`` and ``start_line``/``end_line`` (1-based), the
-        ``text`` of the slice, and the entry's ``visibility`` and ``is_owner``
-        (whether the caller owns it). Offsets are Unicode code-point indices.
+        ``text`` of the slice, and the entry's ``visibility``, ``is_owner``
+        (whether the caller owns it) and ``generation_status`` ('ready' once the
+        entry's embeddings and summaries are generated, 'pending' while their
+        generation waits or runs, 'failed' when it gave up after its retries).
+        Offsets are Unicode code-point indices.
 
     Raises:
         ToolError: If the id is invalid, not exactly one addressing mode is
@@ -110,6 +114,7 @@ async def read_context_range(
         text_value = rows[0]['text_content']
         text = text_value if text_value is not None else ''
         access = entry_access_fields(rows[0])
+        statuses = await generation_statuses([resolved_id], repos, scope=scope)
         length = len(text)
         # Line splitting costs one slice and one list append PER LINE, so like the
         # outline parse its cost tracks LINE count rather than text size: a
@@ -183,6 +188,7 @@ async def read_context_range(
             'text': snippet,
             'visibility': access['visibility'],
             'is_owner': access['is_owner'],
+            'generation_status': statuses[resolved_id],
         }
     except ToolError:
         raise

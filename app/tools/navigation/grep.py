@@ -13,8 +13,8 @@ regex) for byte-identical SQLite/PostgreSQL results.
 offset contract the navigation tools share: they feed straight into
 ``read_context_range`` ``start_char``/``end_char`` -- locate, then extract.
 
-Every grep row reports its entry's ``visibility`` and whether the caller owns it
-(``is_owner``).
+Every grep row reports its entry's ``visibility``, whether the caller owns it
+(``is_owner``) and the state of its generated outputs (``generation_status``).
 """
 
 import asyncio
@@ -40,11 +40,13 @@ from app.services.grep_service import match_entry
 from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.tools._responses import entry_access_fields
+from app.tools._responses import generation_statuses
 from app.tools._validation import reject_unstorable_input
 from app.tools.search.limits import MAX_FILTER_TAGS
 from app.tools.search.limits import MAX_METADATA_FILTERS
 from app.tools.search.limits import filter_caps_error
 from app.types import EntryAccessFields
+from app.types import GenerationStatus
 from app.types import GrepContentMatchDict
 from app.types import GrepContextResultDict
 from app.types import GrepCountDict
@@ -58,6 +60,7 @@ def _shape_grep_output(
     output_mode: str,
     entry_results: list[GrepEntryResult],
     access: Mapping[str, EntryAccessFields],
+    statuses: Mapping[str, GenerationStatus],
     total_matches: int,
     truncated: bool,
     timed_out_ids: list[str] | None = None,
@@ -66,7 +69,7 @@ def _shape_grep_output(
 
     Returns:
         The response, every row of it carrying the access fields of its entry, taken
-        from ``access`` by entry id.
+        from ``access`` by entry id, and its generation state, taken from ``statuses``.
     """
     if output_mode == 'content':
         content_rows: list[GrepContentMatchDict] = [
@@ -80,6 +83,7 @@ def _shape_grep_output(
                 'after': list(match.after),
                 'visibility': access[entry.context_id]['visibility'],
                 'is_owner': access[entry.context_id]['is_owner'],
+                'generation_status': statuses[entry.context_id],
             }
             for entry in entry_results
             for match in entry.matches
@@ -92,6 +96,7 @@ def _shape_grep_output(
                 'count': entry.match_count,
                 'visibility': access[entry.context_id]['visibility'],
                 'is_owner': access[entry.context_id]['is_owner'],
+                'generation_status': statuses[entry.context_id],
             }
             for entry in entry_results
         ]
@@ -103,6 +108,7 @@ def _shape_grep_output(
                 'match_count': entry.match_count,
                 'visibility': access[entry.context_id]['visibility'],
                 'is_owner': access[entry.context_id]['is_owner'],
+                'generation_status': statuses[entry.context_id],
             }
             for entry in entry_results
         ]
@@ -255,7 +261,11 @@ async def grep_context(
         ``line_number``, ``line``, ``match_start``/``match_end`` (Unicode
         code-point offsets into text_content), and ``before``/``after`` context
         lines. In ``files_with_matches`` mode each result is ``context_id`` +
-        ``match_count``; in ``count`` mode ``context_id`` + ``count``.
+        ``match_count``; in ``count`` mode ``context_id`` + ``count``. Every result also
+        carries its entry's ``visibility``, ``is_owner`` (whether the caller owns
+        the entry) and ``generation_status`` ('ready' once the entry's embeddings
+        and summaries are generated, 'pending' while their generation waits or
+        runs, 'failed' when it gave up after its retries).
         ``timed_out_context_ids`` lists entries skipped because their regex match
         exceeded the timeout (present only when some entry timed out -- the result
         is then incomplete for those entries).
@@ -402,7 +412,9 @@ async def grep_context(
             entry_results, collected = _trim_entry_results(entry_results, max_matches)
 
         truncated = bool(scan_stats.get('truncated')) or match_truncated or scan_deadline_exceeded
-        return _shape_grep_output(output_mode, entry_results, access, collected, truncated, timed_out_ids)
+        # One generation state read for the entries the response carries, never for the scanned rows without a match.
+        statuses = await generation_statuses((entry.context_id for entry in entry_results), repos, scope=scope)
+        return _shape_grep_output(output_mode, entry_results, access, statuses, collected, truncated, timed_out_ids)
     except ToolError:
         raise
     except Exception as exc:

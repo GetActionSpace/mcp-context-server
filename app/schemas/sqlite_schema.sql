@@ -108,6 +108,28 @@ ON context_entry_grants(context_entry_id, principal_type, principal_id, permissi
 CREATE INDEX IF NOT EXISTS idx_grants_principal
 ON context_entry_grants(principal_type, principal_id, context_entry_id);
 
+-- Generation jobs. One row per entry whose generated outputs are outstanding
+-- ('pending', or 'running' under a worker's lease) or whose generation gave
+-- up ('failed'); an entry without a row has every output it needs. attempts
+-- counts the claims of the job, last_error keeps the text of its last
+-- failure, claim_token identifies the claim of a running job, created_at
+-- orders the queue, and available_at is the time from which a pending job
+-- may be claimed or a running job's lease ends, both from the database
+-- clock. The queue index serves the scan for the oldest claimable job and
+-- the counts per status. This script runs at every startup, so the two
+-- statements also create both objects on a database that predates them.
+CREATE TABLE IF NOT EXISTS generation_jobs (
+    context_entry_id TEXT PRIMARY KEY NOT NULL REFERENCES context_entries(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    claim_token TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    available_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_generation_jobs_queue ON generation_jobs (status, available_at, created_at);
+
 -- Metadata field expression indexes are NOT declared here. They are the single
 -- responsibility of handle_metadata_indexes (app/migrations/metadata.py), which
 -- provisions exactly the set named in METADATA_INDEXED_FIELDS at server startup

@@ -5,10 +5,9 @@ refused right after the compression guard, before any provisioning migration run
 ingest index runs right after the access-control migration, because its SQLite key names
 the access columns that migration adds on an in-place upgrade, and the grant owner
 migration follows it, because its index and foreign key name ``owner_id``, which the
-access-control migration adds the same way. The request role's grants
-and then the row-level security migration run last, once every table and column this
-boot provisions exists, so the grants cover every managed table and the read view lists
-every column.
+access-control migration adds the same way. The request role's grants and then the
+row-level security migration run last, once every table and column this boot provisions
+exists, so the grants cover every managed table and the read view lists every column.
 """
 
 import inspect

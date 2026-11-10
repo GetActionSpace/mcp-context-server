@@ -9,7 +9,7 @@ Eight rules hold:
 2. A repository method that calls an entry point takes a required keyword-only ``scope``
    and hands that same ``scope`` to every such call.
 3. Such a method is typed by its class: a guarded method keeps the scope type its
-   predicate needs, and a child or system method takes the wider ``BackendAccess``.
+   predicate needs, and a child, worker or system method takes the wider ``BackendAccess``.
 4. No repository method carries a ``scope`` it neither hands to a call nor reads, and no
    guarded ``scope`` admits the maintenance identity.
 5. The maintenance identity never appears under ``app/tools`` or ``app/repositories``:
@@ -52,7 +52,8 @@ RELATION_SEAM_MODULE = 'repositories/base.py'
 # The directories whose DDL creates the tables, and the table the access predicate reads by name.
 DDL_HOMES = ('schemas', 'migrations')
 GRANTS_TABLE = 'context_entry_grants'
-CREATE_TABLE = re.compile(r'CREATE\s+(?:VIRTUAL\s+)?TABLE\s+IF\s+NOT\s+EXISTS\s+(\w+)\s*(?:\(|USING\b)')
+# A table created by its name, or by an f-string placeholder holding a module-level constant.
+CREATE_TABLE = re.compile(r'CREATE\s+(?:VIRTUAL\s+)?TABLE\s+IF\s+NOT\s+EXISTS\s+(\w+|\{\w+\})\s*(?:\(|USING\b)')
 
 # The names of the maintenance identity and the directories it must never reach.
 MAINTENANCE_NAMES = frozenset({'MAINTENANCE', 'MaintenanceAccess'})
@@ -146,7 +147,7 @@ def test_backend_calling_method_forwards_its_scope(key: str) -> None:
 
 @pytest.mark.parametrize('key', [key for key in _backend_callers() if key not in registry_keys(*GUARDED)])
 def test_child_and_system_backend_callers_take_the_backend_access(key: str) -> None:
-    """A child or system method renders no predicate, so it accepts every identity the backend binds."""
+    """A child, worker or system method renders no predicate, so it accepts every identity the backend binds."""
     _parameter, annotation = scope_parameter(key)
 
     assert annotation is BackendAccess
@@ -211,19 +212,48 @@ def test_readable_relation_is_asked_only_through_the_repository_base() -> None:
     assert stray == []
 
 
+def _module_string_constants(tree: ast.Module) -> dict[str, str]:
+    """Return every name a module binds to a string literal at its top level."""
+    constants: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            constants.update({target.id: value.value for target in targets if isinstance(target, ast.Name)})
+    return constants
+
+
 def _tables_referencing_the_context_table() -> set[str]:
-    """Return every table whose DDL under the schema and migration directories references ``context_entries``."""
+    """Return every table whose DDL under the schema and migration directories references ``context_entries``.
+
+    A Python module may name the table through a module-level string constant interpolated
+    into an f-string; the constant's value is the table's name.
+
+    Returns:
+        The table names.
+    """
     tables: set[str] = set()
     for home in DDL_HOMES:
         for file in sorted((APP / home).rglob('*')):
             if file.suffix not in {'.sql', '.py'}:
                 continue
             text = file.read_text(encoding='utf-8')
+            constants = _module_string_constants(ast.parse(text)) if file.suffix == '.py' else {}
             matches = list(CREATE_TABLE.finditer(text))
             for index, match in enumerate(matches):
                 end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-                if 'REFERENCES context_entries(id)' in text[match.end():end]:
-                    tables.add(match.group(1))
+                if 'REFERENCES context_entries(id)' not in text[match.end():end]:
+                    continue
+                name = match.group(1)
+                if name.startswith('{'):
+                    constant = name.strip('{}')
+                    assert constant in constants, f'{file.name}: {constant} is no module-level string constant'
+                    name = constants[constant]
+                tables.add(name)
     return tables
 
 

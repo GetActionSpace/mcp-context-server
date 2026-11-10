@@ -16,6 +16,7 @@ from fastmcp.exceptions import ToolError
 
 import app.tools
 from app.repositories import RepositoryContainer
+from tests.tools._generation_jobs import InMemoryGenerationJobs
 
 # Get the actual async functions from app.tools
 store_context = app.tools.store_context
@@ -33,6 +34,7 @@ class TestSearchContextDateFiltering:
         self.mock_repos.context = AsyncMock()
         self.mock_repos.tags = AsyncMock()
         self.mock_repos.images = AsyncMock()
+        self.mock_repos.generation_jobs = InMemoryGenerationJobs()
 
     @pytest.mark.asyncio
     async def test_filter_by_start_date_future(self) -> None:

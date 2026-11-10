@@ -23,7 +23,7 @@ from app.migrations.rls_ddl import MANAGED_TABLES
 from tests.integration.postgresql._rls_matrix import POLICY_ROLE
 from tests.integration.postgresql._rls_matrix import REQUEST_ROLE
 from tests.integration.postgresql._rls_matrix import rls_settings
-from tests.integration.postgresql.conftest import RlsUrls
+from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import ScopedDb
 from tests.repositories._access_scope_layouts import postgresql_owner_seeded_db
 
@@ -131,6 +131,7 @@ async def test_the_policy_role_receives_exactly_the_needed_privileges(
     assert report.locked
     assert report.statements
     assert held == expected
+    assert held['generation_jobs'] == DML
     assert held['unrelated_notes'] == held['unrelated_notes_id_seq'] == held['unrelated_counter'] == frozenset()
     assert ('compression_metadata' in held) is (owner_db.layout == 'compressed')
     assert await admin_conn.fetchval("SELECT has_schema_privilege($1, 'public', 'USAGE')", POLICY_ROLE)

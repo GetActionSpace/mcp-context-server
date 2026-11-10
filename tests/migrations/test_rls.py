@@ -28,6 +28,7 @@ from app.migrations.rls import apply_rls
 from app.migrations.rls import create_read_view
 from app.migrations.rls import drop_read_view
 from app.migrations.rls import read_definition
+from app.migrations.rls_ddl import CHILD_PARENT_KEYS
 from app.migrations.rls_ddl import PIN_SEARCH_PATH
 from app.migrations.rls_ddl import enable_statement
 from app.migrations.rls_ddl import guard_function
@@ -191,7 +192,7 @@ class TestApplyToAnEmptyDatabase:
         assert 'context_entries_read' in ddl
         assert 'context_entry_grants_insert' in ddl
         assert 'context_entry_grants_delete' in ddl
-        for absent in ('tags', 'image_attachments', 'embedding_metadata', 'vec_context_embeddings', 'context_index_nodes'):
+        for absent in CHILD_PARENT_KEYS:
             assert f'{absent}_read' not in ddl
         assert 'ENABLE ROW LEVEL SECURITY' not in ddl
 
