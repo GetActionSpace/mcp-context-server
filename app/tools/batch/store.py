@@ -74,7 +74,8 @@ async def store_context_batch(
     text merges into that new entry, as it is then the latest one.
 
     Generation: an entry's embeddings, summary and section summaries are generated before
-    it is stored, and a generation failure stores nothing of it. An entry with
+    it is stored; an embedding or summary failure stores nothing of it, while a section
+    summary that fails is left out and the entry is stored without it. An entry with
     defer_generation=True skips the pre-check and generation: it is stored at once with a
     background job that generates its outputs, readable and full-text searchable
     immediately, and found by semantic search once the job has written its embeddings.
@@ -84,7 +85,7 @@ async def store_context_batch(
 
     Size limits:
     - Maximum 100 entries per batch
-    - Image limits per entry: 10MB each, 100MB total
+    - Image limits per entry: at most 10 images, 10MB each, 100MB total
     - Tag limits per entry: 100 tags, each at most 128 characters
     - thread_id: at most 256 characters
     - Value under an indexed metadata field: at most 512 characters

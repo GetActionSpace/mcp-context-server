@@ -98,11 +98,17 @@ async def get_statistics() -> StatisticsResponseDict:
     every caller.
 
     Returns:
-        StatisticsResponseDict with total_entries (int), total_threads (int),
-        total_images (int), unique_tags (int), database_size_mb (float),
-        connection_metrics (dict), semantic_search (dict with enabled,
-        available, backend, model, dimensions, context_count, embedding_count,
-        average_chunks_per_entry, coverage_percentage),
+        StatisticsResponseDict with total_entries (int), by_source and
+        by_content_type (entry counts per source and per content type),
+        total_images (int), unique_tags (int), total_threads (int),
+        avg_entries_per_thread (float), most_active_threads (the 5 threads with
+        the most entries, each {thread_id, count}), top_tags (the 10 most used
+        tags, each {tag, count}), backend ('sqlite' or 'postgresql'),
+        database_size_mb (float), embeddings_size_mb (float) and
+        embeddings_size_estimated (bool) when embedding generation or
+        compression is on, connection_metrics (dict), semantic_search (dict with
+        enabled, available, backend, model, dimensions, context_count,
+        embedding_count, average_chunks_per_entry, coverage_percentage),
         fts (dict with enabled, available, language, backend, engine,
         indexed_entries, coverage_percentage), chunking (dict with enabled,
         chunk_size, chunk_overlap, aggregation), reranking (dict with

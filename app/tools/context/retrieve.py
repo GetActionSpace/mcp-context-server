@@ -34,8 +34,10 @@ async def get_context_by_ids(
     Use this when you have specific context IDs from previous operations
     and need the complete, untruncated content.
 
-    Non-existent IDs and IDs of entries the caller may not read are silently
-    skipped alike; only the readable entries found are returned.
+    Full IDs of entries that do not exist or that the caller may not read are
+    silently skipped alike; only the readable entries found are returned. An ID
+    may also be an 8-31 character hex prefix of a readable entry; a malformed ID,
+    or a prefix matching no readable entry or several, fails the whole call.
     Accepts at most 100 IDs per call (the same cap as the batch tools); an
     oversized list is rejected at the tool boundary as a validation error
     before any database work. Fetch larger sets in successive calls.
@@ -62,7 +64,8 @@ async def get_context_by_ids(
           signal distinct from the "feature disabled" None.
 
     Raises:
-        ToolError: If fetching context entries fails.
+        ToolError: If an ID is malformed, if a prefix matches no readable entry
+            or several, or if fetching context entries fails.
     """
     try:
         # Get repositories first; prefix resolution below needs the context repo.

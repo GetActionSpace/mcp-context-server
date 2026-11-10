@@ -110,7 +110,8 @@ async def store_context(
         bool,
         Field(
             description='False (default): embeddings, the summary and the section summaries are '
-            'generated before the entry is stored, and a generation failure stores nothing. True: '
+            'generated before the entry is stored; an embedding or summary failure stores nothing, '
+            'while a section summary that fails is left out. True: '
             'the entry is stored at once, readable and full-text searchable, and a background job '
             "generates its outputs; the response's generation_status is 'pending' until the job "
             "writes them ('ready'), or 'failed' once its retries are exhausted. Semantic search "
@@ -140,7 +141,8 @@ async def store_context(
     conversations.
 
     Generation: by default embeddings, the summary and the section summaries are generated
-    before the entry is stored, and a generation failure stores nothing. With
+    before the entry is stored; an embedding or summary failure stores nothing, while a
+    section summary that fails is left out and the entry is stored without it. With
     defer_generation=True the entry is stored at once and a background job generates its
     outputs: the entry is readable and full-text searchable immediately, and semantic
     search finds it once the job has written its embeddings. A deferred store that

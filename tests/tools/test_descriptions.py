@@ -29,9 +29,10 @@ from fastmcp import FastMCP
 from fastmcp.tools import Tool
 
 from app import tools as exported_tools
+from app.discovery_types import StatisticsResponseDict
 from app.ingest import MAX_PLAN_DELETES
+from app.repositories.fts_repository.query import transform_query_sqlite
 from app.tools import TOOL_ANNOTATIONS
-from app.tools import list_ingest_state
 from app.tools import plan_context_sync
 from app.tools import register_tool
 from app.tools import store_context
@@ -44,6 +45,7 @@ from app.tools.descriptions import _SQLITE_MODE_DESCRIPTIONS
 from app.tools.descriptions import _generate_postgresql_fts_description
 from app.tools.descriptions import _generate_sqlite_fts_description
 from app.tools.descriptions import generate_fts_description
+from app.tools.search.limits import RANKED_SEARCH_DEPTH
 
 
 async def _served_tool(tool_name: str) -> Tool:
@@ -155,6 +157,13 @@ class TestSqliteFtsDescription:
         assert 'Stemming: DISABLED' in result
         assert 'Porter stemmer is English-only' in result
         assert 'does NOT match' in result
+
+    def test_prefix_note_matches_how_a_hyphenated_word_is_searched(self) -> None:
+        """The hyphen note describes the prefix query the server builds: each part a prefix, both required."""
+        assert transform_query_sqlite('full-text', 'prefix') == '"full"* "text"*'
+        result = _generate_sqlite_fts_description('english')
+        assert 'Hyphenated words are split: "full-text" becomes "full* AND text*"' in result
+        assert 'adjacency' not in result
 
 
 class TestPostgresqlFtsDescription:
@@ -310,6 +319,40 @@ class TestDescriptionReadBack:
         assert 'and failed' in returns
         assert 'summary, node and generation figures count only the entries the caller may read' in description
 
+    @pytest.mark.asyncio
+    async def test_statistics_return_description_names_every_top_level_field(self) -> None:
+        """An agent picks a tool by its field list, so the list names every field the response can carry."""
+        description = await _served_description('get_statistics')
+        top_level = description[description.index('Returns:'):description.index('Raises:')]
+        # Drop the parenthesized explanations, so a name inside a nested block does not count for a top-level field.
+        while (stripped := re.sub(r'\([^()]*\)', '', top_level)) != top_level:
+            top_level = stripped
+        names = set(re.findall(r'[a-z_]+', top_level))
+        missing = sorted(set(StatisticsResponseDict.__annotations__) - names)
+        assert not missing, f'the get_statistics return description omits {missing}'
+
+
+class TestRankedPaginationDescription:
+    """Each ranked search tool tells a client that a page is a window into one ranking of bounded depth."""
+
+    @staticmethod
+    def _assert_states_the_ranked_window(description: str, label: str) -> None:
+        prose = ' '.join(description.split())
+        assert f'A query has ONE ranking, at most {RANKED_SEARCH_DEPTH} rows deep' in prose, (
+            f'{label} does not state the depth of the ranking'
+        )
+        returns = description[description.index('Returns:'):description.index('Raises:')]
+        assert 'rank_depth_limit' in returns, f'the {label} return description omits rank_depth_limit'
+
+    @pytest.mark.parametrize('backend', ['sqlite', 'postgresql'])
+    def test_fts_description_states_the_ranked_window(self, backend: Literal['sqlite', 'postgresql']) -> None:
+        self._assert_states_the_ranked_window(generate_fts_description(backend, 'english'), f'{backend} full-text')
+
+    @pytest.mark.parametrize('tool_name', ['semantic_search_context', 'hybrid_search_context'])
+    @pytest.mark.asyncio
+    async def test_served_description_states_the_ranked_window(self, tool_name: str) -> None:
+        self._assert_states_the_ranked_window(await _served_description(tool_name), tool_name)
+
 
 class TestWriteToolDescriptions:
     """Every write tool tells a client how to defer generation and which generation state its response reports."""
@@ -374,17 +417,17 @@ class TestSyncToolSchemas:
         for name, schema in properties.items():
             assert schema.get('description'), f'{name} carries no served description'
 
-    def test_plan_description_states_the_whitespace_rule(self) -> None:
-        tool = Tool.from_function(plan_context_sync)
-        assert tool.description is not None
+    @pytest.mark.asyncio
+    async def test_plan_description_states_the_whitespace_rule(self) -> None:
         # The description is the tool docstring, wrapped across lines; a client reads it as prose.
-        description = ' '.join(tool.description.split())
+        description = ' '.join((await _served_description('plan_context_sync')).split())
         assert 'digest of the text it would store after surrounding whitespace is removed' in description
 
-    @pytest.mark.parametrize('tool_function', [plan_context_sync, list_ingest_state], ids=lambda f: f.__name__)
-    def test_served_schemas_name_no_server_identifier(self, tool_function: Callable[..., Awaitable[object]]) -> None:
+    @pytest.mark.parametrize('tool_name', ['plan_context_sync', 'list_ingest_state'])
+    @pytest.mark.asyncio
+    async def test_served_schemas_name_no_server_identifier(self, tool_name: str) -> None:
         """Neither the description nor the input or output schema names a server module, constant or column."""
-        tool = Tool.from_function(tool_function)
+        tool = await _served_tool(tool_name)
         assert tool.output_schema is not None
         served = json.dumps({'description': tool.description, 'input': tool.parameters, 'output': tool.output_schema})
         assert _INTERNAL_NAME.search(served) is None, _INTERNAL_NAME.search(served)

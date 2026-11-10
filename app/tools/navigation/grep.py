@@ -252,8 +252,9 @@ async def grep_context(
     unscoped pattern scans entries sequentially. The ``pattern`` accepts at most
     GREP_MAX_PATTERN_CHARS characters (default 32768), the ``tags`` filter at most
     100 tags, and ``metadata_filters`` at most 100 filters per request; an oversized
-    input (like an invalid metadata filter) returns a structured validation-error
-    response with ``error`` and ``validation_errors``.
+    input is rejected at the tool boundary as a validation error before any scan,
+    while an invalid metadata filter returns a structured validation-error response
+    with ``error`` and ``validation_errors``.
 
     Returns:
         GrepContextResultDict with ``mode``, ``total_matches``, ``truncated`` and

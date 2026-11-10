@@ -174,6 +174,12 @@ The `scores` object contains:
 - fts_rank: Always null for standalone FTS search
 - rerank_score: Cross-encoder relevance (HIGHER = better), present when reranking enabled
 
+Pagination:
+- A query has ONE ranking, at most 100 rows deep; limit and offset select a window
+  inside it, so paging never repeats a row on two pages nor skips one entirely.
+- A window reaching past that depth is served short (empty when the offset itself is
+  past it) and the response carries rank_depth_limit.
+
 Returns:
     Dict with query (str), mode (str), results (list with id, thread_id, source,
     text_content (truncated), summary, is_text_content_truncated,
@@ -182,7 +188,8 @@ Returns:
     embeddings and summaries are generated, 'pending' while their generation
     waits or runs, 'failed' when it gave up after its retries; the full-text
     index covers an entry as soon as it is stored)), count (int), language (str),
-    and stats (only when explain_query=True).
+    stats (only when explain_query=True), and rank_depth_limit (only when the
+    requested window reaches past the ranked depth).
 
 Raises:
     ToolError: If FTS is not available or search operation fails.'''
@@ -196,7 +203,7 @@ match (default): Natural language query. Words joined with implicit AND.
 
 prefix: Wildcard search with * suffix. Matches word beginnings.
   Example: "search*" matches "searching", "searched", "searchable"
-  Note: Hyphenated words become an adjacency phrase-prefix ("full-text" -> "full" then a word starting with "text")
+  Note: Hyphenated words are split: "full-text" becomes "full* AND text*"
 
 phrase: Exact phrase matching. Words must appear in exact order.
   Example: "exact phrase" matches only "exact phrase", not "phrase exact"
