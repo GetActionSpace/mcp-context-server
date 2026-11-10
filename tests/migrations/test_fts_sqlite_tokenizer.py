@@ -140,8 +140,8 @@ class TestFtsMultilingualUnicode61:
     def test_chinese_tokenization(self, multilingual_db: Path) -> None:
         """Test that Chinese text is searchable.
 
-        Note: FTS5 with unicode61 tokenizes CJK text character-by-character,
-        so we search for individual characters or use prefix matching.
+        Note: FTS5 with unicode61 indexes an unbroken run of CJK characters as one
+        token, so the test searches for the ASCII word that stands apart from the run.
         """
         with sqlite3.connect(str(multilingual_db)) as conn:
             conn.row_factory = sqlite3.Row

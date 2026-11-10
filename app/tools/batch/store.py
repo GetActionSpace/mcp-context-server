@@ -66,7 +66,9 @@ async def store_context_batch(
     Deduplication: the candidate is the latest entry of the same thread_id and source
     among the entries the caller may read; when the caller owns it and its text is
     identical, the existing entry is updated, otherwise a new entry owned by the caller
-    is inserted. Deduplication is suppressed when opposite-source entries the caller
+    is inserted. In such an update metadata, tags and images are replaced when the entry
+    gives them and kept when it does not, and its visibility and owner never change.
+    Deduplication is suppressed when opposite-source entries the caller
     may read exist after the candidate, preserving chronological ordering.
     Pre-check optimization skips embedding/summary generation for likely duplicates.
     An entry with deduplicate=False skips the candidate and always inserts a new entry
@@ -74,17 +76,21 @@ async def store_context_batch(
     text merges into that new entry, as it is then the latest one.
 
     Generation: an entry's embeddings, summary and section summaries are generated before
-    it is stored, and a generation failure stores nothing of it. An entry with
+    it is stored; an embedding or summary failure stores nothing of it, while a section
+    summary that fails is left out and the entry is stored without it. An entry with
     defer_generation=True skips the pre-check and generation: it is stored at once with a
     background job that generates its outputs, readable and full-text searchable
-    immediately, and found by semantic search once the job has written its embeddings.
+    immediately, and found by semantic search once the job has written its embeddings;
+    one that deduplicates into an existing entry keeps a waiting generation job, restarts
+    a failed one, and adds one only when an output is missing.
     Each stored item's generation_status is 'ready' when the entry's generated outputs are
     complete, 'pending' while its generation job waits or runs, and 'failed' once the job
     exhausted its retries; an item that was not stored reports null.
 
     Size limits:
     - Maximum 100 entries per batch
-    - Image limits per entry: 10MB each, 100MB total
+    - Image limits per entry: at most 10 images; by default 10MB each and 100MB in total
+      (the operator may set other sizes)
     - Tag limits per entry: 100 tags, each at most 128 characters
     - thread_id: at most 256 characters
     - Value under an indexed metadata field: at most 512 characters

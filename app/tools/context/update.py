@@ -93,8 +93,9 @@ async def update_context(
         bool,
         Field(
             description='Applies only when text is given. False (default): embeddings, the summary '
-            'and the section summaries are regenerated before the update is applied, and a '
-            'generation failure changes nothing. True: the new text is stored at once, its old '
+            'and the section summaries are regenerated before the update is applied; an embedding '
+            'or summary failure changes nothing, while a section summary that fails is left out. '
+            'True: the new text is stored at once, its old '
             'embeddings, summary and section summaries are removed, and a background job generates '
             "new ones; the response's generation_status is 'pending' until the job writes them "
             "('ready'), or 'failed' once its retries are exhausted.",

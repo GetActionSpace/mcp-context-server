@@ -157,6 +157,38 @@ class ServerMixin(HarnessCore):
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_tool_descriptions_describe_the_response(self) -> bool:
+        """Verify every served tool description carries its return and error sections.
+
+        A client learns what a tool answers, and how it fails, from the description
+        list_tools serves. Each tool's docstring ends with a ``Returns:`` and a
+        ``Raises:`` section, and the full-text search tool's generated description
+        carries the same two, so both headings must reach the client for every tool,
+        in that order, each followed by text.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'tool_descriptions_describe_the_response'
+        assert self.client is not None
+        try:
+            tools = await self.client.list_tools()
+            problems: list[str] = []
+            for tool in tools:
+                description = tool.description or ''
+                returns, raises = description.find('Returns:'), description.find('Raises:')
+                if returns < 0 or raises < 0:
+                    missing = ' and '.join(name for name, at in (('Returns:', returns), ('Raises:', raises)) if at < 0)
+                    problems.append(f'{tool.name} serves no {missing} section')
+                elif not (returns < raises and description[returns + 8:raises].strip() and description[raises + 7:].strip()):
+                    problems.append(f'{tool.name} serves an empty or misplaced Returns: or Raises: section')
+            if not tools:
+                problems.append('the server lists no tools')
+            return self._record(test_name, problems, f'{len(tools)} tool descriptions carry their return and error sections')
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_force_off_removes_search_tool(self) -> bool:
         """Verify ENABLE_FTS=false force-off removes fts_search_context end to end.
 

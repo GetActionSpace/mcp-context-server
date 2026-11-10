@@ -219,7 +219,12 @@ async def grep_context(
     ] = 'files_with_matches',
     context_lines: Annotated[
         int,
-        Field(ge=0, le=100, description='Surrounding lines before/after each match in content mode (like grep -C)'),
+        Field(
+            ge=0,
+            le=100,
+            description='Surrounding lines before/after each match in content mode (like grep -C; '
+                        'clamped to the server cap, 20 by default)',
+        ),
     ] = 0,
     max_matches: Annotated[
         int,
@@ -252,8 +257,9 @@ async def grep_context(
     unscoped pattern scans entries sequentially. The ``pattern`` accepts at most
     GREP_MAX_PATTERN_CHARS characters (default 32768), the ``tags`` filter at most
     100 tags, and ``metadata_filters`` at most 100 filters per request; an oversized
-    input (like an invalid metadata filter) returns a structured validation-error
-    response with ``error`` and ``validation_errors``.
+    input is rejected at the tool boundary as a validation error before any scan,
+    while an invalid metadata filter returns a structured validation-error response
+    with ``error`` and ``validation_errors``.
 
     Returns:
         GrepContextResultDict with ``mode``, ``total_matches``, ``truncated`` and

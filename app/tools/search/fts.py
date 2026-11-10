@@ -53,9 +53,9 @@ async def fts_search_context(
     mode: Annotated[
         Literal['match', 'prefix', 'phrase', 'boolean'],
         Field(
-            description="Search mode: 'match' (default, natural language), "
-            "'prefix' (wildcard with *), 'phrase' (exact phrase), "
-            "'boolean' (AND/OR/NOT operators)",
+            description="Search mode: 'match' (default, all words required), "
+            "'prefix' (each word a word beginning), 'phrase' (the words in sequence), "
+            "'boolean' (operators; the tool description gives this backend's syntax)",
         ),
     ] = 'match',
     thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter by thread')] = None,
@@ -102,11 +102,12 @@ async def fts_search_context(
 ) -> dict[str, Any]:
     """Full-text search with linguistic analysis (stemming, ranking, boolean queries).
 
-    Search modes:
-    - match: Natural language query (default) - words are stemmed and matched
-    - prefix: Wildcard search - "search*" matches "searching", "searched"
-    - phrase: Exact phrase matching - "exact phrase" must appear as-is
-    - boolean: Boolean operators - "python AND (async OR await) NOT blocking"
+    Search modes (the served description gives each backend's syntax, examples and stemming):
+    - match: Natural language query (default) - words joined with implicit AND
+    - prefix: Every word is matched as a word beginning - "search*" matches "searching", "searched"
+    - phrase: The words in sequence, in this order
+    - boolean: Operators per backend - SQLite: AND, OR, NOT and parentheses;
+      PostgreSQL: space for AND, "or", "-" for NOT, no grouping
 
     Filtering options (all combinable):
     - thread_id/source: Basic entry filtering
@@ -138,8 +139,11 @@ async def fts_search_context(
     Returns:
         Dict with query (str), mode (str), results (list with id, thread_id, source,
         text_content (truncated), summary, is_text_content_truncated,
-        metadata, scores, highlighted, tags, visibility, is_owner (whether the
-        caller owns the entry)), count (int), language (str),
+        metadata, scores, highlighted (set only when highlight=True), tags, visibility,
+        is_owner (whether the caller owns the entry), generation_status ('ready' once the
+        entry's embeddings and summaries are generated, 'pending' while their generation
+        waits or runs, 'failed' when it gave up after its retries; the full-text
+        index covers an entry as soon as it is stored)), count (int), language (str),
         stats (only when explain_query=True), and rank_depth_limit (only when the
         requested window reaches past the ranked depth).
 

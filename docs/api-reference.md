@@ -70,7 +70,7 @@ Every tool call runs as one principal: the verified token subject under `MCP_AUT
 
 ## Generation Status
 
-The write tools generate each entry's embeddings, its summary and the summaries of its Markdown sections (see [Semantic Search](semantic-search.md#generation-modes) and [Summary Generation](summary-generation.md)). By default a write generates them before it commits, and a generation failure stores nothing. A write that sets `defer_generation` to true (the parameter of `store_context` and `update_context`, or the key of the same name on an entry of `store_context_batch` or `update_context_batch`) commits the entry at once together with a generation job, and the server's generation worker generates the outputs afterward. You can read the entry as soon as the write returns, and `search_context`, `fts_search_context`, `grep_context` and the full-text leg of `hybrid_search_context` find it from then on; `semantic_search_context` and the semantic leg of `hybrid_search_context` find it once the job has stored its embeddings. A server with neither an embedding nor a summary provider has nothing to generate, so a deferring write there is an ordinary write and reports `ready`.
+The write tools generate each entry's embeddings, its summary and the summaries of its Markdown sections (see [Semantic Search](semantic-search.md#generation-modes) and [Summary Generation](summary-generation.md)). By default a write generates them before it commits: an embedding or summary failure stores nothing, while a section summary that fails is left out and the entry is stored without it. A write that sets `defer_generation` to true (the parameter of `store_context` and `update_context`, or the key of the same name on an entry of `store_context_batch` or `update_context_batch`) commits the entry at once together with a generation job, and the server's generation worker generates the outputs afterward. You can read the entry as soon as the write returns, and `search_context`, `fts_search_context`, `grep_context` and the full-text leg of `hybrid_search_context` find it from then on; `semantic_search_context` and the semantic leg of `hybrid_search_context` find it once the job has stored its embeddings. A server with neither an embedding nor a summary provider has nothing to generate, so a deferring write there is an ordinary write and reports `ready`.
 
 Every store and update response, every entry the read tools return and every `grep_context` result carries `generation_status`:
 
@@ -100,7 +100,7 @@ Store a context entry with optional images and flexible metadata.
 - `tags` (list, optional): Tags for organization (automatically normalized). At most 100 tags, each at most 128 characters.
 - `visibility` (str, optional): `private` (readable by the owner and every grantee) or `public` (readable by everyone). Omitted uses `ACCESS_CONTROL_DEFAULT_VISIBILITY` (default `private`). Publishing as `public` may require the role named by `ACCESS_CONTROL_PUBLISH_ROLE`. Applies only when the store inserts a new entry: a deduplication update never changes the existing entry's owner or visibility.
 - `deduplicate` (bool, optional, default `true`): `true` updates the caller's own latest entry of the same thread and source instead of inserting a duplicate when its text is identical, which protects against client retransmits (see [Access Scoping](#access-scoping)). `false` skips that lookup and always inserts a new entry owned by the caller, with `visibility` applied and every generation step run as for any new entry. Corpus sync clients pass `false`; see [Storing Without Deduplication](knowledge-base.md#storing-without-deduplication).
-- `defer_generation` (bool, optional, default `false`): `false` generates the entry's embeddings, summary and section summaries before the entry is stored, and a generation failure stores nothing. `true` stores the entry at once with a generation job that generates them in the background (see [Generation Status](#generation-status)). A deferring store skips the deduplication pre-check that lets a likely duplicate reuse its summary; when it deduplicates into an existing entry, that entry keeps a pending job, gets a fresh job in place of a failed one, and gets a job otherwise only when it lacks embeddings or a summary that the server would generate.
+- `defer_generation` (bool, optional, default `false`): `false` generates the entry's embeddings, summary and section summaries before the entry is stored; an embedding or summary failure stores nothing, while a section summary that fails is left out. `true` stores the entry at once with a generation job that generates them in the background (see [Generation Status](#generation-status)). A deferring store skips the deduplication pre-check that lets a likely duplicate reuse its summary; when it deduplicates into an existing entry, that entry keeps a pending job, gets a fresh job in place of a failed one, and gets a job otherwise only when it lacks embeddings or a summary that the server would generate.
 
 **Write-path length caps:** `thread_id` (256 characters), each tag (128 characters) and the value stored under any *indexed* metadata field (512 characters) are bounded at the tool boundary. Each of those values lands in a PostgreSQL btree index whose index-tuple ceiling would otherwise reject the write inside the store transaction while SQLite accepted the identical value, so the cap is what keeps the two backends accepting and rejecting the same input. Values under non-indexed metadata keys are not length-capped. The indexed-value cap is measured on the text the index actually stores, so a list or object under an indexed field is measured as its whole serialized JSON, not skipped.
 
@@ -149,7 +149,7 @@ Search context entries with powerful filtering including metadata queries and da
 
 **Date Filtering:** Supports ISO 8601 date filtering. See [Date Filtering](#date-filtering) section below.
 
-**Returns:** List of matching context entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry) and `generation_status` (see [Generation Status](#generation-status)), plus optional query statistics
+**Returns:** Dictionary with `results` (the matching entries, each with `id`, `thread_id`, `source`, truncated `text_content`, `summary`, `is_text_content_truncated`, `metadata`, `tags`, `visibility`, `is_owner` (true when the caller owns the entry) and `generation_status` (see [Generation Status](#generation-status))), `count`, and `stats` when `explain_query` is true
 
 ### get_context_by_ids
 
@@ -159,7 +159,7 @@ Fetch specific context entries by their IDs.
 - `context_ids` (list[str], required): List of context-entry IDs in canonical 32-character hex or 36-character hyphenated UUID form (at most 100 IDs per call). Both forms are accepted at the tool boundary; storage canonicalizes to 32-character lowercase hex. An 8-31 character hex prefix is also accepted for each ID and resolved independently (zero matches or an ambiguous prefix returns an error).
 - `include_images` (bool, optional): Include image data (default: True)
 
-**Returns:** List of the requested entries the caller may read, with full untruncated `text_content`; an ID that does not exist and an ID of an entry the caller may not read are both omitted. Each entry contains `id`, `thread_id`, `source`, `text_content`, `metadata`, `tags`, `images`, `created_at`, `updated_at`, `visibility` (`private` or `public`), `is_owner` (true when the caller owns the entry; the owner itself is never returned), and `generation_status` (see [Generation Status](#generation-status)). The `summary` field follows a tri-state contract controlled by the `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` environment variable:
+**Returns:** List of the requested entries the caller may read, with full untruncated `text_content`; an ID that does not exist and an ID of an entry the caller may not read are both omitted. Each entry contains `id`, `thread_id`, `source`, `content_type`, `text_content`, `metadata`, `tags`, `created_at`, `updated_at`, `visibility` (`private` or `public`), `is_owner` (true when the caller owns the entry; the owner itself is never returned), and `generation_status` (see [Generation Status](#generation-status)). An entry whose `content_type` is `multimodal` also carries `images` (each with `mime_type`, base64 `data` and any image `metadata`) when `include_images` is true; a text entry, and every entry fetched with `include_images` false, has no `images` key. The `summary` field follows a tri-state contract controlled by the `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` environment variable:
 
 - When disabled (the default), the `summary` key is omitted entirely; consumers reading `entry.get('summary')` will receive `None`, which is the conventional Python signal for "feature disabled, no value to surface".
 - When enabled and the stored summary is a non-empty string, the value is returned verbatim.
@@ -230,7 +230,7 @@ Update specific fields of an existing context entry.
 - `tags` (list, optional): New tags (full replacement). At most 100 tags, each at most 128 characters.
 - `images` (list, optional): New images (full replacement). Each image's own `metadata` crosses the boundary as a JSON-encoded **string**, not an object.
 - `visibility` (str, optional): New visibility, `private` or `public`. Only the entry owner may change it, and publishing as `public` may require the role named by `ACCESS_CONTROL_PUBLISH_ROLE`.
-- `defer_generation` (bool, optional, default `false`): applies only when `text` is given; any other update ignores it and generates nothing. `false` regenerates the embeddings, summary and section summaries before the update is applied, and a generation failure changes nothing. `true` stores the new text at once, removes the old text's embeddings, summary and section summaries in the same transaction, and leaves the new ones to a generation job (see [Generation Status](#generation-status)).
+- `defer_generation` (bool, optional, default `false`): applies only when `text` is given; any other update ignores it and generates nothing. `false` regenerates the embeddings, summary and section summaries before the update is applied; an embedding or summary failure changes nothing, while a section summary that fails is left out. `true` stores the new text at once, removes the old text's embeddings, summary and section summaries in the same transaction, and leaves the new ones to a generation job (see [Generation Status](#generation-status)).
 
 The same write-path length caps as `store_context` apply: each tag is limited to 128 characters, and the value under any indexed metadata field to 512 characters, in both the `metadata` and the `metadata_patch` form.
 
@@ -331,7 +331,7 @@ Perform full-text search with linguistic processing, relevance ranking, and high
 
 Note: This tool is available by default (`ENABLE_FTS=auto`); set `ENABLE_FTS=false` to force off. The implementation varies by backend:
 - **SQLite**: Uses FTS5 with BM25 ranking. Porter stemmer (English) or unicode61 tokenizer (multilingual).
-- **PostgreSQL**: Uses tsvector/tsquery with ts_rank_cd ranking. Supports 29 languages with full stemming.
+- **PostgreSQL**: Uses tsvector/tsquery with ts_rank_cd ranking. Stems 28 languages; the 29th `FTS_LANGUAGE` value, `simple`, tokenizes without stemming.
 
 **Parameters:**
 - `query` (str, required): Search query (1-10000 characters)
@@ -351,18 +351,20 @@ Note: This tool is available by default (`ENABLE_FTS=auto`); set `ENABLE_FTS=fal
 - `explain_query` (bool, optional): Include query execution statistics (default: false)
 
 **Search Modes:**
-- `match`: Standard word matching with stemming (default)
-- `prefix`: Prefix matching for autocomplete-style search
-- `phrase`: Exact phrase matching preserving word order
-- `boolean`: Boolean operators (AND, OR, NOT) for complex queries
+- `match`: All words required, in their stemmed forms where stemming applies (default)
+- `prefix`: Every word is matched as a word beginning
+- `phrase`: The words in sequence, in this order
+- `boolean`: Operators, in backend-specific syntax: `AND`, `OR`, `NOT` and parentheses on SQLite; a space for AND, `or` and a leading `-` for NOT on PostgreSQL, which has no grouping
+
+The description the server serves for this tool states the exact behavior of the running backend and `FTS_LANGUAGE`: stemming, stop words, and the syntax and examples of each mode.
 
 **Metadata Filtering:** Supports same filtering syntax as search_context. See [Metadata Guide](metadata-addition-updating-and-filtering.md).
 
 **Returns:** Dictionary with:
 - Query string and search mode
-- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry), `generation_status`, relevance scores, and highlighted snippets. The full-text index covers an entry as soon as it is stored, whatever its generation state
+- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, `visibility`, `is_owner` (true when the caller owns the entry), `generation_status`, relevance scores, and a highlighted snippet when `highlight` is true. The full-text index covers an entry as soon as it is stored, whatever its generation state
 - Result count
-- FTS availability status
+- The configured `FTS_LANGUAGE` (`language`)
 
 **Example:**
 ```python
@@ -373,7 +375,7 @@ fts_search_context(
     thread_id="project-123"
 )
 
-# Boolean search with metadata filter
+# Boolean search with metadata filter (SQLite syntax; on PostgreSQL write "authentication security")
 fts_search_context(
     query="authentication AND security",
     mode="boolean",
