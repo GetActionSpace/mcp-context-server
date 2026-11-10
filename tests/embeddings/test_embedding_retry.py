@@ -128,6 +128,62 @@ async def test_non_retryable_error_not_retried() -> None:
     assert mock_func.call_count == 1
 
 
+def _provider_error(module: str, name: str, *bases: type[Exception]) -> type[Exception]:
+    """Return an exception class that reports the given module and name, as a provider package's class does."""
+    return type(name, bases or (Exception,), {'__module__': module})
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_embedding_settings')
+@pytest.mark.parametrize(
+    ('module', 'name'),
+    [
+        ('openai', 'RateLimitError'),
+        ('openai._exceptions', 'APIConnectionError'),
+        ('ollama', 'ResponseError'),
+        ('huggingface_hub.errors', 'HfHubHTTPError'),
+        ('huggingface_hub.utils._errors', 'HfHubHTTPError'),
+    ],
+)
+async def test_retry_on_a_transient_provider_error(module: str, name: str) -> None:
+    """A provider package's transient error is retried, whichever of its modules defines the class."""
+    error = _provider_error(module, name)
+    mock_func = AsyncMock(side_effect=[error('transient'), [0.1, 0.2]])
+
+    result = await with_retry_and_timeout(mock_func, 'test_operation')
+
+    assert result == [0.1, 0.2]
+    assert mock_func.call_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_embedding_settings')
+async def test_retry_on_an_integration_subclass_of_a_transient_provider_error() -> None:
+    """An integration's own subclass of a transient provider error is retried like the error it extends."""
+    sdk_error = _provider_error('openai', 'RateLimitError')
+    wrapped = _provider_error('langchain_openai.embeddings.base', 'OpenAIRateLimitError', sdk_error)
+    mock_func = AsyncMock(side_effect=[wrapped('rate limited'), [0.1, 0.2]])
+
+    result = await with_retry_and_timeout(mock_func, 'test_operation')
+
+    assert result == [0.1, 0.2]
+    assert mock_func.call_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_embedding_settings')
+async def test_a_permanent_provider_error_and_its_subclasses_are_not_retried() -> None:
+    """A provider error outside the transient set is raised at once, and so is an integration's subclass of it."""
+    sdk_error = _provider_error('openai', 'BadRequestError')
+    wrapped = _provider_error('langchain_openai.embeddings.base', 'OpenAIInvalidRequestError', sdk_error)
+
+    for error in (sdk_error, wrapped):
+        mock_func = AsyncMock(side_effect=error('bad request'))
+        with pytest.raises(error, match='bad request'):
+            await with_retry_and_timeout(mock_func, 'test_operation')
+        assert mock_func.call_count == 1
+
+
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_embedding_settings')
 async def test_operation_name_in_error_message() -> None:

@@ -83,11 +83,19 @@ _RETRYABLE_BY_MODULE: dict[str, frozenset[str]] = {
 }
 
 
+_NO_NAMES: frozenset[str] = frozenset()
+
+
 def _is_retryable_exception(exc: BaseException) -> bool:
     """Check if an exception should trigger a retry.
 
     This function checks both statically-typed base exceptions and
-    dynamically-detected provider-specific exceptions by module/class name.
+    dynamically-detected provider-specific exceptions by module/class name. A
+    provider exception matches when its class or any class it extends is listed
+    under the module that defines that class or under that module's top-level
+    package, as ``isinstance`` would decide with the provider package imported, so
+    an integration's own subclass of a provider error is retried like the error it
+    extends.
 
     Args:
         exc: The exception to check.
@@ -99,19 +107,12 @@ def _is_retryable_exception(exc: BaseException) -> bool:
     if isinstance(exc, _BASE_RETRYABLE_EXCEPTIONS):
         return True
 
-    # Check provider-specific exceptions by module and class name
-    exc_type = type(exc)
-    exc_module = exc_type.__module__
-    exc_name = exc_type.__name__
-
-    # Check if this exception's module has retryable exceptions
-    if exc_module in _RETRYABLE_BY_MODULE and exc_name in _RETRYABLE_BY_MODULE[exc_module]:
-        return True
-
-    # Check parent module (e.g., 'openai._exceptions' -> 'openai')
-    if '.' in exc_module:
-        parent_module = exc_module.split('.')[0]
-        if parent_module in _RETRYABLE_BY_MODULE and exc_name in _RETRYABLE_BY_MODULE[parent_module]:
+    for cls in type(exc).__mro__:
+        module = cls.__module__
+        if cls.__name__ in _RETRYABLE_BY_MODULE.get(module, _NO_NAMES):
+            return True
+        # A class a package defines in a submodule ('openai._exceptions' -> 'openai')
+        if cls.__name__ in _RETRYABLE_BY_MODULE.get(module.partition('.')[0], _NO_NAMES):
             return True
 
     return False
