@@ -37,6 +37,7 @@ from app.repositories.fts_repository.query import ENGLISH_STOPWORD_FTS_LANGUAGES
 from app.repositories.fts_repository.query import desired_sqlite_fts_tokenizer
 from app.repositories.fts_repository.query import transform_query_sqlite
 from app.settings.navigation import GrepContextSettings
+from app.settings.search import FTS_LANGUAGES
 from app.tools import TOOL_ANNOTATIONS
 from app.tools import plan_context_sync
 from app.tools import register_tool
@@ -51,6 +52,10 @@ from app.tools.descriptions import _generate_postgresql_fts_description
 from app.tools.descriptions import _generate_sqlite_fts_description
 from app.tools.descriptions import generate_fts_description
 from app.tools.search.limits import RANKED_SEARCH_DEPTH
+
+# Claude Code cuts the description of an MCP tool it lists directly at this many characters by default,
+# so a description within it reaches the agent whole.
+CLIENT_DESCRIPTION_LIMIT = 4096
 
 
 async def _served_tool(tool_name: str) -> Tool:
@@ -440,10 +445,28 @@ class TestDescriptionStructure:
         """Both backends advertise the working `metadata` simple-equality filter, not only metadata_filters."""
         for backend in ('sqlite', 'postgresql'):
             result = generate_fts_description(backend, 'english')
-            assert '- metadata: Simple key=value equality matching' in result, (
-                f'{backend} FTS description omits the simple `metadata` filter param'
+            filters = (
+                'Filters (all combinable): thread_id, source, content_type, tags, start_date, end_date, '
+                'metadata, metadata_filters.'
             )
-            assert 'metadata_filters' in result
+            assert filters in result, f'{backend} FTS description does not list its filter parameters'
+
+
+class TestDescriptionLength:
+    """Every served description fits the length at which a client cuts a description it lists directly."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('tool_name', sorted(set(TOOL_ANNOTATIONS) - {'fts_search_context'}))
+    async def test_a_docstring_description_reaches_the_client_whole(self, tool_name: str) -> None:
+        assert len(await _served_description(tool_name)) <= CLIENT_DESCRIPTION_LIMIT
+
+    @pytest.mark.parametrize('backend', ['sqlite', 'postgresql'])
+    def test_the_full_text_description_reaches_the_client_whole_under_every_language(
+        self, backend: Literal['sqlite', 'postgresql'],
+    ) -> None:
+        assert len(FTS_LANGUAGES) == 29
+        lengths = {language: len(generate_fts_description(backend, language)) for language in sorted(FTS_LANGUAGES)}
+        assert {language: length for language, length in lengths.items() if length > CLIENT_DESCRIPTION_LIMIT} == {}
 
 
 class TestDescriptionAccessScoping:

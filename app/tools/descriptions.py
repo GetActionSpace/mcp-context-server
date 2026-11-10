@@ -189,10 +189,10 @@ def _generate_postgresql_fts_description(language: str) -> str:
     )
 
 
-# Uniform template for both backends - structure is IDENTICAL, only values change
+# Uniform template for both backends - structure is IDENTICAL, only values change.
+# The generated description must stay within 4,096 characters for every backend and language:
+# a client may cut a longer one before the agent reads it (tests/tools/test_descriptions.py pins the bound).
 _FTS_DESCRIPTION_TEMPLATE = '''Full-text search using {engine} ({backend} backend).
-
-FTS provides keyword-based search with relevance scoring.
 
 IMPORTANT - {backend} {engine} characteristics (FTS_LANGUAGE={language}):
 - Stemming: {stemming_status} {stemming_detail}
@@ -206,13 +206,7 @@ IMPORTANT - {backend} {engine} characteristics (FTS_LANGUAGE={language}):
 
 {mode_descriptions}
 
-Filtering options (all combinable):
-- thread_id/source: Basic entry filtering
-- content_type: Filter by text or multimodal entries
-- tags: OR logic (matches ANY of provided tags)
-- start_date/end_date: Date range filtering (ISO 8601)
-- metadata: Simple key=value equality matching
-- metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
+Filters (all combinable): thread_id, source, content_type, tags, start_date, end_date, metadata, metadata_filters.
 
 Only entries the caller may read are matched, returned and counted.
 
@@ -235,8 +229,7 @@ Returns:
     entry's embeddings and summaries are generated, 'pending' while their generation
     waits or runs, 'failed' when it gave up after its retries; the full-text
     index covers an entry as soon as it is stored)), count (int), language (str),
-    stats (only when explain_query=True), and rank_depth_limit (only when the
-    requested window reaches past the ranked depth).
+    stats (only when explain_query=True), and rank_depth_limit (see Pagination).
 
 Raises:
     ToolError: If FTS is not available or search operation fails.'''
@@ -279,21 +272,18 @@ prefix: Every word is matched as a word beginning, all words required; a trailin
   Note: Hyphenated words are split: "full-text" becomes "full* AND text*"
 
 phrase: Phrase matching: the words in sequence, with the stemming and stop word handling above.
-  Example: "running tests" matches "run test" (stemmed forms in sequence)
-  Note: Stop words are replaced with positional distance operators.
+  Note: Stop words are replaced with positional distance operators:
   "lord of the rings" matches "lord ... rings" with correct distance.
 
 boolean: Boolean operators with websearch syntax.
   Syntax:
     - space = AND (implicit, no "AND" keyword exists)
-    - "or" = OR operator (case-insensitive: "or", "OR", "Or" all work)
+    - "or" = OR operator, in any letter case
     - "-" = NOT operator (minus prefix on one term, no "NOT" keyword exists)
   Example: "python async -blocking" (python AND async, without blocking); "async or await" (either word)
   Grouping: none. Parentheses are ignored, and "or" binds looser than AND and "-":
     "python async or python await" means (python AND async) OR (python AND await),
     so repeat a shared term on each side of "or".
-  IMPORTANT:
-    - There is NO "AND" or "NOT" keyword. Use space for AND, "-" for NOT.
-    - Words "and"/"not" typed as terms are removed as stop words under English (and configs whose
-      ASCII words use the English stop list); other languages keep them as ordinary terms.
+  Note: Words "and"/"not" typed as terms are removed as stop words under English (and configs whose
+  ASCII words use the English stop list); other languages keep them as ordinary terms.
   Use double quotes for phrases: '"error handling" python\''''

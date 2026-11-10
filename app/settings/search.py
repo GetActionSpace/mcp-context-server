@@ -8,6 +8,16 @@ from pydantic import field_validator
 from app.settings.base import CommonSettings
 from app.settings.base import FeatureToggleSettings
 
+# The values FTS_LANGUAGE accepts: PostgreSQL's built-in text search configurations
+# (SELECT cfgname FROM pg_ts_config).
+FTS_LANGUAGES = frozenset({
+    'simple', 'arabic', 'armenian', 'basque', 'catalan', 'danish', 'dutch',
+    'english', 'finnish', 'french', 'german', 'greek', 'hindi', 'hungarian',
+    'indonesian', 'irish', 'italian', 'lithuanian', 'nepali', 'norwegian',
+    'portuguese', 'romanian', 'russian', 'serbian', 'spanish', 'swedish',
+    'tamil', 'turkish', 'yiddish',
+})
+
 
 class RerankingSettings(CommonSettings):
     """Cross-encoder reranking settings.
@@ -159,20 +169,11 @@ class FtsSettings(FeatureToggleSettings):
         Raises:
             ValueError: If the language is not a valid PostgreSQL text search configuration.
         """
-        # PostgreSQL built-in text search configurations
-        # Full list: SELECT cfgname FROM pg_ts_config;
-        valid_languages = {
-            'simple', 'arabic', 'armenian', 'basque', 'catalan', 'danish', 'dutch',
-            'english', 'finnish', 'french', 'german', 'greek', 'hindi', 'hungarian',
-            'indonesian', 'irish', 'italian', 'lithuanian', 'nepali', 'norwegian',
-            'portuguese', 'romanian', 'russian', 'serbian', 'spanish', 'swedish',
-            'tamil', 'turkish', 'yiddish',
-        }
         v_lower = v.lower()
-        if v_lower not in valid_languages:
+        if v_lower not in FTS_LANGUAGES:
             raise ValueError(
                 f"FTS_LANGUAGE='{v}' is not a valid PostgreSQL text search configuration. "
-                f'Valid options: {", ".join(sorted(valid_languages))}',
+                f'Valid options: {", ".join(sorted(FTS_LANGUAGES))}',
             )
         return v_lower
 
