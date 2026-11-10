@@ -39,7 +39,7 @@
           "name": "MAX_IMAGE_SIZE_MB"
         },
         {
-          "description": "Maximum total request size in megabytes",
+          "description": "Maximum combined size of one entry's images in megabytes",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1325,7 +1325,7 @@
           "name": "MAX_IMAGE_SIZE_MB"
         },
         {
-          "description": "Maximum total request size in megabytes",
+          "description": "Maximum combined size of one entry's images in megabytes",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
