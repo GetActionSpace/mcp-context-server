@@ -22,7 +22,7 @@ output_context_id: true
 #
 # Claude Code also submits turns it starts on the session's behalf, and the
 # UserPromptSubmit hook input carries no field naming a turn's origin, so the
-# start of the prompt text is the only signal a hook has. Claude Code wraps such
+# prompt text is the only signal a hook has. Claude Code wraps such
 # content in a tag: <task-notification> for its own notifications (a finished
 # background command or subagent, or a Stop-hook wake),
 # <cross-session-message ...> for a message from another Claude Code session,
@@ -34,9 +34,19 @@ output_context_id: true
 # session sent a message while you were working:". A peer message that arrives
 # with neither a tag nor a framing sentence cannot be told apart from a typed
 # prompt, so it is still stored, while a typed prompt that itself begins with
-# one of these tags or sentences is not. Claude Code issue
-# anthropics/claude-code#94675 asks for the missing origin field; the tag and
-# framing patterns are needed only until the hook input carries it.
+# one of these tags or sentences is not.
+#
+# A turn Claude Code starts can also carry neither a tag nor a framing
+# sentence: once a usage limit resets, it continues the interrupted task by
+# submitting the fixed prompt "Your claude.ai usage limit has reset. Continue
+# the task you were working on when the limit was reached; do not repeat work
+# that is already complete." Its pattern is anchored at both ends, so a typed
+# prompt that quotes the sentence, or opens with it and adds words of its own,
+# is still stored.
+#
+# Claude Code issue anthropics/claude-code#94675 asks for the missing origin
+# field; the tag, framing, and usage-limit-reset patterns are needed only until
+# the hook input carries it.
 #
 # A hook of `type: prompt` needs no pattern here: Claude Code evaluates it as a
 # model request of its own, so its prompt never reaches UserPromptSubmit. The
@@ -55,6 +65,7 @@ skip_patterns:
   - "^<channel "
   - ^Another Claude session sent a message
   - ^A peer session sent a message
+  - ^Your claude\.ai usage limit has reset\. Continue the task you were working on when the limit was reached; do not repeat work that is already complete\.$
 
 # Pre-built Claude Code slash commands to skip saving
 # These are system-level operations that don't need context preservation
