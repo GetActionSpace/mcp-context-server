@@ -12,13 +12,10 @@ attachments survive, and that the SQLite target's FTS index is populated.
 
 from __future__ import annotations
 
-import contextlib
 import sqlite3
 from collections.abc import AsyncIterator
 from collections.abc import Generator
 from pathlib import Path
-from urllib.parse import urlsplit
-from urllib.parse import urlunsplit
 
 import asyncpg
 import pytest
@@ -29,6 +26,9 @@ from app.cli.migrate_uuid.records import MigrationOptions
 from app.cli.migrate_uuid.sqlite_to_postgresql import run_migration_mixed_sqlite_to_postgresql
 from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.settings import get_settings
+from tests.integration.postgresql._v2_sources import PG_V2_SCHEMA
+from tests.integration.postgresql._v2_sources import drop_isolated_db
+from tests.integration.postgresql._v2_sources import make_isolated_db
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
@@ -41,33 +41,6 @@ def clear_settings_cache() -> Generator[None, None, None]:
     yield
     get_settings.cache_clear()
     _reset_compression_cache()
-
-
-def _replace_db_name(pg_url: str, new_db: str) -> str:
-    """Return ``pg_url`` with the database name replaced by ``new_db``."""
-    parts = urlsplit(pg_url)
-    return urlunsplit((parts.scheme, parts.netloc, f'/{new_db}', parts.query, parts.fragment))
-
-
-async def _make_isolated_db(pg_test_url: str, db_name: str) -> str:
-    """Create or recreate an isolated PG database; return its connection URL."""
-    admin = await asyncpg.connect(pg_test_url)
-    try:
-        await admin.execute(f'DROP DATABASE IF EXISTS {db_name}')
-        await admin.execute(f'CREATE DATABASE {db_name}')
-    finally:
-        await admin.close()
-    return _replace_db_name(pg_test_url, db_name)
-
-
-async def _drop_isolated_db(pg_test_url: str, db_name: str) -> None:
-    """Best-effort drop of an isolated database."""
-    admin = await asyncpg.connect(pg_test_url)
-    try:
-        with contextlib.suppress(Exception):
-            await admin.execute(f'DROP DATABASE IF EXISTS {db_name}')
-    finally:
-        await admin.close()
 
 
 _SQLITE_V2_SCHEMA = '''
@@ -96,35 +69,6 @@ CREATE TABLE image_attachments (
     image_metadata TEXT,
     position INTEGER DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-'''
-
-_PG_V2_SCHEMA = '''
-CREATE TABLE context_entries (
-    id BIGSERIAL PRIMARY KEY,
-    thread_id TEXT NOT NULL,
-    source TEXT NOT NULL,
-    content_type TEXT NOT NULL,
-    text_content TEXT,
-    metadata JSONB,
-    summary TEXT,
-    content_hash TEXT,
-    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE tags (
-    id BIGSERIAL PRIMARY KEY,
-    context_entry_id BIGINT REFERENCES context_entries(id) ON DELETE CASCADE,
-    tag TEXT NOT NULL
-);
-CREATE TABLE image_attachments (
-    id BIGSERIAL PRIMARY KEY,
-    context_entry_id BIGINT REFERENCES context_entries(id) ON DELETE CASCADE,
-    image_data BYTEA NOT NULL,
-    mime_type TEXT NOT NULL,
-    image_metadata JSONB,
-    position INTEGER DEFAULT 0,
-    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 '''
 
@@ -158,10 +102,10 @@ def _seed_sqlite_v2_source(path: Path) -> None:
 async def isolated_pg_v2_source_with_tags_images(pg_test_url: str) -> AsyncIterator[str]:
     """Integer-keyed PG v2 source seeded with tags + images (no embeddings)."""
     db_name = 'mcp_cross_v2_src'
-    url = await _make_isolated_db(pg_test_url, db_name)
+    url = await make_isolated_db(pg_test_url, db_name)
     setup = await asyncpg.connect(url)
     try:
-        await setup.execute(_PG_V2_SCHEMA)
+        await setup.execute(PG_V2_SCHEMA)
         await setup.execute(
             "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
             "VALUES ('thread-a', 'user', 'text', 'alpha beta gamma'), "
@@ -179,7 +123,7 @@ async def isolated_pg_v2_source_with_tags_images(pg_test_url: str) -> AsyncItera
     try:
         yield url
     finally:
-        await _drop_isolated_db(pg_test_url, db_name)
+        await drop_isolated_db(pg_test_url, db_name)
 
 
 @pytest.mark.asyncio
@@ -192,7 +136,7 @@ async def test_sqlite_to_pg_copies_tags_and_images(
     _seed_sqlite_v2_source(source_path)
 
     db_name = 'mcp_cross_sqlite_to_pg_tgt'
-    target_url = await _make_isolated_db(pg_test_url, db_name)
+    target_url = await make_isolated_db(pg_test_url, db_name)
     try:
         options = MigrationOptions(
             source_url=str(source_path),
@@ -214,7 +158,7 @@ async def test_sqlite_to_pg_copies_tags_and_images(
         finally:
             await tgt.close()
     finally:
-        await _drop_isolated_db(pg_test_url, db_name)
+        await drop_isolated_db(pg_test_url, db_name)
 
 
 @pytest.mark.asyncio
@@ -259,11 +203,11 @@ async def test_pg_to_sqlite_image_null_created_at_does_not_crash(
 ) -> None:
     """A schema-legal NULL image created_at is preserved as NULL, not a crash (Defect: None.isoformat())."""
     db_name = 'mcp_cross_pg_null_ts'
-    url = await _make_isolated_db(pg_test_url, db_name)
+    url = await make_isolated_db(pg_test_url, db_name)
     try:
         setup = await asyncpg.connect(url)
         try:
-            await setup.execute(_PG_V2_SCHEMA)
+            await setup.execute(PG_V2_SCHEMA)
             await setup.execute(
                 "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
                 "VALUES ('t', 'user', 'text', 'x')",
@@ -294,7 +238,7 @@ async def test_pg_to_sqlite_image_null_created_at_does_not_crash(
         finally:
             conn.close()
     finally:
-        await _drop_isolated_db(pg_test_url, db_name)
+        await drop_isolated_db(pg_test_url, db_name)
 
 
 @pytest.mark.asyncio
@@ -322,7 +266,7 @@ async def test_sqlite_to_pg_image_null_created_at_does_not_crash(
         conn.close()
 
     db_name = 'mcp_cross_sqlite_null_ts'
-    target_url = await _make_isolated_db(pg_test_url, db_name)
+    target_url = await make_isolated_db(pg_test_url, db_name)
     try:
         options = MigrationOptions(
             source_url=str(source_path),
@@ -340,4 +284,4 @@ async def test_sqlite_to_pg_image_null_created_at_does_not_crash(
         finally:
             await tgt.close()
     finally:
-        await _drop_isolated_db(pg_test_url, db_name)
+        await drop_isolated_db(pg_test_url, db_name)

@@ -260,29 +260,45 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                 f'metadata::text AS metadata, {summary_col_src}, {content_hash_col_src}, created_at, updated_at '
                 f'FROM context_entries ORDER BY created_at ASC, id ASC',
             )
+            # The metadata expression indexes are deliberately absent from the PostgreSQL
+            # base schema (a database this CLI initialized has none until its first server
+            # startup), so a PostgreSQL SOURCE can legitimately hold a value the TARGET's
+            # idx_metadata_<field> cannot index -- an oversized one, or one an integer or
+            # boolean index's cast rejects. Unchecked, that value aborts the INSERT
+            # mid-transaction and rolls the whole run back with a raw driver error naming
+            # no source row. The same check skips a value that does not parse as a
+            # float-typed field's declared type, which the server refuses to store.
+            # thread_id and tags need no equivalent check here: their indexes ARE in the
+            # base schema, so the source could not have stored a value that breaches them.
+            # Checked unconditionally so --dry-run surfaces the row too.
+            #
+            # Every skip is decided before any row is stored, so a value citing a skipped
+            # entry is kept as written whether the citing entry is older or newer than it:
+            # the rewriter of the storing pass treats every skipped id as not migrated.
+            skip_reasons: dict[int, tuple[str, str]] = {}
+            for entry in entry_rows:
+                source_id = int(entry['id'])
+                skip_reason = first_pg_unindexable_metadata_field(rewriter.rewrite(entry['metadata'], source_id).metadata)
+                if skip_reason is not None:
+                    skip_reasons[source_id] = skip_reason
+            storing_rewriter = rewriter.excluding(skip_reasons.keys())
             # Source ids whose context_entries row was skipped. Their children must be
             # skipped too: a tag, attachment or embedding row pointing at an id the
             # target never received would violate the foreign key and abort the run --
             # replacing one skipped row with a total failure.
-            pg_skipped_context_ids: set[int] = set()
+            pg_skipped_context_ids = set(skip_reasons)
+            # The metadata stored below differs from the metadata checked above only where
+            # a value cites a skipped entry and stays as written instead of becoming a
+            # 32-character id. Such a value passes every check the id passed (an id fails
+            # the integer, float and boolean casts, so it could only sit in an untyped or
+            # string field, where the shorter original fits too), so each row is stored as
+            # checked, and its skip is taken from the first pass, never decided again.
             for entry in entry_rows:
                 source_id = int(entry['id'])
                 new_id = id_mapping[source_id]
-                outcome = rewriter.rewrite(entry['metadata'], source_id)
+                outcome = storing_rewriter.rewrite(entry['metadata'], source_id)
                 rewritten_metadata = outcome.metadata
-                # The metadata expression indexes are deliberately absent from the
-                # PostgreSQL base schema (a database this CLI initialized has none until
-                # its first server startup), so a PostgreSQL SOURCE can legitimately hold
-                # a value the TARGET's idx_metadata_<field> cannot index -- an oversized
-                # one, or one an integer or boolean index's cast rejects. Unchecked, that
-                # value aborts the INSERT mid-transaction and rolls the whole run back
-                # with a raw driver error naming no source row. The same check skips a
-                # value that does not parse as a float-typed field's declared type, which
-                # the server refuses to store. thread_id and tags need no equivalent check
-                # here: their indexes ARE in the base schema, so the source could not have
-                # stored a value that breaches them. Checked unconditionally so --dry-run
-                # surfaces the row too.
-                unindexable = first_pg_unindexable_metadata_field(rewritten_metadata)
+                unindexable = skip_reasons.get(source_id)
                 # The counts of a skipped row are not added: none of its values reach the target.
                 stats.record_metadata(outcome, migrated=unindexable is None)
                 if unindexable is not None:
@@ -291,7 +307,6 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                         f'context_entries row id={source_id} thread_id={entry["thread_id"]!r} '
                         f'column {column!r} skipped: {reason}',
                     )
-                    pg_skipped_context_ids.add(source_id)
                     continue
                 if not options.dry_run:
                     owner_id_backfill, visibility_backfill = access_backfill_values()

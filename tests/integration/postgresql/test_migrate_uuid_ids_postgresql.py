@@ -1,0 +1,239 @@
+"""Acceptance tests of ``--rewrite-ids-at`` and ``--legacy-id-key`` in the migration directions through PostgreSQL.
+
+Each test runs the command line the operator runs against databases created for it on the
+test container, then reads the target. The expectations are the shared scenario's, so
+every direction is held to what the SQLite-to-SQLite migration produces.
+"""
+
+import asyncio
+import json
+from collections.abc import Callable
+from collections.abc import Generator
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Literal
+
+import asyncpg
+import pytest
+
+from app.cli.migrate import main as cli_main
+from app.cli.migrate_uuid.id_paths import DEFAULT_ID_PATH
+from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
+from app.settings import get_settings
+from tests.cli.migrate_uuid._id_rewrite_scenario import SCENARIO_ROWS
+from tests.cli.migrate_uuid._id_rewrite_scenario import TargetEntry
+from tests.cli.migrate_uuid._id_rewrite_scenario import assert_default_rewrite
+from tests.cli.migrate_uuid._id_rewrite_scenario import assert_legacy_stamp
+from tests.cli.migrate_uuid._id_rewrite_scenario import new_id
+from tests.cli.migrate_uuid._id_rewrite_scenario import read_sqlite_target
+from tests.cli.migrate_uuid._id_rewrite_scenario import row_warnings
+from tests.cli.migrate_uuid._id_rewrite_scenario import source_row
+from tests.cli.migrate_uuid._sources import seed_source_db
+from tests.helpers import LOCAL_SCOPE
+from tests.integration.postgresql._v2_sources import drop_isolated_db
+from tests.integration.postgresql._v2_sources import make_isolated_db
+from tests.integration.postgresql._v2_sources import seed_pg_v2_source
+
+pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
+
+type Direction = Literal['sqlite_to_postgresql', 'postgresql_to_sqlite', 'postgresql_to_postgresql']
+type CreateDatabase = Callable[[str], str]
+
+_TO_POSTGRESQL: list[Direction] = ['sqlite_to_postgresql', 'postgresql_to_postgresql']
+
+
+@pytest.fixture(autouse=True)
+def status_is_the_only_indexed_field(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    """Index only ``status`` as a string, whatever the developer environment sets."""
+    monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'status')
+    get_settings.cache_clear()
+    _reset_compression_cache()
+    yield
+    get_settings.cache_clear()
+    _reset_compression_cache()
+
+
+@pytest.fixture
+def create_database(pg_test_url: str) -> Iterator[CreateDatabase]:
+    """Create empty databases on the test container; drop them when the test ends."""
+    created: list[str] = []
+
+    def create(name: str) -> str:
+        url = asyncio.run(make_isolated_db(pg_test_url, name))
+        created.append(name)
+        return url
+
+    yield create
+    for name in created:
+        asyncio.run(drop_isolated_db(pg_test_url, name))
+
+
+async def _read_postgresql_target(url: str) -> dict[str, TargetEntry]:
+    """Read every entry of a migrated PostgreSQL target, keyed by its text."""
+    conn = await asyncpg.connect(url)
+    try:
+        rows = await conn.fetch('SELECT id, text_content, metadata::text AS metadata FROM context_entries')
+    finally:
+        await conn.close()
+    return {str(row['text_content']): TargetEntry(id=row['id'].hex, metadata_text=row['metadata']) for row in rows}
+
+
+async def _has_entries_table(url: str) -> bool:
+    """Whether the database at ``url`` has a ``context_entries`` table."""
+    conn = await asyncpg.connect(url)
+    try:
+        return await conn.fetchval("SELECT to_regclass('context_entries') IS NOT NULL")
+    finally:
+        await conn.close()
+
+
+async def _texts_found_by_legacy_id(url: str, old_id: int) -> list[str]:
+    """Search a PostgreSQL target with the metadata filter ``search_context`` applies."""
+    from app.backends.factory import create_backend
+    from app.repositories.context_repository import ContextRepository
+
+    backend = create_backend(backend_type='postgresql', connection_string=url)
+    await backend.initialize()
+    try:
+        found, _ = await ContextRepository(backend).search_contexts(metadata={'legacy_id': old_id}, scope=LOCAL_SCOPE)
+    finally:
+        await backend.shutdown()
+    return [str(row['text_content']) for row in found]
+
+
+class _Endpoints:
+    """The source and target of one migration, seeded and ready to run."""
+
+    def __init__(
+        self, direction: Direction, rows: list[dict[str, object]], tmp_path: Path, create_database: CreateDatabase,
+    ) -> None:
+        if direction == 'sqlite_to_postgresql':
+            source_path = tmp_path / 'source.db'
+            seed_source_db(source_path, rows)
+            self.source_url = f'sqlite:///{source_path.as_posix()}'
+        else:
+            self.source_url = create_database('mcp_ids_rewrite_src')
+            asyncio.run(seed_pg_v2_source(self.source_url, rows))
+        self._target_path: Path | None = None
+        if direction == 'postgresql_to_sqlite':
+            self._target_path = tmp_path / 'target.db'
+            self.target_url = f'sqlite:///{self._target_path.as_posix()}'
+        else:
+            self.target_url = create_database('mcp_ids_rewrite_tgt')
+
+    def migrate(self, report: Path, *options: str) -> int:
+        """Run the migration command line with a report."""
+        return cli_main(
+            ['--source-url', self.source_url, '--target-url', self.target_url, '--report', str(report), *options],
+        )
+
+    def read_target(self) -> dict[str, TargetEntry]:
+        """Read every migrated entry by its text."""
+        if self._target_path is not None:
+            return read_sqlite_target(self._target_path)
+        return asyncio.run(_read_postgresql_target(self.target_url))
+
+
+def _report(path: Path) -> dict[str, object]:
+    """Load a ``--report`` file."""
+    loaded = json.loads(path.read_text(encoding='utf-8'))
+    assert isinstance(loaded, dict)
+    return loaded
+
+
+@pytest.mark.parametrize('direction', ['sqlite_to_postgresql', 'postgresql_to_sqlite', 'postgresql_to_postgresql'])
+def test_default_path_and_stamp(direction: Direction, tmp_path: Path, create_database: CreateDatabase) -> None:
+    """The default path rewrites forward references and numeric strings, and every entry is stamped."""
+    endpoints = _Endpoints(direction, SCENARIO_ROWS, tmp_path, create_database)
+    report = tmp_path / 'report.json'
+
+    assert endpoints.migrate(report, '--legacy-id-key', 'legacy_id') == 0
+
+    rows, loaded = endpoints.read_target(), _report(report)
+    assert_default_rewrite(rows, loaded)
+    assert_legacy_stamp(rows, loaded)
+
+
+@pytest.mark.parametrize('direction', _TO_POSTGRESQL)
+def test_stamped_entry_is_found_by_metadata_filter(
+    direction: Direction, tmp_path: Path, create_database: CreateDatabase,
+) -> None:
+    """The metadata filter ``search_context`` applies finds an entry by its old id on a PostgreSQL target."""
+    endpoints = _Endpoints(direction, SCENARIO_ROWS, tmp_path, create_database)
+
+    assert endpoints.migrate(tmp_path / 'report.json', '--legacy-id-key', 'legacy_id') == 0
+
+    assert asyncio.run(_texts_found_by_legacy_id(endpoints.target_url, 2)) == ['entry-2']
+
+
+# Entry 2 is the one the target cannot accept: on a SQLite source its text holds a NUL,
+# which PostgreSQL cannot store; on a PostgreSQL source its indexed status is wider than
+# the index accepts. Entry 1, older, and entry 3, newer, cite it; entry 2 cites entry 1.
+_SKIPPED_COLUMN: dict[Direction, str] = {
+    'sqlite_to_postgresql': 'text_content',
+    'postgresql_to_postgresql': 'metadata.status',
+}
+
+
+def _rows_with_a_skipped_entry(direction: Direction) -> list[dict[str, object]]:
+    """The source rows of a run whose target skips entry 2."""
+    skipped = source_row(2, {'references': {'context_ids': [1]}}, '2024-02-01 10:00:00')
+    if direction == 'sqlite_to_postgresql':
+        skipped['text_content'] = 'entry-2\x00'
+    else:
+        skipped['metadata'] = {'references': {'context_ids': [1]}, 'status': 'x' * 3000}
+    return [
+        source_row(1, {'references': {'context_ids': [2]}}, '2024-01-01 10:00:00'),
+        skipped,
+        source_row(3, {'references': {'context_ids': [2, 1]}}, '2024-03-01 10:00:00'),
+    ]
+
+
+def _skip_error_prefix(direction: Direction) -> str:
+    """The start of the error that reports the skip of entry 2."""
+    return f"context_entries row id=2 thread_id='thread-ids' column '{_SKIPPED_COLUMN[direction]}' skipped"
+
+
+@pytest.mark.parametrize('direction', _TO_POSTGRESQL)
+def test_reference_to_a_skipped_row_is_not_rewritten(
+    direction: Direction, tmp_path: Path, create_database: CreateDatabase,
+) -> None:
+    """A reference to an entry the target skips stays as written, whether the citing entry is older or newer."""
+    endpoints = _Endpoints(direction, _rows_with_a_skipped_entry(direction), tmp_path, create_database)
+    report = tmp_path / 'report.json'
+
+    assert endpoints.migrate(report, '--legacy-id-key', 'legacy_id') == 1
+
+    rows, loaded = endpoints.read_target(), _report(report)
+    assert sorted(rows) == ['entry-1', 'entry-3']
+    assert rows['entry-1'].metadata == {'references': {'context_ids': [2]}, 'legacy_id': 1}
+    assert rows['entry-3'].metadata == {'references': {'context_ids': [2, new_id(rows, 1)]}, 'legacy_id': 3}
+    # The skipped entry's own reference to entry 1 is not counted: it never reaches the target.
+    assert loaded['id_paths'] == {DEFAULT_ID_PATH: {'rewritten': 1, 'not_migrated': 2, 'kept': 0}}
+    assert loaded['legacy_id'] == {'key': 'legacy_id', 'stamped': 2, 'already_present': 0, 'not_stamped': 0}
+    assert loaded['rows_migrated'] == 2
+    assert row_warnings(loaded) == [
+        'row 1: metadata.references.context_ids[0] holds 2, the id of an entry this run skipped; preserved',
+        'row 3: metadata.references.context_ids[0] holds 2, the id of an entry this run skipped; preserved',
+    ]
+    errors = loaded['errors']
+    assert isinstance(errors, list)
+    assert len(errors) == 1
+    assert str(errors[0]).startswith(_skip_error_prefix(direction))
+
+
+def test_dry_run_matches_real_run(tmp_path: Path, create_database: CreateDatabase) -> None:
+    """A dry run reports what the real run that follows it writes, and writes nothing."""
+    direction: Direction = 'sqlite_to_postgresql'
+    endpoints = _Endpoints(direction, _rows_with_a_skipped_entry(direction), tmp_path, create_database)
+    dry, real = tmp_path / 'dry.json', tmp_path / 'real.json'
+
+    assert endpoints.migrate(dry, '--dry-run', '--legacy-id-key', 'legacy_id') == 1
+    assert asyncio.run(_has_entries_table(endpoints.target_url)) is False
+    assert endpoints.migrate(real, '--legacy-id-key', 'legacy_id') == 1
+
+    dry_report, real_report = _report(dry), _report(real)
+    for key in ('rows_migrated', 'id_paths', 'legacy_id', 'errors'):
+        assert dry_report[key] == real_report[key], key
+    assert row_warnings(dry_report) == row_warnings(real_report)
+    assert real_report['rows_migrated'] == 2

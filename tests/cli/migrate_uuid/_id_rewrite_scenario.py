@@ -17,8 +17,8 @@ from app.cli.migrate_uuid.id_paths import DEFAULT_ID_PATH
 HEX_ID = '0123456789abcdef0123456789abcdef'
 
 
-def _row(old_id: int, metadata: object, created_at: str) -> dict[str, object]:
-    """Build one source row in the shape ``seed_source_db`` takes."""
+def source_row(old_id: int, metadata: object, created_at: str) -> dict[str, object]:
+    """Build one source row, whose text is ``entry-<old id>``, in the shape ``seed_source_db`` takes."""
     return {
         'id': old_id,
         'thread_id': 'thread-ids',
@@ -35,13 +35,13 @@ def _row(old_id: int, metadata: object, created_at: str) -> dict[str, object]:
 # the default path does not reach. Entry 3 holds every kind of value a path can find,
 # and a single id at depth. Entry 4 has no metadata; entry 5 already holds ``legacy_id``.
 SCENARIO_ROWS: list[dict[str, object]] = [
-    _row(1, {'references': {'context_ids': [3]}}, '2024-01-01 10:00:00'),
-    _row(
+    source_row(1, {'references': {'context_ids': [3]}}, '2024-01-01 10:00:00'),
+    source_row(
         2,
         {'references': {'context_ids': ['1']}, 'links': {'closed_by': [3], 'github_prs': ['1']}},
         '2024-02-01 10:00:00',
     ),
-    _row(
+    source_row(
         3,
         {
             'references': {'context_ids': [1, '2', 999, HEX_ID, '0042', True]},
@@ -49,8 +49,8 @@ SCENARIO_ROWS: list[dict[str, object]] = [
         },
         '2024-03-01 10:00:00',
     ),
-    _row(4, None, '2024-04-01 10:00:00'),
-    _row(5, {'legacy_id': 'kept-as-is'}, '2024-05-01 10:00:00'),
+    source_row(4, None, '2024-04-01 10:00:00'),
+    source_row(5, {'legacy_id': 'kept-as-is'}, '2024-05-01 10:00:00'),
 ]
 
 # The one value the default path finds that names no source entry.

@@ -9,11 +9,8 @@ embeddings are preserved.
 
 from __future__ import annotations
 
-import contextlib
 from collections.abc import AsyncIterator
 from collections.abc import Generator
-from urllib.parse import urlsplit
-from urllib.parse import urlunsplit
 
 import asyncpg
 import pytest
@@ -23,6 +20,8 @@ from app.cli.migrate_uuid.postgresql_to_postgresql import run_migration_postgres
 from app.cli.migrate_uuid.records import MigrationOptions
 from app.repositories.embedding_repository.compression_cache import _reset_compression_cache
 from app.settings import get_settings
+from tests.integration.postgresql._v2_sources import drop_isolated_db
+from tests.integration.postgresql._v2_sources import make_isolated_db
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
@@ -37,18 +36,6 @@ def clear_settings_cache() -> Generator[None, None, None]:
     yield
     get_settings.cache_clear()
     _reset_compression_cache()
-
-
-def _replace_db_name(pg_url: str, new_db: str) -> str:
-    """Return ``pg_url`` with the database name replaced by ``new_db``."""
-    parts = urlsplit(pg_url)
-    return urlunsplit((
-        parts.scheme,
-        parts.netloc,
-        f'/{new_db}',
-        parts.query,
-        parts.fragment,
-    ))
 
 
 _V2_SCHEMA_SQL = '''
@@ -113,32 +100,11 @@ def _v2_vec_table_without_boundaries() -> str:
     '''
 
 
-async def _make_isolated_db(pg_test_url: str, db_name: str) -> str:
-    """Create or recreate an isolated PG database; return its connection URL."""
-    admin = await asyncpg.connect(pg_test_url)
-    try:
-        await admin.execute(f'DROP DATABASE IF EXISTS {db_name}')
-        await admin.execute(f'CREATE DATABASE {db_name}')
-    finally:
-        await admin.close()
-    return _replace_db_name(pg_test_url, db_name)
-
-
-async def _drop_isolated_db(pg_test_url: str, db_name: str) -> None:
-    """Best-effort drop of an isolated database."""
-    admin = await asyncpg.connect(pg_test_url)
-    try:
-        with contextlib.suppress(Exception):
-            await admin.execute(f'DROP DATABASE IF EXISTS {db_name}')
-    finally:
-        await admin.close()
-
-
 @pytest_asyncio.fixture
 async def isolated_pg_v2_source_db(pg_test_url: str) -> AsyncIterator[str]:
     """Create an integer-keyed v2 PostgreSQL source database with chunk boundaries."""
     db_name = 'mcp_pg_pg_v2_source'
-    target_url = await _make_isolated_db(pg_test_url, db_name)
+    target_url = await make_isolated_db(pg_test_url, db_name)
     setup = await asyncpg.connect(target_url)
     try:
         await setup.execute('CREATE EXTENSION IF NOT EXISTS vector')
@@ -149,7 +115,7 @@ async def isolated_pg_v2_source_db(pg_test_url: str) -> AsyncIterator[str]:
     try:
         yield target_url
     finally:
-        await _drop_isolated_db(pg_test_url, db_name)
+        await drop_isolated_db(pg_test_url, db_name)
 
 
 @pytest_asyncio.fixture
@@ -158,7 +124,7 @@ async def isolated_pg_v2_source_db_no_boundaries(
 ) -> AsyncIterator[str]:
     """Create an integer-keyed v2 PostgreSQL source database without chunk boundaries."""
     db_name = 'mcp_pg_pg_v2_source_nb'
-    target_url = await _make_isolated_db(pg_test_url, db_name)
+    target_url = await make_isolated_db(pg_test_url, db_name)
     setup = await asyncpg.connect(target_url)
     try:
         await setup.execute('CREATE EXTENSION IF NOT EXISTS vector')
@@ -169,14 +135,14 @@ async def isolated_pg_v2_source_db_no_boundaries(
     try:
         yield target_url
     finally:
-        await _drop_isolated_db(pg_test_url, db_name)
+        await drop_isolated_db(pg_test_url, db_name)
 
 
 @pytest_asyncio.fixture
 async def isolated_pg_v3_target_db(pg_test_url: str) -> AsyncIterator[str]:
     """Create a UUID-keyed v3 PostgreSQL target database (production schema)."""
     db_name = 'mcp_pg_pg_v3_target'
-    target_url = await _make_isolated_db(pg_test_url, db_name)
+    target_url = await make_isolated_db(pg_test_url, db_name)
 
     # Build the production v3 schema using the live init_database + migrations.
     from app.backends import create_backend
@@ -204,7 +170,7 @@ async def isolated_pg_v3_target_db(pg_test_url: str) -> AsyncIterator[str]:
     try:
         yield target_url
     finally:
-        await _drop_isolated_db(pg_test_url, db_name)
+        await drop_isolated_db(pg_test_url, db_name)
 
 
 async def _connect_with_pgvector(pg_url: str) -> asyncpg.Connection:
@@ -350,7 +316,7 @@ async def test_pg_pg_migration_handles_missing_embedding_metadata_gracefully(
 ) -> None:
     """Migration completes with zero embedding rows when source has no embeddings."""
     db_name = 'mcp_pg_pg_v2_no_embeddings'
-    src_url = await _make_isolated_db(pg_test_url, db_name)
+    src_url = await make_isolated_db(pg_test_url, db_name)
     try:
         setup = await asyncpg.connect(src_url)
         try:
@@ -378,7 +344,7 @@ async def test_pg_pg_migration_handles_missing_embedding_metadata_gracefully(
         assert stats.vec_rows_migrated == 0
         assert not stats.errors
     finally:
-        await _drop_isolated_db(pg_test_url, db_name)
+        await drop_isolated_db(pg_test_url, db_name)
 
 
 @pytest.mark.asyncio
@@ -466,7 +432,7 @@ async def test_pg_pg_migration_auto_inits_empty_target(
     """
     await _seed_source_with_embeddings(isolated_pg_v2_source_db, n_docs=3)
     db_name = 'mcp_pg_pg_v3_autoinit'
-    target_url = await _make_isolated_db(pg_test_url, db_name)
+    target_url = await make_isolated_db(pg_test_url, db_name)
     try:
         options = MigrationOptions(
             source_url=isolated_pg_v2_source_db,
@@ -492,7 +458,7 @@ async def test_pg_pg_migration_auto_inits_empty_target(
         finally:
             await tgt.close()
     finally:
-        await _drop_isolated_db(pg_test_url, db_name)
+        await drop_isolated_db(pg_test_url, db_name)
 
 
 @pytest.mark.asyncio
@@ -508,7 +474,7 @@ async def test_pg_pg_migration_source_without_embedding_metadata_table(
     the whole migration.
     """
     db_name = 'mcp_pg_pg_v2_no_em_table'
-    src_url = await _make_isolated_db(pg_test_url, db_name)
+    src_url = await make_isolated_db(pg_test_url, db_name)
     try:
         setup = await asyncpg.connect(src_url)
         try:
@@ -546,7 +512,7 @@ async def test_pg_pg_migration_source_without_embedding_metadata_table(
         assert stats.vec_rows_migrated == 0
         assert not stats.errors
     finally:
-        await _drop_isolated_db(pg_test_url, db_name)
+        await drop_isolated_db(pg_test_url, db_name)
 
 
 @pytest.mark.asyncio
@@ -562,7 +528,7 @@ async def test_pg_pg_migration_aborts_when_target_lacks_fp32_vec_table(
     """
     await _seed_source_with_embeddings(isolated_pg_v2_source_db, n_docs=2)
     db_name = 'mcp_pg_pg_v3_no_fp32_vec'
-    target_url = await _make_isolated_db(pg_test_url, db_name)
+    target_url = await make_isolated_db(pg_test_url, db_name)
     try:
         setup = await asyncpg.connect(target_url)
         try:
@@ -603,7 +569,7 @@ async def test_pg_pg_migration_aborts_when_target_lacks_fp32_vec_table(
         finally:
             await tgt.close()
     finally:
-        await _drop_isolated_db(pg_test_url, db_name)
+        await drop_isolated_db(pg_test_url, db_name)
 
 
 @pytest.mark.asyncio
@@ -620,7 +586,7 @@ async def test_pg_pg_dry_run_on_empty_target_reports_symmetric_counts(
     """
     await _seed_source_with_embeddings(isolated_pg_v2_source_db, n_docs=3)
     db_name = 'mcp_pg_pg_dryrun_empty'
-    target_url = await _make_isolated_db(pg_test_url, db_name)
+    target_url = await make_isolated_db(pg_test_url, db_name)
     try:
         options = MigrationOptions(
             source_url=isolated_pg_v2_source_db,
@@ -644,4 +610,4 @@ async def test_pg_pg_dry_run_on_empty_target_reports_symmetric_counts(
         finally:
             await tgt.close()
     finally:
-        await _drop_isolated_db(pg_test_url, db_name)
+        await drop_isolated_db(pg_test_url, db_name)
