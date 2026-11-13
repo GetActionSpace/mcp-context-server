@@ -9,6 +9,7 @@ from typing import cast
 from app.access_scope import AccessMode
 from app.access_scope import Scope
 from app.access_scope import build_access_predicate
+from app.ids import id_prefix_bounds
 from app.ids import normalize_id
 from app.repositories.base import BaseRepository
 from app.repositories.context_repository.helpers import chunk_ids
@@ -449,14 +450,20 @@ class ContextReadMixin(BaseRepository):
         :func:`app.ids.resolve_or_normalize_id`), which expands a short user-supplied
         prefix into a full id when ambiguity is unlikely. The caller decides what to do
         when ``limit`` rows are returned; this method's contract is "return up to N
-        matches". The access predicate applies before ``LIMIT``, so an entry the scope
-        may not read never takes a slot from a readable match and never makes a prefix
-        ambiguous.
+        matches".
+
+        The read is one range of the id index, bounded by the lowest and the highest full
+        id that start with the prefix (:func:`app.ids.id_prefix_bounds`): the id orders as
+        its hex digits on both backends, so only the ids sharing the prefix are read, in
+        id order, instead of every stored entry. The access predicate applies before
+        ``LIMIT``, so an entry the scope may not read never takes a slot from a readable
+        match and never makes a prefix ambiguous.
 
         Args:
-            prefix: Lowercase hex prefix. ``resolve_prefix`` only calls this for prefixes
-                of 8-31 hex characters (the range :func:`app.ids.is_id_prefix` accepts);
-                the caller is responsible for normalization and that length check.
+            prefix: A hex prefix of 8-31 characters (the range
+                :func:`app.ids.is_id_prefix` accepts); whitespace is stripped and case is
+                folded. Any other value raises the ``ValueError`` of
+                :func:`app.ids.id_prefix_bounds` before a statement runs.
             limit: Maximum number of IDs to return. Defaults to 2 so callers can
                 detect ambiguity by checking ``len(result) > 1``.
             scope: The caller's scope; only entries it may read match.
@@ -465,44 +472,31 @@ class ContextReadMixin(BaseRepository):
             List of matching context_id strings (UUIDv7 hex, 32 chars), up to ``limit``.
         """
         backend_type = self.backend.backend_type
-        # The prefix binds first, the access predicate next, LIMIT last.
+        low, high = id_prefix_bounds(prefix)
+        # The two bounds bind first, the access predicate next, LIMIT last.
         read = build_access_predicate(
-            scope, mode=AccessMode.READ, backend_type=backend_type, outer='context_entries', start=2,
+            scope, mode=AccessMode.READ, backend_type=backend_type, outer='context_entries', start=3,
         )
-        limit_placeholder = self._placeholder(2 + read.bind_count)
-        params: list[object] = [prefix + '%', *read.params, limit]
+        params: list[object] = [low, high, *read.params, limit]
         entries = self._readable('context_entries', alias='context_entries')
+        # The id orders as the 32-hex text it holds on SQLite and as its 16 bytes on
+        # PostgreSQL, so the ids sharing the prefix form one range of the id index.
+        sql = f'''
+            SELECT id FROM {entries}
+            WHERE id >= {self._placeholder(1)} AND id <= {self._placeholder(2)}{read.and_clause()}
+            ORDER BY id
+            LIMIT {self._placeholder(3 + read.bind_count)}
+            '''
 
         if backend_type == 'sqlite':
 
             def _find_sqlite(conn: sqlite3.Connection) -> list[str]:
-                cursor = conn.cursor()
-                cursor.execute(
-                    f'''
-                    SELECT id FROM {entries}
-                    WHERE id LIKE {self._placeholder(1)}{read.and_clause()}
-                    ORDER BY id
-                    LIMIT {limit_placeholder}
-                    ''',
-                    tuple(params),
-                )
-                return [row['id'] for row in cursor.fetchall()]
+                return [row['id'] for row in conn.execute(sql, tuple(params)).fetchall()]
 
             return await self.backend.execute_read(_find_sqlite, access_scope=scope)
 
-        # PostgreSQL: id is a uuid column; canonical text form contains hyphens
-        # which are absent from the user-supplied hex prefix. REPLACE() removes
-        # hyphens so LIKE matches against the 32-char hex representation.
         async def _find_postgresql(conn: 'asyncpg.Connection') -> list[str]:
-            rows = await conn.fetch(
-                f'''
-                SELECT id FROM {entries}
-                WHERE REPLACE(CAST(id AS TEXT), '-', '') LIKE {self._placeholder(1)}{read.and_clause()}
-                ORDER BY id
-                LIMIT {limit_placeholder}
-                ''',
-                *params,
-            )
+            rows = await conn.fetch(sql, *params)
             # The pool's uuid->str codec (registered in init_pool_connection) already
             # decodes id to the 32-char hex the SQLite path returns.
             # normalize_id(str(...)) is idempotent defense-in-depth for
