@@ -23,7 +23,6 @@ import sqlite3
 from collections.abc import AsyncGenerator
 from collections.abc import Awaitable
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import cast
 
 import pytest
@@ -32,9 +31,10 @@ import pytest_asyncio
 from app.access_scope import AccessScope
 from app.backends import StorageBackend
 from app.backends.base import MAINTENANCE
-from app.backends.base import BackendAccess
 from app.ingest_sql import INGEST_INDEX_NAME
 from app.repositories import RepositoryContainer
+from tests.helpers import Captured
+from tests.helpers import CapturingBackend
 from tests.repositories._access_scope_cases import ScopedDb
 from tests.repositories._access_scope_layouts import sqlite_scoped_db
 
@@ -82,47 +82,6 @@ _SMALL_THREADS_SQL = (
     "SELECT lower(hex(randomblob(16))), 'session-' || (i % ?), 'agent', 'text', 'Session row ' || i, "
     "json_object('status', 'done'), CASE WHEN i % 3 = 0 THEN 'bob' ELSE 'alice' END, 'private' FROM n"
 )
-
-
-@dataclass(frozen=True, slots=True)
-class Captured:
-    """One statement a repository sent, with the parameters it bound."""
-
-    sql: str
-    params: tuple[object, ...]
-
-
-class _RecordingConnection:
-    """A connection that records every statement before running it on the real connection."""
-
-    def __init__(self, conn: sqlite3.Connection, statements: list[Captured]) -> None:
-        self._conn = conn
-        self._statements = statements
-
-    def execute(self, sql: str, params: tuple[object, ...] = ()) -> sqlite3.Cursor:
-        self._statements.append(Captured(sql, tuple(params)))
-        return self._conn.execute(sql, params)
-
-
-class _CapturingBackend:
-    """A backend whose reads record the statements the repositories send."""
-
-    def __init__(self, backend: StorageBackend) -> None:
-        self.backend = backend
-        self.statements: list[Captured] = []
-
-    @property
-    def backend_type(self) -> str:
-        return self.backend.backend_type
-
-    def readable_relation(self, table: str, *, alias: str) -> str:
-        return self.backend.readable_relation(table, alias=alias)
-
-    async def execute_read[T](self, operation: Callable[..., T], *, access_scope: BackendAccess) -> T:
-        def _recorded(conn: sqlite3.Connection) -> T:
-            return operation(_RecordingConnection(conn, self.statements))
-
-        return await self.backend.execute_read(_recorded, access_scope=access_scope)
 
 
 @pytest_asyncio.fixture(params=_DATABASES)
@@ -197,7 +156,7 @@ READS: dict[str, tuple[Read, tuple[str, ...]]] = {
 
 async def _captured_statement(db: ScopedDb, read: Read, scope: AccessScope) -> Captured:
     """Run ``read`` as ``scope`` and return the one statement it sent."""
-    capturing = _CapturingBackend(db.backend)
+    capturing = CapturingBackend(db.backend)
     rows = await read(RepositoryContainer(cast(StorageBackend, capturing)), scope)
     assert rows, 'the read returned no rows, so its plan would not be the plan of a read that finds members'
     assert len(capturing.statements) == 1, capturing.statements

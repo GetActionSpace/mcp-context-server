@@ -29,20 +29,20 @@ from collections.abc import AsyncGenerator
 from collections.abc import Awaitable
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from typing import Literal
 from typing import cast
 
-import asyncpg
 import pytest
 
 from app.access_scope import AccessScope
 from app.backends import StorageBackend
-from app.backends.base import BackendAccess
 from app.backends.postgresql_backend.session_profiles import RLS_READ_VIEWS
 from app.backends.postgresql_backend.session_profiles import RlsRequestProfile
 from app.ingest_sql import INGEST_INDEX_NAME
 from app.repositories import RepositoryContainer
+from tests.helpers import AsyncpgConnection
+from tests.helpers import Captured
+from tests.helpers import CapturingBackend
 from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import ScopedDb
 from tests.repositories._access_scope_layouts import postgresql_rls_scoped_db
@@ -83,50 +83,6 @@ _SEED_FILLER_SQL = (
 
 type PlanMode = Literal['custom', 'generic']
 PLAN_MODES: tuple[PlanMode, ...] = ('custom', 'generic')
-
-
-@dataclass(frozen=True, slots=True)
-class Captured:
-    """One statement a repository sent, with its arguments as the repository bound them."""
-
-    sql: str
-    args: tuple[object, ...]
-
-
-type AnyConnection = asyncpg.Connection[asyncpg.Record] | asyncpg.pool.PoolConnectionProxy[asyncpg.Record]
-
-
-class _RecordingConnection:
-    """A connection that records every statement before running it on the real connection."""
-
-    def __init__(self, conn: AnyConnection, statements: list[Captured]) -> None:
-        self._conn = conn
-        self._statements = statements
-
-    async def fetch(self, sql: str, *args: object) -> list[asyncpg.Record]:
-        self._statements.append(Captured(sql, args))
-        return await self._conn.fetch(sql, *args)
-
-
-class _CapturingBackend:
-    """A request backend whose reads record the statements the repositories send."""
-
-    def __init__(self, backend: StorageBackend) -> None:
-        self.backend = backend
-        self.statements: list[Captured] = []
-
-    @property
-    def backend_type(self) -> str:
-        return self.backend.backend_type
-
-    def readable_relation(self, table: str, *, alias: str) -> str:
-        return self.backend.readable_relation(table, alias=alias)
-
-    async def execute_read[T](self, operation: Callable[..., Awaitable[T]], *, access_scope: BackendAccess) -> T:
-        async def _recorded(conn: AnyConnection) -> T:
-            return await operation(_RecordingConnection(conn, self.statements))
-
-        return await self.backend.execute_read(_recorded, access_scope=access_scope)
 
 
 @asynccontextmanager
@@ -212,14 +168,14 @@ def _sql_literal(value: object) -> str:
     raise TypeError(f'unexpected argument type {type(value).__name__}: {value!r}')
 
 
-async def _explain_custom(conn: AnyConnection, statement: Captured) -> str:
+async def _explain_custom(conn: AsyncpgConnection, statement: Captured) -> str:
     """Plan the statement with its arguments bound, which the planner folds in as constants."""
-    return str(await conn.fetchval(f'EXPLAIN (VERBOSE, FORMAT JSON) {statement.sql}', *statement.args))
+    return str(await conn.fetchval(f'EXPLAIN (VERBOSE, FORMAT JSON) {statement.sql}', *statement.params))
 
 
-async def _explain_generic(conn: AnyConnection, statement: Captured) -> str:
+async def _explain_generic(conn: AsyncpgConnection, statement: Captured) -> str:
     """Plan the statement as a prepared statement held to its generic plan, which no argument value shapes."""
-    arguments = ', '.join(_sql_literal(value) for value in statement.args)
+    arguments = ', '.join(_sql_literal(value) for value in statement.params)
     try:
         async with conn.transaction():
             await conn.execute(f'PREPARE {PREPARED_NAME} AS {statement.sql}')
@@ -231,13 +187,13 @@ async def _explain_generic(conn: AnyConnection, statement: Captured) -> str:
 
 async def _planned_read(db: ScopedDb, read: Read, *, plan_mode: PlanMode) -> tuple[Captured, list[dict[str, object]]]:
     """Run ``read`` on the request channel, then plan the statement it sent as the request backend bound to alice."""
-    capturing = _CapturingBackend(db.backend)
+    capturing = CapturingBackend(db.backend)
     rows = await read(RepositoryContainer(cast(StorageBackend, capturing)))
     assert rows, 'the read returned no rows, so its plan would not be the plan of a read that finds members'
     assert len(capturing.statements) == 1, capturing.statements
     statement = capturing.statements[0]
 
-    async def _explain(conn: AnyConnection) -> str:
+    async def _explain(conn: AsyncpgConnection) -> str:
         if plan_mode == 'custom':
             return await _explain_custom(conn, statement)
         return await _explain_generic(conn, statement)
