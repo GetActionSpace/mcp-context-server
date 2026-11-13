@@ -91,28 +91,91 @@ Rather than crash, the CLI pre-checks each source row and SKIPS an offending row
 
 Because each skipped row is recorded as an error, a run that skips any row exits with a nonzero status (exit `1`), so a scripted invocation does not mistake a partial migration for a clean one. Inspect the printed summary (or the `--report PATH` JSON) for the `column ... skipped: ...` entries, repair the offending values at the source -- shorten an oversized one, correct a value its field's type hint rejects -- and re-run to migrate the previously skipped rows.
 
+The CLI decides every skip before it stores any row, and it checks each row's metadata as the run would write it: with its ids rewritten (see [Rewriting Entry Ids in Metadata](#rewriting-entry-ids-in-metadata)) and its old id stamped (see [Stamping the Old Id](#stamping-the-old-id)). A rewritten id is a 32-character string, which an `integer`-, `float`- or `boolean`-typed field rejects; a stamped old id is an integer, which an `integer`-typed field accepts only from -2,147,483,648 to 2,147,483,647 and a `boolean`-typed field never accepts. So a `--rewrite-ids-at` path that reaches such a field, or a `--legacy-id-key` name that is one, skips every row whose new value there the field rejects. A value in another row that cites a skipped row is kept as written instead of becoming an id the target never receives: it is counted as not the id of a migrated entry, with a warning that names the skipped entry (see [Values That Are Not Ids of Migrated Entries](#values-that-are-not-ids-of-migrated-entries)). Once you repair the skipped row and rerun, the values citing it are rewritten.
+
 ### Optional Flags
 
-- `--dry-run` -- run the full migration logic in memory (read source, build the integer-to-UUIDv7 mapping, compute target rows) but issue zero INSERT statements against the target. Useful for validating that the source database is well-formed before committing to a real run.
-- `--report PATH` -- after the run completes, write the run's statistics (rows migrated, references rewritten, orphan references detected, warnings, errors) as JSON to `PATH`. If omitted, a human-readable summary is printed to stdout.
+- `--dry-run` -- run the full migration logic in memory (read source, build the integer-to-UUIDv7 mapping, rewrite and stamp each row's metadata, compute target rows) but issue zero INSERT statements against the target. Its summary and report carry the counts, errors and per-row warnings a real run would produce, so it validates that the source database is well-formed and previews what `--rewrite-ids-at` and `--legacy-id-key` will change before you commit to a real run.
+- `--report PATH` -- after the run completes, write the run's statistics as JSON to `PATH`: `rows_migrated`, `id_paths` (the counts per `--rewrite-ids-at` path), `legacy_id` (the `--legacy-id-key` counts, `null` without that option), the tag, image and embedding rows copied, `fts_rebuilt`, `warnings` and `errors`. The human-readable summary is printed to stdout either way.
+- `--rewrite-ids-at PATH` -- a metadata path that holds entry ids to rewrite; repeatable. Without it the CLI rewrites `**.references.context_ids`; the paths you give replace that default. See [Rewriting Entry Ids in Metadata](#rewriting-entry-ids-in-metadata).
+- `--legacy-id-key NAME` -- store each migrated entry's old integer id under the top-level metadata key `NAME`. Off unless given. See [Stamping the Old Id](#stamping-the-old-id).
+
+`--rewrite-ids-at` and `--legacy-id-key` apply only to the v2-to-v3 migration. Given together with an in-place mode (`--compress`, `--decompress`, `--re-embed`, `--embed-missing`, `--reassign-owner` or `--disable-rls`), they make the CLI exit with status 2 and the message `--rewrite-ids-at and --legacy-id-key are valid only with the v2->v3 migration, not with an in-place mode`. A path or name the CLI refuses also exits with status 2, before any database is opened.
+
+#### Rewriting Entry Ids in Metadata
+
+A path names where the metadata holds entry ids. Its keys are separated by single dots, read from the top of the metadata and compared exactly, case included. A `*` that is a whole key stands for any one key, and a leading `**.` lets the rest of the path start in any object at any depth, objects inside lists included. Between named keys a path steps only into objects, never into lists. The value at the end of a path may be one id or a list of ids.
+
+| Path | Finds |
+| --- | --- |
+| `**.references.context_ids` (the default) | `references.context_ids` at the top of the metadata and in every nested object, objects inside lists included |
+| `links.closed_by` | the `closed_by` key of the top-level `links` object |
+| `links.*` | every key of the top-level `links` object |
+| `**.context_ids` | every `context_ids` key at any depth |
+
+The CLI refuses a path with an empty key (`a..b`, `.a`, `a.`), a `**` that is not the first key or has no key after it (`**`, `links.**`, `a.**.b`), a `*` inside a key (`a*`), and a path given twice. A metadata key that contains a dot or a star cannot be named in a path; the server's metadata filters cannot address such a key either.
+
+Each value found, or each element when the value is a list, is classified:
+
+- An integer, or a string holding an integer in the exact form JSON writes one (`"7"`, `"-5"`; not `"007"`, `" 7"`, `"+7"`, `"7.0"` or `"1_0"`), that is the id of an entry this run migrates becomes that entry's new id, a 32-character lowercase hex string. It is counted `rewritten`.
+- An integer or such a string that is not the id of a migrated entry stays exactly as written, an integer as an integer and a string as a string. It is counted `not_migrated`, with a warning that names the row and the location (see [Values That Are Not Ids of Migrated Entries](#values-that-are-not-ids-of-migrated-entries)).
+- Any other value (another string such as a 32-character id, a boolean, a float, `null`, or a list or object inside the list found) stays as written. It is counted `kept`, with no message.
+
+None of these outcomes is an error, so they leave the exit status at 0. When two paths find the same value, the first path on the command line rewrites and counts it. The CLI builds the complete table of old and new ids before it rewrites any metadata, so an entry that cites a newer entry is rewritten like one that cites an older entry.
+
+The summary prints one line per path in command-line order, and the report holds the same counts under `id_paths`, including a path that found nothing:
+
+```text
+  ids at **.references.context_ids: 5 rewritten, 1 not the id of a migrated entry, 3 other values kept
+```
+
+```json
+"id_paths": {"**.references.context_ids": {"rewritten": 5, "not_migrated": 1, "kept": 3}}
+```
+
+A wildcard path rewrites every integer and numeric string under it that equals the id of a migrated entry, whatever the number means. Pull request or ticket numbers stored as strings under `links` would become the ids of unrelated entries under `links.*`, so name the keys that hold entry ids (`links.parent`, `links.closed_by`) rather than a wildcard over keys that hold other numbers. Run with `--dry-run --report PATH` first and read the counts per path before a real run.
+
+#### Stamping the Old Id
+
+`--legacy-id-key NAME` stores each migrated entry's old integer id as a JSON integer under the top-level metadata key `NAME`, after the entry's ids are rewritten. The stamp is ordinary metadata, so with `--legacy-id-key legacy_id` the call `search_context(metadata={"legacy_id": 36717})` finds the entry whose id was 36717, on either backend. A later `update_context` that replaces the whole `metadata` drops the stamp like any other key the new metadata leaves out; `metadata_patch` keeps it.
+
+| Source metadata | Stored metadata | Counted |
+| --- | --- | --- |
+| `NULL` | `{"NAME": <old id>}` | `stamped` |
+| a JSON object without `NAME` | the object with `"NAME": <old id>` added | `stamped` |
+| a JSON object that already holds `NAME` | unchanged, whatever the value under `NAME` | `already_present` |
+| text that is not valid JSON | the text, verbatim | `not_stamped`, error |
+| valid JSON that is not an object (an array, a string, a number, a boolean or `null`) | the value with its ids rewritten by `**.` paths | `not_stamped`, error |
+| JSON holding a number Python cannot write back as JSON (such as `1e400`) | the text, verbatim, ids not rewritten | `not_stamped`, error |
+
+Each error names the row and the key and makes the run exit with status 1, for example `row 12: metadata is a JSON array, not an object, so the old id was not stamped under 'legacy_id'`. The summary prints a line such as `legacy id key 'legacy_id': 4 stamped, 1 already present, 0 not stamped`, and the report holds the same counts under `legacy_id`; the three counts add up to `rows_migrated`.
+
+`NAME` may contain only letters, digits, `_` and `-`, because the metadata filters address a top-level key made of those characters only and read a dot as nesting. `ingest` is refused because it is reserved for the corpus-sync block of the [knowledge base](knowledge-base.md). A name a rewrite path reaches, such as `references` under the default path, is accepted: the stamp is written after the rewrite, and an entry that already holds the key keeps its value. The refusals read:
+
+```text
+argument --legacy-id-key: 'a.b' cannot be stamped: the metadata filters address a top-level key made of letters, digits, "_" and "-" only
+argument --legacy-id-key: 'ingest' is reserved for the corpus-sync block
+```
 
 ## What the CLI Does
 
 The CLI performs the following steps in order:
 
-1. **Read source rows in deterministic order.** Reads from `context_entries` ordered by `(created_at ASC, id ASC)`. The deterministic ordering ensures the in-memory integer-to-UUIDv7 mapping is reproducible across runs.
+1. **Read every source row's id first.** Reads `id` and `created_at` from every `context_entries` row, ordered by `(created_at ASC, id ASC)`, and builds the complete table of old and new ids before any metadata is rewritten, so an entry that cites a newer entry is rewritten like any other. Each new id's 48-bit millisecond timestamp comes from the row's `created_at`, so the order of the new ids is the same on every run; the remaining 74 bits are random, so a rerun or a dry run gives each row a different id than an earlier run.
 
 2. **Generate a UUIDv7 per row from each row's `created_at`.** Uses `uuid_utils.uuid7(timestamp=int(created_at.timestamp()), nanos=created_at.microsecond * 1000)`. The `timestamp` parameter is in UNIX SECONDS with an optional nanosecond fraction; passing milliseconds in the `timestamp` slot would shift the embedded timestamp roughly 1000x further into the future, producing UUIDs whose decoded year is around 50,000 AD. Upstream tracker documenting this confusion source: [`aminalaee/uuid-utils#73`](https://github.com/aminalaee/uuid-utils/issues/73). The resulting UUIDs preserve the source's chronological order: lex-string comparison on the 32-character lowercase hex form is monotonic with respect to `created_at` at millisecond granularity. Sub-millisecond ordering is determined by the UUID random tail, which is acceptable for the server's deduplication interleaving check.
 
-3. **Rewrite `metadata.references.context_ids` arrays.** For each row, walks the parsed `metadata` JSON recursively, finding every `references.context_ids` array. Integer entries are replaced with the mapped UUIDv7 hex string. String entries are preserved unchanged (treated as already-UUID values). Integer entries that do not match any source row are kept as integers and flagged in the run summary as `orphan_references` (see Troubleshooting below). Malformed shapes (for example, a non-array `context_ids` value) are flagged as `malformed_references` errors, and the row's metadata is copied verbatim.
+3. **Rewrite entry ids at the metadata paths.** For each row, finds the values at every `--rewrite-ids-at` path (by default `**.references.context_ids`) in the parsed `metadata`, replaces each integer or numeric string that is the id of a migrated entry with that entry's new 32-character id, and keeps and counts every other value, as [Rewriting Entry Ids in Metadata](#rewriting-entry-ids-in-metadata) describes. On a PostgreSQL target every skip is decided before any row is stored, so the id of a skipped row is kept as written wherever it is cited (see [Rows a PostgreSQL Target Cannot Accept](#rows-a-postgresql-target-cannot-accept)). Metadata that is not valid JSON is recorded as an error and copied verbatim to a SQLite target (a PostgreSQL target skips the row); metadata holding a number Python cannot write back as JSON (such as `1e400` or `NaN`) is copied verbatim with no id rewritten and recorded as an error.
 
-4. **Copy free-form text byte-for-byte.** The `text_content` and `summary` columns are copied unchanged. Any mention of an integer ID inside the prose (for example, "see entry 8944") is left as-is. The CLI does not attempt to rewrite free-form text -- such substrings become inert references after migration, which is the intended outcome (eliminating false positives from regex-style ID detection across the corpus).
+4. **Stamp the old id** (only with `--legacy-id-key NAME`). After the row's ids are rewritten, stores the row's old integer id under the top-level key `NAME` unless the metadata already holds that key, as [Stamping the Old Id](#stamping-the-old-id) describes.
 
-5. **Copy tags, image attachments, embedding metadata, embedding chunks, and vector rows.** Only the `context_id` foreign-key column is remapped to the new UUIDv7 hex value. Internal embedding identifiers (`embedding_chunks.id`, `embedding_chunks.vec_rowid`, vec0 rowids, `vec_context_embeddings.id`) are preserved verbatim because the project's chunking-layer architecture uses INTEGER bridges to vec0; only the outer `context_id` foreign key changes type.
+5. **Copy free-form text byte-for-byte.** The `text_content` and `summary` columns are copied unchanged. Any mention of an integer ID inside the prose (for example, "see entry 8944") is left as-is. The CLI does not attempt to rewrite free-form text -- such substrings become inert references after migration, which is the intended outcome (eliminating false positives from regex-style ID detection across the corpus).
 
-6. **Rebuild the SQLite FTS5 index.** When the source has `context_entries_fts`, the CLI issues `INSERT INTO context_entries_fts(context_entries_fts) VALUES('rebuild')` against the target to re-index the copied rows. The FTS5 rowid alignment with `context_entries.rowid_int` is preserved.
+6. **Copy tags, image attachments, embedding metadata, embedding chunks, and vector rows.** Only the `context_id` foreign-key column is remapped to the new UUIDv7 hex value. Internal embedding identifiers (`embedding_chunks.id`, `embedding_chunks.vec_rowid`, vec0 rowids, `vec_context_embeddings.id`) are preserved verbatim because the project's chunking-layer architecture uses INTEGER bridges to vec0; only the outer `context_id` foreign key changes type.
 
-7. **Print or write the run report.** A summary of counters (rows migrated, references rewritten, orphan references, malformed references, tags/images/embeddings copied, FTS rebuild status, warnings, errors) is printed to stdout. If `--report PATH` is set, the same data is also written as JSON.
+7. **Rebuild the SQLite FTS5 index.** When the source has `context_entries_fts`, the CLI issues `INSERT INTO context_entries_fts(context_entries_fts) VALUES('rebuild')` against the target to re-index the copied rows. The FTS5 rowid alignment with `context_entries.rowid_int` is preserved.
+
+8. **Print or write the run report.** A summary of counters (rows migrated, the counts per `--rewrite-ids-at` path, the `--legacy-id-key` counts, tags/images/embeddings copied, FTS rebuild status, warnings, errors) is printed to stdout. If `--report PATH` is set, the same data is also written as JSON.
 
 ## Optional: PostgreSQL 18+ Server-Side UUIDv7 Generation
 
@@ -126,9 +189,16 @@ This is a pure operator-side optimization and is NOT required for correct operat
 
 ## Troubleshooting
 
-### Orphan References
+### Values That Are Not Ids of Migrated Entries
 
-If the run summary shows `orphan_references > 0`, your source database contained `metadata.references.context_ids` entries pointing to IDs that do not exist in `context_entries` (most commonly from older rows that were deleted before migration). The orphan IDs are preserved as integers in the migrated metadata; downstream consumers that interpret `references.context_ids` should be prepared to encounter both string UUIDs and stray integers in legacy data. To find and clean orphan references, query the migrated database after the run -- the JSON `references.context_ids` arrays are still queryable with `array_contains` operators.
+When a path's summary line counts values as not the id of a migrated entry (`not_migrated` under `id_paths` in the report), the metadata at that path held an integer or a numeric string that names no entry this run migrated. The run keeps each such value exactly as written and names it in a warning, with its location in the metadata:
+
+```text
+row 3: metadata.references.context_ids[2] holds 999, which is not the id of a migrated entry; preserved
+row 1: metadata.references.context_ids[0] holds 2, the id of an entry this run skipped; preserved
+```
+
+The first form most often cites an entry deleted before the migration; under a broad path such as `links.*` it can also be a number that is not an entry id at all, which is worth checking with a dry run. The second form appears only on a PostgreSQL target and cites an entry the same run skipped (see [Rows a PostgreSQL Target Cannot Accept](#rows-a-postgresql-target-cannot-accept)): repair that entry at the source and rerun, and the value is rewritten. Neither form is an error. Code that reads these paths after the migration should expect both 32-character ids and the legacy values kept there; the arrays stay queryable with the `array_contains` metadata filter operator, so you can find and clean them in the migrated database.
 
 ### Source Database File Missing
 
@@ -142,7 +212,7 @@ The CLI refuses to write to a non-empty SQLite target. If you see `target databa
 
 The CLI does not currently support resume-from-checkpoint. If a migration is interrupted mid-run (Ctrl+C, process kill, machine power loss, network drop on PostgreSQL), the source database is unaffected -- it was opened read-only -- and the target database is left in one of two recoverable states described below.
 
-The recovery procedure is the same in both cases: delete the target database and rerun the same `mcp-context-server-migrate` command. The source is unchanged, so a fresh run reads the same input data and produces the same target. Note that the lower 74 random bits of each UUIDv7 will differ from any prior interrupted run, but the embedded millisecond timestamps and the row-by-row chronological ordering are identical, which is the only property the server depends on.
+The recovery procedure is the same in both cases: delete the target database and rerun the same `mcp-context-server-migrate` command. The source is unchanged, so a fresh run reads the same input data and produces the same rows, with new ids that sort the same way. Note that the lower 74 random bits of each UUIDv7 will differ from any prior interrupted run, but the embedded millisecond timestamps and the row-by-row chronological ordering are identical, which is the only property the server depends on.
 
 **State 1: Empty or schema-only target.**
 
@@ -166,7 +236,7 @@ There is a narrow window after the main data transaction commits but before the 
 
 PostgreSQL does not have a State 2 equivalent. Its `text_search_vector` column is a generated column maintained by the row INSERT, so a successful main transaction also produces a complete tsvector index.
 
-**Preflight tip.** If you want to verify a migration will succeed before committing to a real run, pass `--dry-run` on a first invocation. The dry run reads the source, builds the integer-to-UUIDv7 mapping, and computes target rows in memory; it does NOT INSERT into the target and writes nothing to the target path. On SQLite the dry run operates against an ephemeral in-memory database, so it leaves no file (and no schema) at the target path; on PostgreSQL the target database is left empty. A subsequent real run against the same target proceeds normally -- no delete or rename is needed.
+**Preflight tip.** If you want to verify a migration will succeed before committing to a real run, pass `--dry-run` on a first invocation. The dry run reads the source, builds the integer-to-UUIDv7 mapping, rewrites and stamps the metadata, and computes target rows in memory; it does NOT INSERT into the target and writes nothing to the target path. On SQLite the dry run operates against an ephemeral in-memory database, so it leaves no file (and no schema) at the target path; on PostgreSQL the target database is left empty. A subsequent real run against the same target proceeds normally -- no delete or rename is needed.
 
 ### Cross-Backend Vector Embedding Warning
 
@@ -188,7 +258,7 @@ Suggested verification steps after a successful migration:
 2. Run a smoke test query: `list_threads` or a simple `search_context` call. Confirm the response includes 32-character hex `context_id` values.
 3. If FTS was enabled on the source, run a small `fts_search_context` query and confirm results are returned.
 4. If semantic search was enabled on the source AND the migration was same-backend (no embeddings dropped), confirm a `semantic_search_context` query returns expected results.
-5. Spot-check that `metadata.references.context_ids` arrays contain UUIDv7 hex strings (not integers) in a few migrated rows.
+5. Spot-check that the metadata at the paths you named (by default `references.context_ids`) holds 32-character hex ids, not integers, in a few migrated rows. With `--legacy-id-key NAME`, confirm that `search_context(metadata={"NAME": <an old id>})` returns the entry that had that id.
 
 A one-liner SQLite sanity check that confirms the `id` column is TEXT in the target:
 
