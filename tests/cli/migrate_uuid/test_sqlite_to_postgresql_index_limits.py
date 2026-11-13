@@ -20,7 +20,9 @@ from unittest import mock
 
 import pytest
 
+from app.cli.migrate_uuid.id_paths import DEFAULT_ID_PATH
 from app.cli.migrate_uuid.pg_prechecks import PG_MAX_INDEXED_THREAD_ID_BYTES
+from app.cli.migrate_uuid.records import IdPathCounts
 from app.cli.migrate_uuid.records import MigrationOptions
 from app.cli.migrate_uuid.records import MigrationStats
 from app.cli.migrate_uuid.sqlite_to_postgresql import run_migration_mixed_sqlite_to_postgresql
@@ -234,7 +236,7 @@ class TestSqliteToPostgresqlIndexPrecheck:
 
     @pytest.mark.asyncio
     async def test_skipped_row_does_not_count_its_reference_rewrites(self, tmp_path: Path) -> None:
-        """Remappings inside a skipped row never reach the target, so they are not counted."""
+        """Values inside a skipped row never reach the target, so none of them is counted."""
         source = tmp_path / 'source.db'
         _seed_source(
             source,
@@ -256,7 +258,7 @@ class TestSqliteToPostgresqlIndexPrecheck:
         stats, _ = await _run_with_fake_target(source)
 
         assert stats.rows_migrated == 1
-        assert stats.references_rewritten == 0
+        assert stats.id_paths == {DEFAULT_ID_PATH: IdPathCounts()}
 
     @pytest.mark.asyncio
     async def test_dry_run_surfaces_the_skip_without_inserting(self, tmp_path: Path) -> None:

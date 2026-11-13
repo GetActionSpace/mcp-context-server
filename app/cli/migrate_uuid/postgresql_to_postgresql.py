@@ -4,6 +4,7 @@ import logging
 
 from app.cli.migrate_uuid.id_mapping import NULL_CREATED_AT_ANCHOR
 from app.cli.migrate_uuid.id_mapping import created_at_for_id
+from app.cli.migrate_uuid.metadata_ids import MetadataIdRewriter
 from app.cli.migrate_uuid.pg_connection import detect_source_embedding_dim_pg
 from app.cli.migrate_uuid.pg_connection import pg_column_exists
 from app.cli.migrate_uuid.pg_connection import pg_connect
@@ -16,7 +17,6 @@ from app.cli.migrate_uuid.pg_target import ensure_target_pg_fts
 from app.cli.migrate_uuid.pg_target import initialize_target_postgresql
 from app.cli.migrate_uuid.records import MigrationOptions
 from app.cli.migrate_uuid.records import MigrationStats
-from app.cli.migrate_uuid.references import rewrite_metadata_references
 from app.cli.migrate_uuid.target_rows import SELECT_DISTINCT_TAGS_SQL
 from app.cli.migrate_uuid.target_rows import access_backfill_values
 from app.ids import generate_id_with_timestamp
@@ -49,6 +49,7 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
     import asyncpg
 
     stats = MigrationStats()
+    stats.start_metadata_counts(options)
     source_conn = await pg_connect(options.source_url)
     # Open the target connection INSIDE the try so a failed target connect
     # (unreachable host, bad credentials, role/connection limit, SSL) closes the
@@ -103,6 +104,7 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                 null_created_at,
                 NULL_CREATED_AT_ANCHOR.isoformat(),
             )
+        rewriter = MetadataIdRewriter(options.id_paths, id_mapping, legacy_id_key=options.legacy_id_key)
 
         # Detect what the SOURCE carries so the target can be shaped to match.
         source_has_embeddings = await pg_table_exists(source_conn, 'embedding_metadata')
@@ -266,13 +268,8 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
             for entry in entry_rows:
                 source_id = int(entry['id'])
                 new_id = id_mapping[source_id]
-                references_rewritten_before = stats.references_rewritten
-                rewritten_metadata = rewrite_metadata_references(
-                    entry['metadata'],
-                    id_mapping,
-                    stats,
-                    source_id,
-                )
+                outcome = rewriter.rewrite(entry['metadata'], source_id)
+                rewritten_metadata = outcome.metadata
                 # The metadata expression indexes are deliberately absent from the
                 # PostgreSQL base schema (a database this CLI initialized has none until
                 # its first server startup), so a PostgreSQL SOURCE can legitimately hold
@@ -286,13 +283,14 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                 # stored a value that breaches them. Checked unconditionally so --dry-run
                 # surfaces the row too.
                 unindexable = first_pg_unindexable_metadata_field(rewritten_metadata)
+                # The counts of a skipped row are not added: none of its values reach the target.
+                stats.record_metadata(outcome, migrated=unindexable is None)
                 if unindexable is not None:
                     column, reason = unindexable
                     stats.errors.append(
                         f'context_entries row id={source_id} thread_id={entry["thread_id"]!r} '
                         f'column {column!r} skipped: {reason}',
                     )
-                    stats.references_rewritten = references_rewritten_before
                     pg_skipped_context_ids.add(source_id)
                     continue
                 if not options.dry_run:

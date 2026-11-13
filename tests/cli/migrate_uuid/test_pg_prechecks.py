@@ -20,15 +20,23 @@ import json
 
 import pytest
 
+from app.cli.migrate_uuid.id_paths import DEFAULT_ID_PATH
+from app.cli.migrate_uuid.id_paths import IdPath
+from app.cli.migrate_uuid.metadata_ids import MetadataIdRewriter
 from app.cli.migrate_uuid.pg_prechecks import PG_BTREE_MAX_ITEM_BYTES
 from app.cli.migrate_uuid.pg_prechecks import PG_MAX_INDEXED_THREAD_ID_BYTES
 from app.cli.migrate_uuid.pg_prechecks import PG_MAX_INDEXED_VALUE_BYTES
 from app.cli.migrate_uuid.pg_prechecks import first_pg_unindexable_metadata_field
 from app.cli.migrate_uuid.pg_prechecks import pg_unindexable_column_reason
 from app.cli.migrate_uuid.pg_prechecks import pg_unstorable_column_reason
-from app.cli.migrate_uuid.records import MigrationStats
-from app.cli.migrate_uuid.references import rewrite_metadata_references
+from app.cli.migrate_uuid.records import IdPathCounts
+from app.cli.migrate_uuid.records import MetadataOutcome
 from app.settings import get_settings
+
+
+def _rewrite(metadata_json: str, mapping: dict[int, str], old_id: int) -> MetadataOutcome:
+    """Rewrite one row's metadata at the default path, as every migration direction does."""
+    return MetadataIdRewriter([IdPath.parse(DEFAULT_ID_PATH)], mapping, legacy_id_key=None).rewrite(metadata_json, old_id)
 
 
 class TestUnstorableColumnReason:
@@ -99,51 +107,47 @@ class TestNonFiniteJsonNumbers:
         target (json_valid flips to 0) and abort the transaction on every PostgreSQL
         target.
         """
-        stats = MigrationStats()
-        rewritten = rewrite_metadata_references('{"score": 1e400}', {}, stats, 1)
+        outcome = _rewrite('{"score": 1e400}', {}, 1)
 
-        assert rewritten == '{"score": 1e400}'
-        assert json.loads(rewritten)  # still parseable JSON
-        assert 'Infinity' not in rewritten
+        assert outcome.metadata == '{"score": 1e400}'
+        assert json.loads(outcome.metadata)  # still parseable JSON
+        assert 'Infinity' not in outcome.metadata
         # The skipped rewrite is reported, and a non-empty error list exits non-zero.
-        assert len(stats.errors) == 1
-        assert 'row 1' in stats.errors[0]
+        assert len(outcome.errors) == 1
+        assert 'row 1' in outcome.errors[0]
 
     def test_discarded_rewrites_are_not_reported_as_rewritten(self) -> None:
-        """Remappings the encoder rejects are not counted as remappings that landed.
+        """Rewrites the encoder rejects are not counted as rewrites that landed.
 
-        The walker counts each remapping as it mutates the parsed structure, but the
+        The rewrite counts each value as it changes the parsed structure, but the
         re-encode then fails and the ORIGINAL metadata -- still carrying the integer ids
-        -- is what reaches the target. Counting those remappings makes the run summary and
+        -- is what reaches the target. Counting those values makes the run summary and
         the --report JSON claim rewrites the target does not have, contradicting the error
         the same branch records.
         """
-        stats = MigrationStats()
         metadata_json = '{"references": {"context_ids": [1, 2, 3]}, "score": 1e400}'
         mapping = {1: 'a' * 32, 2: 'b' * 32, 3: 'c' * 32}
 
-        rewritten = rewrite_metadata_references(metadata_json, mapping, stats, 5)
+        outcome = _rewrite(metadata_json, mapping, 5)
 
-        assert rewritten == metadata_json
-        assert json.loads(rewritten)['references']['context_ids'] == [1, 2, 3]
-        assert stats.references_rewritten == 0
-        assert len(stats.errors) == 1
-        assert 'row 5' in stats.errors[0]
+        assert outcome.metadata == metadata_json
+        assert json.loads(outcome.metadata)['references']['context_ids'] == [1, 2, 3]
+        assert outcome.counts == {DEFAULT_ID_PATH: IdPathCounts()}
+        assert len(outcome.errors) == 1
+        assert 'row 5' in outcome.errors[0]
 
     def test_successful_rewrites_are_still_counted(self) -> None:
-        """The rollback is confined to the discard branch."""
-        stats = MigrationStats()
-        rewritten = rewrite_metadata_references(
+        """The discarded counts are confined to the re-encode failure."""
+        outcome = _rewrite(
             '{"references": {"context_ids": [1, 2]}, "score": 1e300}',
             {1: 'a' * 32, 2: 'b' * 32},
-            stats,
             6,
         )
 
-        assert rewritten is not None
-        assert json.loads(rewritten)['references']['context_ids'] == ['a' * 32, 'b' * 32]
-        assert stats.references_rewritten == 2
-        assert stats.errors == []
+        assert outcome.metadata is not None
+        assert json.loads(outcome.metadata)['references']['context_ids'] == ['a' * 32, 'b' * 32]
+        assert outcome.counts == {DEFAULT_ID_PATH: IdPathCounts(rewritten=2)}
+        assert outcome.errors == []
 
     @pytest.mark.parametrize(
         'metadata_json',
@@ -156,21 +160,19 @@ class TestNonFiniteJsonNumbers:
         the target byte-identical to the source, and the recorded error tells the
         operator to repair the value.
         """
-        stats = MigrationStats()
-        rewritten = rewrite_metadata_references(metadata_json, {}, stats, 7)
+        outcome = _rewrite(metadata_json, {}, 7)
 
-        assert rewritten == metadata_json
-        assert len(stats.errors) == 1
-        assert 'row 7' in stats.errors[0]
+        assert outcome.metadata == metadata_json
+        assert len(outcome.errors) == 1
+        assert 'row 7' in outcome.errors[0]
 
     def test_finite_metadata_still_round_trips(self) -> None:
         """The guard does not disturb ordinary metadata."""
-        stats = MigrationStats()
-        rewritten = rewrite_metadata_references('{"score": 1e300, "a": [1, 2]}', {}, stats, 3)
+        outcome = _rewrite('{"score": 1e300, "a": [1, 2]}', {}, 3)
 
-        assert rewritten is not None
-        assert json.loads(rewritten) == {'score': 1e300, 'a': [1, 2]}
-        assert stats.errors == []
+        assert outcome.metadata is not None
+        assert json.loads(outcome.metadata) == {'score': 1e300, 'a': [1, 2]}
+        assert outcome.errors == []
 
 
 # Bytes an index tuple spends on things other than the checked payload, used by the

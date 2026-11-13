@@ -131,20 +131,6 @@ class MigrationStats:
             what the path found in the metadata of the rows copied to the target.
         legacy_id: What ``--legacy-id-key`` did to the rows copied to the
             target, or None when no key is given.
-        references_rewritten: Number of integer entries inside
-            ``metadata.references.context_ids`` arrays that were
-            successfully remapped to UUIDv7 hex strings AND reached the
-            target. A remapping the run then discards -- because the
-            re-encode was rejected and the original metadata was preserved,
-            or because the whole row was skipped -- is not counted.
-        orphan_references: Number of integer entries inside
-            ``metadata.references.context_ids`` arrays that did not match
-            any source ``context_entries.id``; these are preserved as
-            integers and a warning is logged for each.
-        malformed_references: Number of rows whose ``metadata`` contained
-            a ``references`` block with an unexpected shape (for example,
-            a non-array ``context_ids`` value). The row's metadata is
-            preserved unchanged and a warning is logged.
         tags_migrated: Number of tag rows copied.
         images_migrated: Number of ``image_attachments`` rows copied.
         embedding_metadata_migrated: Number of ``embedding_metadata`` rows
@@ -162,9 +148,6 @@ class MigrationStats:
     rows_migrated: int = 0
     id_paths: dict[str, IdPathCounts] = field(default_factory=dict)
     legacy_id: LegacyIdCounts | None = None
-    references_rewritten: int = 0
-    orphan_references: int = 0
-    malformed_references: int = 0
     tags_migrated: int = 0
     images_migrated: int = 0
     embedding_metadata_migrated: int = 0

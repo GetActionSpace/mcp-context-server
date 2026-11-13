@@ -6,6 +6,7 @@ import sqlite3
 from app.cli._database_url import parse_backend_url
 from app.cli.migrate_uuid.id_mapping import build_id_mapping
 from app.cli.migrate_uuid.id_mapping import created_at_for_id
+from app.cli.migrate_uuid.metadata_ids import MetadataIdRewriter
 from app.cli.migrate_uuid.records import MigrationOptions
 from app.cli.migrate_uuid.records import MigrationStats
 from app.cli.migrate_uuid.sqlite_copy import copy_context_entries
@@ -42,6 +43,7 @@ def run_migration_sqlite_to_sqlite(options: MigrationOptions) -> MigrationStats:
         Populated :class:`MigrationStats` instance.
     """
     stats = MigrationStats()
+    stats.start_metadata_counts(options)
 
     _, source_address = parse_backend_url(options.source_url)
     _, target_address = parse_backend_url(options.target_url)
@@ -118,6 +120,7 @@ def run_migration_sqlite_to_sqlite(options: MigrationOptions) -> MigrationStats:
                 )
 
         id_mapping = build_id_mapping(source_rows)
+        rewriter = MetadataIdRewriter(options.id_paths, id_mapping, legacy_id_key=options.legacy_id_key)
 
         from app.repositories.fts_repository.query import desired_sqlite_fts_tokenizer
         from app.settings import get_settings
@@ -136,7 +139,7 @@ def run_migration_sqlite_to_sqlite(options: MigrationOptions) -> MigrationStats:
 
         target.execute('BEGIN')
         try:
-            copy_context_entries(source, target, id_mapping, stats, options.dry_run)
+            copy_context_entries(source, target, id_mapping, rewriter, stats, options.dry_run)
             if optional_tables.get('tags'):
                 copy_tags(source, target, id_mapping, stats, options.dry_run)
             if optional_tables.get('image_attachments'):

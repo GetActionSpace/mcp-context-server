@@ -47,6 +47,39 @@ class TestCliArgs:
         assert 'defer_generation' in help_text
         assert 'generation jobs' in help_text
 
+    @pytest.mark.parametrize(
+        'mode',
+        [
+            ['--compress'],
+            ['--decompress'],
+            ['--re-embed'],
+            ['--embed-missing'],
+            ['--reassign-owner', 'alice', 'bob'],
+            ['--disable-rls'],
+        ],
+    )
+    @pytest.mark.parametrize('option', [['--rewrite-ids-at', 'links.*'], ['--legacy-id-key', 'legacy_id']])
+    def test_migration_only_options_are_refused_before_an_in_place_mode_runs(
+        self,
+        mode: list[str],
+        option: list[str],
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An id rewrite or stamp option with an in-place mode exits 2 without dispatching the mode."""
+        dispatched: list[object] = []
+        monkeypatch.setattr('app.cli.migrate._dispatch', dispatched.append)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli_main(['--source-url', 'sqlite:///never-opened.db', *mode, *option])
+
+        assert exc_info.value.code == 2
+        assert dispatched == []
+        assert (
+            '--rewrite-ids-at and --legacy-id-key are valid only with the v2->v3 migration, not with an in-place mode'
+            in capsys.readouterr().err
+        )
+
 
 class TestSettingsValidationExitCode:
     """A settings ValidationError exits EX_CONFIG (78) on every CLI path.

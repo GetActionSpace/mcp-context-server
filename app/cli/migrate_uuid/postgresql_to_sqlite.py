@@ -7,12 +7,12 @@ from app.cli._database_url import parse_backend_url
 from app.cli.migrate_uuid.id_mapping import NULL_CREATED_AT_ANCHOR
 from app.cli.migrate_uuid.id_mapping import created_at_for_id
 from app.cli.migrate_uuid.id_mapping import sqlite_timestamp
+from app.cli.migrate_uuid.metadata_ids import MetadataIdRewriter
 from app.cli.migrate_uuid.pg_connection import pg_column_exists
 from app.cli.migrate_uuid.pg_connection import pg_connect
 from app.cli.migrate_uuid.pg_connection import pg_table_exists
 from app.cli.migrate_uuid.records import MigrationOptions
 from app.cli.migrate_uuid.records import MigrationStats
-from app.cli.migrate_uuid.references import rewrite_metadata_references
 from app.cli.migrate_uuid.sqlite_target import initialize_target_sqlite
 from app.cli.migrate_uuid.sqlite_target import open_target_sqlite
 from app.cli.migrate_uuid.sqlite_target import rebuild_fts_sqlite
@@ -41,6 +41,7 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
     """
 
     stats = MigrationStats()
+    stats.start_metadata_counts(options)
     stats.warnings.append(
         'cross-backend migration drops vector embeddings; re-embed the target after migration',
     )
@@ -89,6 +90,7 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
                 null_created_at,
                 NULL_CREATED_AT_ANCHOR.isoformat(),
             )
+        rewriter = MetadataIdRewriter(options.id_paths, id_mapping, legacy_id_key=options.legacy_id_key)
 
         # Detect which optional tables the PostgreSQL source carries so the
         # SQLite target is shaped to match. FTS is offered on the target (it is
@@ -137,12 +139,8 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
             for row in entry_rows:
                 source_id = int(row['id'])
                 new_id = id_mapping[source_id]
-                rewritten_metadata = rewrite_metadata_references(
-                    row['metadata'],
-                    id_mapping,
-                    stats,
-                    source_id,
-                )
+                outcome = rewriter.rewrite(row['metadata'], source_id)
+                stats.record_metadata(outcome, migrated=True)
                 if not options.dry_run:
                     target.execute(
                         'INSERT INTO context_entries '
@@ -155,7 +153,7 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
                             row['source'],
                             row['content_type'],
                             row['text_content'],
-                            rewritten_metadata,
+                            outcome.metadata,
                             row['summary'],
                             row['content_hash'],
                             *access_backfill_values(),

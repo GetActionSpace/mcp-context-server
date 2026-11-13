@@ -28,7 +28,7 @@ def pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | N
     has a THIRD failure mode: a non-finite JSON number. ``json.loads`` accepts the
     non-standard tokens ``NaN``/``Infinity``/``-Infinity`` AND silently converts a
     standard-but-overflowing literal such as ``1e400`` into ``inf``, while
-    ``json.dumps`` -- which :func:`rewrite_metadata_references` applies to every
+    ``json.dumps`` -- which :meth:`MetadataIdRewriter.rewrite` applies to every
     parseable ``metadata`` value on the copy path -- re-emits those values as the
     invalid tokens the jsonb parser rejects. Such a value is also unstorable
     through the server's own store boundary, which runs the same

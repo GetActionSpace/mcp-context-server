@@ -4,8 +4,8 @@ import json
 import sqlite3
 from collections.abc import Mapping
 
+from app.cli.migrate_uuid.metadata_ids import MetadataIdRewriter
 from app.cli.migrate_uuid.records import MigrationStats
-from app.cli.migrate_uuid.references import rewrite_metadata_references
 from app.cli.migrate_uuid.sqlite_source import table_has_column
 from app.cli.migrate_uuid.target_rows import SELECT_DISTINCT_TAGS_SQL
 from app.cli.migrate_uuid.target_rows import access_backfill_values
@@ -15,6 +15,7 @@ def copy_context_entries(
     source: sqlite3.Connection,
     target: sqlite3.Connection,
     id_mapping: Mapping[int, str],
+    rewriter: MetadataIdRewriter,
     stats: MigrationStats,
     dry_run: bool,
 ) -> None:
@@ -22,14 +23,14 @@ def copy_context_entries(
 
     Each source row's integer ID is replaced with the corresponding
     UUIDv7 hex from ``id_mapping``. ``text_content`` and ``summary`` are
-    copied verbatim. ``metadata`` is rewritten via
-    :func:`rewrite_metadata_references`.
+    copied verbatim. ``metadata`` is rewritten and stamped by ``rewriter``.
 
     Args:
         source: Read-only connection to the source database.
         target: Read-write connection to the target database.
         id_mapping: Integer-to-UUIDv7 mapping.
-        stats: Mutated to record ``rows_migrated``.
+        rewriter: The rewrite of entry ids in metadata and the old-id stamp.
+        stats: Mutated to record ``rows_migrated`` and each row's metadata outcome.
         dry_run: When True, no INSERT is executed.
     """
     has_summary = table_has_column(source, 'context_entries', 'summary')
@@ -62,7 +63,8 @@ def copy_context_entries(
     for row in cursor:
         source_id = int(row['id'])
         new_id = id_mapping[source_id]
-        rewritten_metadata = rewrite_metadata_references(row['metadata'], id_mapping, stats, source_id)
+        outcome = rewriter.rewrite(row['metadata'], source_id)
+        stats.record_metadata(outcome, migrated=True)
         summary_value = row['summary'] if has_summary else None
         content_hash_value = row['content_hash'] if has_content_hash else None
         params = (
@@ -71,7 +73,7 @@ def copy_context_entries(
             row['source'],
             row['content_type'],
             row['text_content'],
-            rewritten_metadata,
+            outcome.metadata,
             summary_value,
             content_hash_value,
             owner_id_backfill,

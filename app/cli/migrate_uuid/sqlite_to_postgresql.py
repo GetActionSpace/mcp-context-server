@@ -3,6 +3,7 @@
 from app.cli._database_url import parse_backend_url
 from app.cli.migrate_uuid.id_mapping import build_id_mapping
 from app.cli.migrate_uuid.id_mapping import stored_datetime_or_none
+from app.cli.migrate_uuid.metadata_ids import MetadataIdRewriter
 from app.cli.migrate_uuid.pg_connection import pg_connect
 from app.cli.migrate_uuid.pg_connection import pg_table_exists
 from app.cli.migrate_uuid.pg_connection import target_pg_has_data
@@ -15,7 +16,6 @@ from app.cli.migrate_uuid.pg_target import ensure_target_pg_fts
 from app.cli.migrate_uuid.pg_target import initialize_target_postgresql
 from app.cli.migrate_uuid.records import MigrationOptions
 from app.cli.migrate_uuid.records import MigrationStats
-from app.cli.migrate_uuid.references import rewrite_metadata_references
 from app.cli.migrate_uuid.sqlite_source import detect_optional_tables
 from app.cli.migrate_uuid.sqlite_source import detect_source_id_kind
 from app.cli.migrate_uuid.sqlite_source import open_source_sqlite
@@ -43,6 +43,7 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
     import asyncpg
 
     stats = MigrationStats()
+    stats.start_metadata_counts(options)
     stats.warnings.append(
         'cross-backend migration drops vector embeddings; re-embed the target after migration',
     )
@@ -83,6 +84,7 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
         )
         source_rows = cursor.fetchall()
         id_mapping = build_id_mapping(source_rows)
+        rewriter = MetadataIdRewriter(options.id_paths, id_mapping, legacy_id_key=options.legacy_id_key)
 
         # Auto-initialize the target schema when absent (mirrors the SQLite
         # path and the PG->PG path). Cross-backend migration drops vector
@@ -146,15 +148,8 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
             for row in entry_cursor:
                 source_id = int(row['id'])
                 new_id = id_mapping[source_id]
-                # Snapshot the rewrite counter so a row this loop ends up SKIPPING does
-                # not leave its remappings counted: none of them reach the target.
-                references_rewritten_before = stats.references_rewritten
-                rewritten_metadata = rewrite_metadata_references(
-                    row['metadata'],
-                    id_mapping,
-                    stats,
-                    source_id,
-                )
+                outcome = rewriter.rewrite(row['metadata'], source_id)
+                rewritten_metadata = outcome.metadata
                 # A NUL (U+0000) or unpaired UTF-16 surrogate is legal in a SQLite
                 # TEXT value but fatal on the PostgreSQL target: without this check
                 # the asyncpg bind raises mid-transaction, ROLLBACKs the whole run,
@@ -186,13 +181,14 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                     unstorable = first_pg_unindexable_column(
                         (('thread_id', row_thread_id, PG_MAX_INDEXED_THREAD_ID_BYTES),),
                     ) or first_pg_unindexable_metadata_field(rewritten_metadata)
+                # The counts of a skipped row are not added: none of its values reach the target.
+                stats.record_metadata(outcome, migrated=unstorable is None)
                 if unstorable is not None:
                     column, reason = unstorable
                     stats.errors.append(
                         f'context_entries row id={source_id} thread_id={row_thread_id!r} '
                         f'column {column!r} skipped: {reason}',
                     )
-                    stats.references_rewritten = references_rewritten_before
                     skipped_context_ids.add(source_id)
                     continue
                 if not options.dry_run:
