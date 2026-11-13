@@ -222,6 +222,49 @@ def test_reference_to_a_skipped_row_is_not_rewritten(
     assert str(errors[0]).startswith(_skip_error_prefix(direction))
 
 
+@pytest.mark.parametrize('direction', _TO_POSTGRESQL)
+def test_a_row_is_skipped_by_the_metadata_it_would_store_once_rewritten(
+    direction: Direction, tmp_path: Path, create_database: CreateDatabase, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A row whose rewritten id breaks an integer index stays skipped, and a reference to it stays as written.
+
+    Entry 1 is skipped for its wide status. Entry 2's integer-indexed ``parent`` cites
+    entry 1: rewritten to a 32-character id it fails the integer index, so entry 2 is
+    skipped too, although the value it ends up holding, entry 1's old id kept as written,
+    would fit. Entry 3 cites entry 2, which the target never stores.
+    """
+    monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'status,parent:integer')
+    get_settings.cache_clear()
+    rows = [
+        source_row(1, {'status': 'x' * 3000}, '2024-01-01 10:00:00'),
+        source_row(2, {'parent': 1}, '2024-02-01 10:00:00'),
+        source_row(3, {'references': {'context_ids': [2]}}, '2024-03-01 10:00:00'),
+    ]
+    endpoints = _Endpoints(direction, rows, tmp_path, create_database)
+    report = tmp_path / 'report.json'
+
+    exit_code = endpoints.migrate(
+        report, '--rewrite-ids-at', 'parent', '--rewrite-ids-at', 'references.context_ids',
+    )
+
+    assert exit_code == 1
+    migrated, loaded = endpoints.read_target(), _report(report)
+    assert sorted(migrated) == ['entry-3']
+    assert migrated['entry-3'].metadata == {'references': {'context_ids': [2]}}
+    assert loaded['id_paths'] == {
+        'parent': {'rewritten': 0, 'not_migrated': 0, 'kept': 0},
+        'references.context_ids': {'rewritten': 0, 'not_migrated': 1, 'kept': 0},
+    }
+    assert row_warnings(loaded) == [
+        'row 2: metadata.parent holds 1, the id of an entry this run skipped; preserved',
+        'row 3: metadata.references.context_ids[0] holds 2, the id of an entry this run skipped; preserved',
+    ]
+    errors = [str(error) for error in loaded['errors']] if isinstance(loaded['errors'], list) else []
+    assert len(errors) == 2
+    assert errors[0].startswith("context_entries row id=1 thread_id='thread-ids' column 'metadata.status' skipped")
+    assert errors[1].startswith("context_entries row id=2 thread_id='thread-ids' column 'metadata.parent' skipped")
+
+
 def test_dry_run_matches_real_run(tmp_path: Path, create_database: CreateDatabase) -> None:
     """A dry run reports what the real run that follows it writes, and writes nothing."""
     direction: Direction = 'sqlite_to_postgresql'
