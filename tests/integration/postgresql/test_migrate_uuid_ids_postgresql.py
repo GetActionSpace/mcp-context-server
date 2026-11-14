@@ -189,8 +189,9 @@ def test_stamped_entry_is_found_by_metadata_filter(
 
 
 # Entry 2 is the one the pre-check skips: on a SQLite source its text holds a NUL,
-# which PostgreSQL cannot store; on a PostgreSQL source its indexed status is wider than
-# the pre-check's budget. Entry 1, older, and entry 3, newer, cite it; entry 2 cites entry 1.
+# which PostgreSQL cannot store; on a PostgreSQL source its status, a string field
+# METADATA_INDEXED_FIELDS names, is 3000 UTF-8 bytes, over the pre-check's budget.
+# Entry 1, older, and entry 3, newer, cite it; entry 2 cites entry 1.
 _SKIPPED_COLUMN: dict[Direction, str] = {
     'sqlite_to_postgresql': 'text_content',
     'postgresql_to_postgresql': 'metadata.status',
