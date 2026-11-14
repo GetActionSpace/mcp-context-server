@@ -188,7 +188,7 @@ def test_stamped_entry_is_found_by_metadata_filter(
     assert asyncio.run(_texts_found_by_legacy_id(endpoints.target_url, 2)) == ['entry-2']
 
 
-# Entry 2 is the one the target cannot accept: on a SQLite source its text holds a NUL,
+# Entry 2 is the one the pre-check skips: on a SQLite source its text holds a NUL,
 # which PostgreSQL cannot store; on a PostgreSQL source its indexed status is wider than
 # the pre-check's budget. Entry 1, older, and entry 3, newer, cite it; entry 2 cites entry 1.
 _SKIPPED_COLUMN: dict[Direction, str] = {

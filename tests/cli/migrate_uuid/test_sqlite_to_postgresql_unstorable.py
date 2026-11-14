@@ -12,9 +12,10 @@ source holds it. A verbatim ``NaN`` or ``Infinity`` token fails the ``::jsonb`` 
 unscreened, aborts the whole cross-backend migration mid-transaction with only a raw
 driver error and no row identification. A verbatim ``1e400`` passes the cast, since jsonb
 stores it as a JSON number, but the server refuses a non-finite number at its store
-boundary, and the pre-check skips it too. These tests prove each such row is identified
-and skipped with an error and the run does not crash; the ``--dry-run`` tests show the
-same rows reported and nothing written.
+boundary, and the pre-check skips it too. These tests show a row holding a NUL, a
+``\\u0000`` escape, malformed JSON, ``1e400``, ``Infinity`` or ``NaN``, or an over-budget
+thread_id or tag, identified and skipped with an error while the run completes; the
+``--dry-run`` tests show such rows reported and nothing written.
 
 The full-run tests drive the real ``run_migration_mixed_sqlite_to_postgresql``
 against a fake asyncpg target connection (the PostgreSQL probe helpers are patched
@@ -486,7 +487,7 @@ class TestSqliteToPostgresqlNonFinitePrecheck:
 
 
 def _source_with_oversized_indexed_values(path: Path) -> None:
-    """Seed a source carrying a thread_id and a tag over their PostgreSQL index budgets."""
+    """Seed a source carrying a thread_id and a tag over their index budgets."""
     _seed_source(
         path,
         entries=[
@@ -504,7 +505,7 @@ def _source_with_oversized_indexed_values(path: Path) -> None:
                 'thread_id': 'T' * 4000,
                 'source': 'user',
                 'content_type': 'text',
-                'text_content': 'row whose thread_id cannot be indexed on PostgreSQL',
+                'text_content': 'row whose thread_id is over its budget',
                 'metadata': None,
                 'created_at': '2026-01-01 00:00:01',
             },
@@ -514,11 +515,10 @@ def _source_with_oversized_indexed_values(path: Path) -> None:
 
 
 class TestSqliteToPostgresqlIndexSizePrecheck:
-    """A legacy value over its PostgreSQL index budget is skipped, not fatal.
+    """A legacy value over its index budget is skipped while the rest of the run migrates.
 
     A corpus predating the write-path length caps can hold a thread_id or tag larger
-    than the PostgreSQL target's btree index-tuple budget, so it is screened per row,
-    like the NUL/surrogate class.
+    than the pre-check's budget, so it is screened per row, like the NUL/surrogate class.
     """
 
     @pytest.mark.asyncio
@@ -532,7 +532,7 @@ class TestSqliteToPostgresqlIndexSizePrecheck:
         errors = '\n'.join(stats.errors)
         assert 'context_entries row id=2' in errors
         assert "column 'thread_id'" in errors
-        assert 'index-tuple budget' in errors
+        assert "over the pre-check's budget" in errors
         assert 'tags row context_entry_id=1' in errors
 
         # Only the clean entry and the clean tag are copied.
@@ -540,7 +540,7 @@ class TestSqliteToPostgresqlIndexSizePrecheck:
         assert stats.tags_migrated == 1
         assert len(conn.inserts('context_entries')) == 1
 
-        # The run committed rather than rolling back on a mid-transaction index error.
+        # The over-budget rows were skipped, and the run committed.
         assert 'COMMIT' in conn.statements()
         assert 'ROLLBACK' not in conn.statements()
 

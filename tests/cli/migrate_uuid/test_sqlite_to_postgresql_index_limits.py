@@ -165,11 +165,11 @@ async def _run_with_fake_target(
 
 
 class TestSqliteToPostgresqlIndexPrecheck:
-    """The real cross-backend copy loops skip unindexable rows instead of aborting."""
+    """The real cross-backend copy loops skip a row whose indexed value is over its budget."""
 
     @pytest.mark.asyncio
     async def test_oversized_indexed_metadata_row_is_skipped(self, tmp_path: Path) -> None:
-        """A row whose indexed metadata value is over its budget is skipped, not fatal."""
+        """A row whose indexed metadata value is over its budget is skipped; the clean entry and its tag migrate."""
         source = tmp_path / 'source.db'
         _seed_source(
             source,
@@ -195,8 +195,7 @@ class TestSqliteToPostgresqlIndexPrecheck:
         skip_errors = [error for error in stats.errors if 'id=2' in error]
         assert len(skip_errors) == 1
         assert "'metadata.task_name'" in skip_errors[0]
-        # The skipped parent takes its children with it (an FK violation would relocate
-        # the very abort this guard prevents).
+        # The tag of the skipped parent is not copied.
         assert [args[1] for args in fake.inserts('tags')] == ['good-tag']
         assert stats.tags_migrated == 1
 
@@ -255,7 +254,7 @@ class TestSqliteToPostgresqlIndexPrecheck:
 
     @pytest.mark.asyncio
     async def test_dry_run_surfaces_the_skip_without_inserting(self, tmp_path: Path) -> None:
-        """--dry-run reports the unindexable row and inserts nothing."""
+        """--dry-run reports the over-budget row and inserts nothing."""
         source = tmp_path / 'source.db'
         _seed_source(
             source,
