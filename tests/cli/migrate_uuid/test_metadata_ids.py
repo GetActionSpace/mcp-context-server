@@ -162,11 +162,12 @@ class TestValues:
         assert outcome.errors == []
 
     def test_mixed_list_counts_each_element(self) -> None:
-        """Every element of a found list is one candidate."""
+        """Every element of a found list is one candidate, and only the not_migrated one is warned."""
         elements = [1, 2, 99, 'd' * 32, '2', True, 1.5, None, [1], {'a': 1}]
         result, outcome = _rewrite({'references': {'context_ids': elements}})
         assert result == {'references': {'context_ids': [A, B, 99, 'd' * 32, B, True, 1.5, None, [1], {'a': 1}]}}
         assert outcome.counts[DEFAULT_ID_PATH] == _counts(rewritten=3, not_migrated=1, kept=6)
+        assert outcome.warnings == [f'row 3: metadata.references.context_ids[2] holds 99, {NOT_MIGRATED_WORDING}']
 
     @pytest.mark.parametrize(('value', 'expected'), [(5, C), ('5', C), (99, 99), ('x', 'x'), (None, None)])
     def test_a_single_found_value_is_one_candidate(self, value: object, expected: object) -> None:

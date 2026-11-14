@@ -84,7 +84,7 @@ class MetadataOutcome:
         counts: Per path text, every given path present, the values this row's rewrite
             counted at it; all zero when the metadata is kept verbatim.
         stamp: What became of the old id under ``--legacy-id-key``; None when no key is given.
-        warnings: One per value that names no migrated entry.
+        warnings: One per value counted ``not_migrated``; none when the metadata is kept verbatim.
         errors: Why the metadata was preserved verbatim or not stamped.
     """
 
