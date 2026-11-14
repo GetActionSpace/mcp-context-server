@@ -267,10 +267,10 @@ async def test_pg_pg_migration_copies_embedding_metadata(
         em_count = await tgt.fetchval('SELECT COUNT(*) FROM embedding_metadata')
         vec_count = await tgt.fetchval('SELECT COUNT(*) FROM vec_context_embeddings')
         assert em_count == 3, (
-            f'embedding_metadata bug REGRESSED: target has {em_count} rows'
+            f'target has {em_count} embedding_metadata rows, expected 3'
         )
         assert vec_count == 3, (
-            f'vec_context_embeddings bug REGRESSED: target has {vec_count} rows'
+            f'target has {vec_count} vec_context_embeddings rows, expected 3'
         )
     finally:
         await tgt.close()
@@ -505,7 +505,7 @@ async def test_pg_pg_migration_source_without_embedding_metadata_table(
             dry_run=False,
             report_path=None,
         )
-        # Must complete without raising (the unguarded read would have crashed).
+        # A source without an embedding_metadata table migrates with no error and zero embedding rows.
         stats = await run_migration_postgresql(options)
         assert stats.rows_migrated == 2
         assert stats.embedding_metadata_migrated == 0
