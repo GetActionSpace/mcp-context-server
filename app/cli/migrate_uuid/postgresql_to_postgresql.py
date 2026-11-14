@@ -122,12 +122,10 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
         source_has_fts = await pg_column_exists(source_conn, 'context_entries', 'text_search_vector')
 
         # Auto-initialize the target schema when it has no context_entries table,
-        # mirroring the SQLite path (initialize_target_sqlite). This removes the
-        # trap where the user had to manually pre-create the fp32 layout: the
-        # target is built with ENABLE_EMBEDDING_COMPRESSION effectively off (the
-        # compression migration is never run here), so copy_vec_embeddings_pg has
-        # an fp32 vec_context_embeddings table to write into. Compression is a
-        # separate, explicit --compress step afterward.
+        # mirroring the SQLite path (initialize_target_sqlite). The target is built
+        # with the fp32 layout (the compression migration is never run here), so
+        # copy_vec_embeddings_pg has a vec_context_embeddings table to write into.
+        # Compression is a separate --compress step afterward.
         target_initialized = await pg_table_exists(target_conn, 'context_entries', schema=target_schema)
         if not target_initialized:
             # fp32 capability pre-flight for the auto-init: an embedding-carrying
@@ -392,9 +390,8 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                     )
                 stats.images_migrated += 1
 
-            # ----- FIX: embeddings copy (was silently dropped before v3) -----
-            # Copy embedding_metadata + vec_context_embeddings to restore
-            # the embedding state in the target database. PostgreSQL has
+            # Copy embedding_metadata and vec_context_embeddings, remapping context_id,
+            # so the target keeps the source embeddings. PostgreSQL has
             # no embedding_chunks table; the 1:N relationship lives in
             # vec_context_embeddings.id (BIGSERIAL PK) plus context_id
             # (UUID FK). Guarded by source table existence so a v2 source
