@@ -95,9 +95,11 @@ def pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | N
 # METADATA_INDEXED_FIELDS never covered a field, or which was never started as a
 # server, can carry a value the target's index rejects.
 #
-# Bound at the source, such a value aborts the INSERT mid-transaction, ROLLBACKs the
-# entire run, and reports a raw driver error naming no source row -- the exact failure
-# the NUL/surrogate pre-check exists to convert into a per-row skip-and-warn.
+# Unchecked, such a value aborts the INSERT mid-transaction when the target already
+# carries idx_metadata_<field>, ROLLBACKs the entire run, and reports a raw driver error
+# naming no source row -- the exact failure the NUL/surrogate pre-check exists to convert
+# into a per-row skip-and-warn. On a target without that index, the INSERT succeeds and
+# the target's first server startup fails to build it.
 #
 # The budget is deliberately measured against the UNCOMPRESSED value. PostgreSQL
 # compresses an index attribute larger than 512 bytes in line, so a highly repetitive
