@@ -137,14 +137,16 @@ class MetadataIdRewriter:
 
         Re-encoding uses ``allow_nan=False``. ``json.loads`` accepts the non-standard
         ``NaN``/``Infinity``/``-Infinity`` and silently turns a standard but overflowing
-        literal such as ``1e400`` into ``inf``, which a default ``json.dumps`` writes back
-        as a token no RFC 8259 parser accepts: valid source metadata would become invalid
-        on a SQLite target (``json_valid`` turns 0) and abort the transaction on a
-        PostgreSQL target (the jsonb bind rejects it). With ``allow_nan=False`` the encoder
-        raises instead and the original text is kept verbatim, which every target accepts.
-        The rewrite is then discarded, so the outcome counts nothing and warns about
-        nothing, and its error makes the command exit non-zero so the operator can repair
-        the value.
+        literal such as ``1e400`` into ``inf``, which a default ``json.dumps`` would write
+        back as a token no RFC 8259 parser accepts, in place of the source text. With
+        ``allow_nan=False`` the encoder raises instead, the rewrite is discarded and the
+        original text is kept verbatim, so the outcome counts nothing and warns about
+        nothing. A PostgreSQL target written from a SQLite source then skips the row
+        through its non-finite pre-check, so the text never reaches the jsonb bind; every
+        other target stores the text as the source held it, since a SQLite column carries
+        no JSON check and a PostgreSQL source's jsonb text is text a PostgreSQL target's
+        jsonb accepts. Either way the error makes the command exit non-zero so the
+        operator can repair the value.
 
         Args:
             metadata_json: The source row's metadata text, or None.
