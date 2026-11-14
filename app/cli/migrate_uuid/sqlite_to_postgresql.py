@@ -29,27 +29,32 @@ from app.cli.migrate_uuid.target_rows import access_backfill_values
 def _pg_skip_reason(row: sqlite3.Row, metadata: str | None) -> tuple[str, str] | None:
     """Return why the PostgreSQL target cannot accept a source entry row, or None.
 
-    SQLite accepts four classes of value the PostgreSQL target refuses, and the row is
-    skipped on the first one found:
+    SQLite accepts five classes of value that the PostgreSQL target, its database or the
+    server that runs on it, refuses, and the row is skipped on the first one found:
 
     1. A NUL (U+0000) or unpaired UTF-16 surrogate in any column.
     2. jsonb metadata that is not valid JSON, that decodes to a NUL or an unpaired
-       surrogate through an escape such as ``\\u0000``, or that holds a non-finite number: ``NaN``,
-       ``Infinity``, or a literal too large for a double such as ``1e400``, which the
-       rewriter cannot re-encode and so keeps verbatim.
-    3. A thread_id wider than the btree it leads, idx_context_entries_dedup_hash, can
+       surrogate through an escape such as ``\\u0000``, or that holds a ``NaN``,
+       ``Infinity`` or ``-Infinity`` token.
+    3. jsonb metadata holding a number literal too large for a double, such as
+       ``1e400``. The rewriter cannot re-encode it and so keeps the text verbatim.
+    4. A thread_id wider than the btree it leads, idx_context_entries_dedup_hash, can
        hold. text_content and summary are unindexed and may be arbitrarily large.
-    4. A value under a METADATA_INDEXED_FIELDS key that its field refuses: a
+    5. A value under a METADATA_INDEXED_FIELDS key that its field refuses: a
        string-typed value wider than the field's expression index idx_metadata_<field>
        can hold, or an integer-, boolean- or float-typed value that does not parse as
        the declared type. Array- and object-typed fields build no expression index and
        are exempt.
 
-    Unchecked, a value of class 1, 2 or 3 makes the INSERT raise mid-transaction on every
-    target, because the column types and the thread_id index come with the base schema:
-    the whole run rolls back and reports only the raw driver error, naming no row. A class
-    4 value under a string-, integer- or boolean-typed field (an oversized value, or one
-    the hard SQL cast of an integer or boolean index rejects) does the same only on a
+    Unchecked, a value of class 1, 2 or 4 makes the INSERT raise mid-transaction on every
+    target, because the column types, the jsonb cast and the thread_id index come with the
+    base schema: the whole run rolls back and reports only the raw driver error, naming no
+    row. A class 3 value passes the jsonb cast, which stores a number as numeric, so the
+    INSERT succeeds; the row is skipped because the server refuses a non-finite number at
+    its store boundary (:func:`app.metadata_types.non_finite_metadata_error`), and the
+    target holds no value its server would refuse. A class 5 value under a string-,
+    integer- or boolean-typed field (an oversized value, or one the hard SQL cast of an
+    integer or boolean index rejects) makes the INSERT raise in the same way only on a
     target that already carries idx_metadata_<field>, which the server creates when it
     starts. On a target this command initialized, the INSERT succeeds and the target's
     first server start fails to build that index (a failed cast stops it with exit 78).
