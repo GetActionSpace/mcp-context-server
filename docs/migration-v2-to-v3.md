@@ -133,7 +133,18 @@ The summary prints one line per path in command-line order, and the report holds
 "id_paths": {"**.references.context_ids": {"rewritten": 5, "not_migrated": 1, "kept": 3}}
 ```
 
-A wildcard path rewrites every integer and numeric string under it that equals the id of a migrated entry, whatever the number means. Pull request or ticket numbers stored as strings under `links` would become the ids of unrelated entries under `links.*`, so name the keys that hold entry ids (`links.parent`, `links.closed_by`) rather than a wildcard over keys that hold other numbers. Run with `--dry-run --report PATH` first and read the counts per path before a real run.
+A wildcard path rewrites every integer and numeric string under it that equals the id of a migrated entry, whatever the number means. Pull request or ticket numbers stored as strings under `links` would become the ids of unrelated entries under `links.*`, so name the keys that hold entry ids (`links.parent`, `links.closed_by`) rather than a wildcard over keys that hold other numbers. Run with `--dry-run --report PATH` first and read the counts per path before a real run. The paths you give replace the default, so a run that keeps the default beside a key of its own names both:
+
+```bash
+mcp-context-server-migrate \
+  --source-url sqlite:////path/to/source.db \
+  --target-url sqlite:////path/to/target.db \
+  --rewrite-ids-at '**.references.context_ids' \
+  --rewrite-ids-at 'links.closed_by' \
+  --dry-run --report report.json
+```
+
+Put each path in single quotes, as above, so the shell passes it to the CLI unchanged. Outside quotes, a `*` is a shell wildcard: zsh and fish stop with an error before the CLI starts, and bash replaces the path with the names of the files in the current directory that match it, when there are any (`links.md` for `links.*`). The CLI then receives a path that finds nothing, and the run exits 0 with zero counts for it. In PowerShell, single quotes pass a path unchanged too. In cmd, write the paths without quotes: cmd passes a `*` to the CLI unchanged, while it keeps single quotes as part of the path.
 
 #### Stamping the Old Id
 
