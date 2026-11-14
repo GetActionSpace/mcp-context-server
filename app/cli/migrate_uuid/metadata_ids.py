@@ -93,7 +93,8 @@ class MetadataIdRewriter:
     ``not_migrated`` with a warning, anything else is counted ``kept``. When several
     paths find the same value, the first path given rewrites and counts it. Metadata
     that does not parse, or that holds a number Python cannot write back as JSON, is
-    returned unchanged with an error, no id rewritten and nothing counted.
+    returned unchanged with an error: no id in it is rewritten, every path count is
+    zero, and with a legacy id key the stamp outcome is ``not_stamped``.
     """
 
     def __init__(
@@ -144,8 +145,9 @@ class MetadataIdRewriter:
         literal such as ``1e400`` into ``inf``, which a default ``json.dumps`` would write
         back as a token no RFC 8259 parser accepts, in place of the source text. With
         ``allow_nan=False`` the encoder raises instead, the rewrite is discarded and the
-        original text is kept verbatim, so the outcome counts nothing and warns about
-        nothing. A PostgreSQL target written from a SQLite source then skips the row
+        original text is kept verbatim, so every path count of the outcome is zero, it
+        carries no warning, and with a legacy id key its stamp is ``not_stamped``. A
+        PostgreSQL target written from a SQLite source then skips the row
         through its non-finite pre-check, so the text never reaches the jsonb bind; every
         other target stores the text as the source held it, since a SQLite column carries
         no JSON check and a PostgreSQL source's jsonb text is text a PostgreSQL target's

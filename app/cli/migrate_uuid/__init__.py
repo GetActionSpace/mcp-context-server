@@ -22,8 +22,8 @@ Migration behavior
       is ``**.references.context_ids``; the paths given replace it. The value at a path may be one id or a list of
       ids. An integer, or a string holding an integer in the exact form JSON writes one, that is the id of a migrated
       entry becomes that entry's new id; every other value is kept as written and counted per path. In metadata
-      holding a number Python cannot write back as JSON (such as ``1e400`` or ``NaN``), no id is rewritten, nothing
-      is counted and the run reports an error. A PostgreSQL target decides every skip before it stores any row,
+      holding a number Python cannot write back as JSON (such as ``1e400`` or ``NaN``), no id is rewritten, no
+      path counts a value and the run reports an error. A PostgreSQL target decides every skip before it stores any row,
       checking each row's metadata as rewritten and stamped, so an id naming a skipped row stays as written.
     - With ``--legacy-id-key NAME``, stores each entry's old integer id under the top-level metadata key ``NAME``
       after its ids are rewritten, unless the metadata already holds that key. Metadata that does not parse, is not
