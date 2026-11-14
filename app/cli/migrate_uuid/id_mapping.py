@@ -1,6 +1,6 @@
 """Integer-to-UUIDv7 ID mapping and the timestamp coercion it relies on.
 
-Each migrated row receives a deterministic UUIDv7 derived from its ``created_at``;
+Each migrated row receives a UUIDv7 whose timestamp comes from its ``created_at``;
 the helpers here coerce source timestamps and anchor unusable ones.
 """
 
