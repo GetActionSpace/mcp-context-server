@@ -176,8 +176,15 @@ class TestLocations:
         assert _found(metadata, ' references.context_ids') == set()
 
     def test_a_key_holding_a_dot_cannot_be_addressed(self) -> None:
-        """A dot always separates keys, so a key with a dot in its name is out of reach."""
+        """A dot always separates keys, so a path cannot name a key with a dot in its name."""
         assert _found({'a.b': [1], 'a': {'c': 1}}, 'a.b') == set()
+
+    def test_wildcards_reach_keys_a_path_cannot_name(self) -> None:
+        """A wildcard finds a key holding a dot or a star, and any depth starts inside its value."""
+        assert _found({'links': {'a.b': 1, 'c*d': 2}}, 'links.*') == {('links', 'a.b'), ('links', 'c*d')}
+        assert _found({'x.y': {'references': {'context_ids': [1]}}}, DEFAULT_ID_PATH) == {
+            ('x.y', 'references', 'context_ids'),
+        }
 
     def test_wildcard_finds_every_key_of_an_object(self) -> None:
         """A wildcard key finds every value of the object it steps into."""

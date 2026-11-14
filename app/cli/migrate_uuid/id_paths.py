@@ -3,8 +3,9 @@
 A path is its keys joined by single dots, read from the top of the metadata object. Each key is
 compared exactly (case-sensitive, no trimming); ``*`` as a whole key stands for any one key; a
 leading ``**.`` lets the rest of the path start at any object at any depth, objects reached
-through list elements included. A key whose name contains a dot or a star cannot be addressed,
-just as the server's metadata filters cannot address a dotted key.
+through list elements included. A key whose name contains a dot or a star cannot be named in a
+path, just as the server's metadata filters cannot name a dotted key, though a ``*`` or ``**``
+still reaches it.
 """
 
 import re
