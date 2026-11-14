@@ -466,12 +466,10 @@ async def test_pg_pg_migration_source_without_embedding_metadata_table(
     pg_test_url: str,
     isolated_pg_v3_target_db: str,
 ) -> None:
-    """A v2 source that never enabled semantic search (no embedding_metadata TABLE) does not crash.
+    """A v2 source with no embedding_metadata table migrates its entries with zero embedding rows and no error.
 
-    Distinct from test_..._missing_embedding_metadata_gracefully, which keeps the
-    table but seeds zero rows. Here the table is ABSENT entirely; without the
-    guard, an unconditional ``SELECT ... FROM embedding_metadata`` would crash
-    the whole migration.
+    Distinct from test_pg_pg_migration_handles_missing_embedding_metadata_gracefully, which keeps the table empty;
+    here the table does not exist.
     """
     db_name = 'mcp_pg_pg_v2_no_em_table'
     src_url = await make_isolated_db(pg_test_url, db_name)
@@ -577,12 +575,10 @@ async def test_pg_pg_dry_run_on_empty_target_reports_symmetric_counts(
     isolated_pg_v2_source_db: str,
     pg_test_url: str,
 ) -> None:
-    """Dry-run against a bare (auto-init-able) target previews symmetric counts.
+    """A dry run against a bare target reports the counts the real run copies and writes nothing.
 
-    The embedding counter and the vec counter both report N, with no
-    contradictory 'initialize the target schema first' warning, because a real
-    run auto-initializes and copies everything. The preview must be accurate
-    and write nothing.
+    The embedding counter and the vector counter both report 3, with no 'initialize the target schema first' warning,
+    because a real run auto-initializes the target and copies every row.
     """
     await _seed_source_with_embeddings(isolated_pg_v2_source_db, n_docs=3)
     db_name = 'mcp_pg_pg_dryrun_empty'
@@ -598,7 +594,7 @@ async def test_pg_pg_dry_run_on_empty_target_reports_symmetric_counts(
 
         assert not stats.errors
         assert stats.rows_migrated == 3
-        # Symmetric would-migrate counts, NOT embedding=3 / vec=0.
+        # The dry run counts the embedding and vector rows the real run copies.
         assert stats.embedding_metadata_migrated == 3
         assert stats.vec_rows_migrated == 3
         assert not any('initialize the target schema first' in w for w in stats.warnings)
