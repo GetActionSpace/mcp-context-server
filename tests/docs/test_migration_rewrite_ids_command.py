@@ -1,14 +1,17 @@
 """The ``--rewrite-ids-at`` command line of docs/migration-v2-to-v3.md runs as written.
 
-The "Rewriting Entry Ids in Metadata" section shows the command an operator types to name
-the metadata paths that hold entry ids. A path holding ``*`` is a shell wildcard, so every
-path in the command must be in single quotes, which make a POSIX shell pass it to the CLI
-unchanged. The command is split the way such a shell splits it and run with only its
-source and target URLs replaced, by a seeded source whose metadata holds ids at the
-command's paths and a temporary target; the report is written under the name the command
-gives, in a temporary directory. The run must exit with status 0 and report every path
-under ``id_paths``, each with at least one id rewritten, so a path the shell had replaced
-with a file name, which finds nothing, fails the check.
+The "Rewriting Entry Ids in Metadata" section shows the command an operator types to name the metadata paths that hold
+entry ids, and each of the two tests checks a different property of that command.
+
+Outside quotes, a path holding ``*`` is a shell wildcard, which a shell replaces with the names of the files that match it.
+The quoting test fails when a path of the command is not in single quotes, which make a shell pass the path unchanged.
+
+The run test splits the command with ``shlex.split``, which applies a POSIX shell's quoting and word splitting but no
+pathname expansion, so it never receives a path a shell replaced. It runs the command with only its source and target
+URLs replaced, by a seeded source whose metadata holds ids at the command's paths and a temporary target; the report is
+written under the name the command gives, in a temporary directory. The run must exit with status 0 and report every path
+under ``id_paths``, each with at least one id rewritten, so a path of the command that finds no id of a migrated entry in
+the seeded source, such as a mistyped path or one the seed does not cover, fails the check.
 """
 
 import json
