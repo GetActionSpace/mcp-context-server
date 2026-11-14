@@ -202,7 +202,11 @@ class TestDryRun:
 
 
 class TestOptionValidation:
-    """Refused values and combinations exit 2 before any database is opened."""
+    """Which option values and combinations the command refuses and which it accepts.
+
+    A refused one exits 2 before any database is opened; a stamp key that a rewrite path
+    also reaches is accepted, and the run migrates with it.
+    """
 
     @pytest.mark.parametrize(
         ('options', 'message'),
