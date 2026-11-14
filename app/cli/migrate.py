@@ -87,7 +87,8 @@ def build_parser() -> argparse.ArgumentParser:
             'database under a new model, reassign the owner of existing '
             'context entries, or remove the PostgreSQL row-level security '
             "the server installed. PostgreSQL modes need the table owner's "
-            'credentials in --source-url.'
+            'credentials in every PostgreSQL URL they are given, --target-url '
+            'included.'
         ),
     )
     parser.add_argument(
@@ -130,9 +131,10 @@ def build_parser() -> argparse.ArgumentParser:
             'Metadata path holding entry ids to rewrite; repeatable. Keys are separated by '
             'dots and read from the top of the metadata; "*" stands for any one key and a '
             'leading "**." matches at any depth. The value found may be one id or a list of '
-            'ids: an integer or numeric string that is the id of a migrated entry becomes its '
-            'new id, and any other value is kept and counted per path in the summary. In metadata '
-            'holding a number Python cannot write back as JSON, no id is rewritten and the run '
+            'ids: an integer, or a string holding an integer in the form JSON writes one ("7", '
+            'not "007" or "+7"), that is the id of a migrated entry becomes its new id, and any '
+            'other value is kept and counted per path in the summary. In metadata holding a number '
+            'Python cannot write back as JSON, no id is rewritten, nothing is counted and the run '
             'reports an error. '
             f'Default: {DEFAULT_ID_PATH}; paths you give replace it. Only for the v2->v3 migration.'
         ),

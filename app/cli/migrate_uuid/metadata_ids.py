@@ -89,7 +89,7 @@ class MetadataIdRewriter:
     A value found at a path is a candidate id; a list found there is a list of candidates.
     An integer, or a string in the form JSON writes an integer, that is the id of an entry
     the run migrates becomes that entry's new 32-character id. Every other value stays as
-    written: an integer or numeric string naming no migrated entry is counted
+    written: an integer or such a string naming no migrated entry is counted
     ``not_migrated`` with a warning, anything else is counted ``kept``. When several
     paths find the same value, the first path given rewrites and counts it. Metadata
     that does not parse, or that holds a number Python cannot write back as JSON, is

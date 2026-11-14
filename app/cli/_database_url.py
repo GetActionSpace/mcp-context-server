@@ -41,9 +41,7 @@ def parse_backend_url(url: str) -> tuple[str, str]:
         if path.startswith('//'):
             # SQLAlchemy POSIX absolute form: sqlite:////abs/path keeps an
             # extra leading slash after the scheme strip. Collapse the run to
-            # a single slash; a retained double-slash prefix would later be
-            # read as a file-URI authority by the SQLite backend and rejected
-            # (sqlite3.OperationalError: invalid uri authority).
+            # a single slash.
             path = '/' + path.lstrip('/')
         if path.startswith('/') and len(path) >= 3 and path[2] == ':':
             # Windows drive form: sqlite:///C:/foo -> C:/foo

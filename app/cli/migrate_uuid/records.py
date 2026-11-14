@@ -24,8 +24,8 @@ class IdPathCounts:
 
     Attributes:
         rewritten: Values that became a migrated entry's new id.
-        not_migrated: Integers or numeric strings that are not the id of a migrated entry,
-            kept as written.
+        not_migrated: Integers, or strings holding an integer in the form JSON writes one,
+            that are not the id of a migrated entry, kept as written.
         kept: Every other value found at the path, kept as written.
     """
 

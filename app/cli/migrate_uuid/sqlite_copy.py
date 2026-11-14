@@ -153,9 +153,9 @@ def copy_image_attachments(
     target schema. Image payload columns are copied verbatim.
 
     ``image_metadata`` is the exception: it is validated as JSON before the bind. On a
-    PostgreSQL target the ``$4::jsonb`` cast validates it for free and a malformed
-    value is skipped with a reason; a SQLite target binds through a plain ``?`` and
-    would import a payload no reader can decode. Readers degrade gracefully on such a
+    PostgreSQL target a pre-check (``first_pg_unstorable_column``) skips a malformed
+    value with a reason before the ``$4::jsonb`` cast could abort the run; a SQLite
+    target binds through a plain ``?`` and would import a payload no reader can decode. Readers degrade gracefully on such a
     row, but the migration has no business creating one, and the two targets should
     reject the same input.
     """
