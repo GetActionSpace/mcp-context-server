@@ -148,7 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Store each migrated entry's old integer id in its metadata under the top-level "
             'key NAME (letters, digits, "_" and "-"; "ingest" is reserved), so '
             'search_context(metadata={NAME: <old id>}) finds it. An entry that already holds '
-            'NAME keeps its value. Metadata that does not parse, is not a JSON object, or holds a '
+            'NAME is not stamped. Metadata that does not parse, is not a JSON object, or holds a '
             'number Python cannot write back as JSON is not stamped, and the run reports an error. '
             'Only for the v2->v3 migration.'
         ),

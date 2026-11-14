@@ -51,7 +51,7 @@ class LegacyIdCounts:
     Attributes:
         key: The top-level metadata key the old id is stamped under.
         stamped: Entries that received the old id under the key.
-        already_present: Entries that already held the key and kept its value.
+        already_present: Entries that already held the key and so received no stamp.
         not_stamped: Entries whose metadata could not take the stamp; each has an error.
     """
 

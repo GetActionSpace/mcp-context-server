@@ -276,9 +276,10 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
             # base schema, so the source already holds those values in btree indexes.
             # Checked unconditionally so --dry-run surfaces the row too.
             #
-            # Every skip is decided before any row is stored, so a value citing a skipped
-            # entry is kept as written whether the citing entry is older or newer than it:
-            # the rewriter of the storing pass treats every skipped id as not migrated.
+            # Every context_entries skip is decided before any row is stored, so a stored
+            # value citing a skipped entry is kept as written whether the citing entry is
+            # older or newer than it: the rewriter of the storing pass treats every skipped
+            # id as not migrated.
             skip_reasons: dict[int, tuple[str, str]] = {}
             for entry in entry_rows:
                 source_id = int(entry['id'])
