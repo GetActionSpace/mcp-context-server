@@ -195,6 +195,10 @@ async def _seed_source_with_embeddings(
 ) -> list[int]:
     """Seed the v2 source with ``n_docs`` context_entries + embeddings.
 
+    Document ``i`` has the text ``text content {i}``, and its embeddings carry values of
+    their own: the model name ``fake-model-{i}`` and a vector whose first component is
+    ``i + 1``, so a copied embedding row shows which entry it belongs to.
+
     Args:
         pg_url: Source PostgreSQL URL.
         n_docs: Number of documents to seed.
@@ -216,12 +220,12 @@ async def _seed_source_with_embeddings(
             cid = int(row_id)
             ids.append(cid)
             await src.execute(
-                "INSERT INTO embedding_metadata "
+                'INSERT INTO embedding_metadata '
                 '(context_id, model_name, dimensions, chunk_count) '
-                "VALUES ($1, 'fake-model', $2, 1)",
-                cid, DIM,
+                'VALUES ($1, $2, $3, 1)',
+                cid, f'fake-model-{i}', DIM,
             )
-            embedding = [0.1] * DIM
+            embedding = [float(i + 1)] + [0.1] * (DIM - 1)
             if with_boundaries:
                 await src.execute(
                     'INSERT INTO vec_context_embeddings '
@@ -352,10 +356,14 @@ async def test_pg_pg_migration_remaps_context_id_to_uuid(
     isolated_pg_v2_source_db: str,
     isolated_pg_v3_target_db: str,
 ) -> None:
-    """Copied embedding_metadata.context_id uses the UUIDv7 mapping."""
-    ids = await _seed_source_with_embeddings(
-        isolated_pg_v2_source_db, n_docs=2,
-    )
+    """Each copied embedding row names the new id of the entry its source row belonged to.
+
+    Every seeded document's embeddings carry values of their own, so joining each
+    target embedding table to context_entries shows whether a row reached its own
+    entry or another one.
+    """
+    n_docs = 3
+    await _seed_source_with_embeddings(isolated_pg_v2_source_db, n_docs=n_docs)
 
     options = MigrationOptions(
         source_url=isolated_pg_v2_source_db,
@@ -363,25 +371,30 @@ async def test_pg_pg_migration_remaps_context_id_to_uuid(
         dry_run=False,
         report_path=None,
     )
-    await run_migration_postgresql(options)
+    stats = await run_migration_postgresql(options)
+    assert not stats.errors
 
-    # Compare: count the context_entries on target and ensure each one
-    # has a matching embedding_metadata row by UUID.
     tgt = await asyncpg.connect(isolated_pg_v3_target_db)
     try:
-        ce_uuids = await tgt.fetch('SELECT id FROM context_entries ORDER BY created_at ASC')
-        em_uuids = await tgt.fetch('SELECT context_id FROM embedding_metadata ORDER BY context_id ASC')
-        assert len(ce_uuids) == len(ids)
-        assert len(em_uuids) == len(ids)
-        ce_set = {str(r['id']) for r in ce_uuids}
-        em_set = {str(r['context_id']) for r in em_uuids}
-        # Every embedding_metadata.context_id refers to an existing
-        # context_entries.id on the target (UUID-keyed).
-        assert em_set.issubset(ce_set), (
-            f'embedding_metadata UUIDs {em_set - ce_set} have no matching context_entries row'
+        metadata_rows = await tgt.fetch(
+            'SELECT ce.text_content, em.model_name FROM embedding_metadata em '
+            'JOIN context_entries ce ON ce.id = em.context_id',
+        )
+        vector_rows = await tgt.fetch(
+            'SELECT ce.text_content, (v.embedding::real[])[1] AS first_component '
+            'FROM vec_context_embeddings v JOIN context_entries ce ON ce.id = v.context_id',
         )
     finally:
         await tgt.close()
+
+    assert len(metadata_rows) == n_docs
+    assert {r['text_content']: r['model_name'] for r in metadata_rows} == {
+        f'text content {i}': f'fake-model-{i}' for i in range(n_docs)
+    }
+    assert len(vector_rows) == n_docs
+    assert {r['text_content']: r['first_component'] for r in vector_rows} == {
+        f'text content {i}': float(i + 1) for i in range(n_docs)
+    }
 
 
 @pytest.mark.asyncio
