@@ -4,14 +4,17 @@ A NUL (U+0000) or unpaired UTF-16 surrogate is legal in a SQLite TEXT value but
 fatal on PostgreSQL: asyncpg rejects a NUL text bind (``CharacterNotInRepertoireError``,
 SQLSTATE 22021) and PostgreSQL's jsonb parser rejects the ``\\u0000`` escape the
 store path emits for a metadata NUL (SQLSTATE 22P05). A jsonb column has a third
-divergence class with the same consequence: a non-finite JSON number. ``json.loads``
-accepts the non-standard tokens ``NaN``/``Infinity``/``-Infinity`` and silently turns
-a standard-but-overflowing literal such as ``1e400`` into ``inf``, and the copy path's
-``json.dumps`` re-emits those as the invalid tokens PostgreSQL rejects. Unscreened, such
-a value aborts the whole cross-backend migration mid-transaction with only a raw driver
-error and no row identification, and ``--dry-run`` cannot surface it first. These tests
-prove each offending row is identified and skipped, the run does not crash, and
-``--dry-run`` surfaces the same rows without inserting.
+divergence class: a non-finite JSON number. ``json.loads`` accepts the non-standard
+tokens ``NaN``/``Infinity``/``-Infinity`` and silently turns a standard but overflowing
+literal such as ``1e400`` into ``inf``. The metadata rewriter cannot re-encode such a
+value, so it keeps the source text verbatim, and attachment metadata is bound as the
+source holds it. A verbatim ``NaN`` or ``Infinity`` token fails the ``::jsonb`` cast and,
+unscreened, aborts the whole cross-backend migration mid-transaction with only a raw
+driver error and no row identification. A verbatim ``1e400`` passes the cast, since jsonb
+stores a number as numeric, but the server refuses a non-finite number at its store
+boundary, so the target must not receive it either. These tests prove each such row is
+identified and skipped with an error, the run does not crash, and ``--dry-run`` surfaces
+the same rows without inserting.
 
 The full-run tests drive the real ``run_migration_mixed_sqlite_to_postgresql``
 against a fake asyncpg target connection (the PostgreSQL probe helpers are patched
@@ -429,9 +432,11 @@ class TestSqliteToPostgresqlNonFinitePrecheck:
     async def test_non_finite_rows_skipped_and_run_completes(self, tmp_path: Path) -> None:
         """Each non-finite spelling is identified and skipped; the clean data still migrates.
 
-        Without the guard the re-serialized metadata reaches the ``$6::jsonb`` bind as
-        ``Infinity``/``NaN``, asyncpg raises, the handler issues ROLLBACK, and every other
-        row in the run is discarded with a raw driver error naming no source row.
+        Without the guard the metadata text the rewriter keeps verbatim reaches the
+        ``$6::jsonb`` bind: its ``Infinity`` or ``NaN`` token fails the cast, the handler
+        issues ROLLBACK, and every other row in the run is discarded with a raw driver error
+        naming no source row. The ``1e400`` text passes the cast, so in a run without those
+        tokens its row would be stored with a number the server refuses.
         """
         source = tmp_path / 'non_finite_source.db'
         _source_with_non_finite_metadata(source)
