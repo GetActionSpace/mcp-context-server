@@ -300,7 +300,7 @@ class TestLegacyIdStamp:
 
     @pytest.mark.parametrize('existing', ['kept-as-is', 7, None, {'x': 1}])
     def test_existing_key_keeps_its_value(self, existing: object) -> None:
-        """An entry that already holds the key keeps whatever value it holds."""
+        """An entry that already holds the key, which no path reaches, keeps whatever value it holds."""
         result, outcome = _rewrite({'legacy_id': existing}, key='legacy_id', old_id=5)
         assert result == {'legacy_id': existing}
         assert outcome.stamp == 'already_present'

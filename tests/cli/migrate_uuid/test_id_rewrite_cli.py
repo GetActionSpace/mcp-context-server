@@ -290,7 +290,7 @@ class TestOptionValidation:
         assert not target.exists()
 
     def test_a_key_the_default_path_reaches_is_accepted(self, scenario_source: Path, tmp_path: Path) -> None:
-        """A stamp key that a rewrite path also reaches is accepted, and existing values under it are kept."""
+        """A stamp key a rewrite path reaches is accepted: an entry holding it gets no stamp, its ids there rewritten."""
         target, report = tmp_path / 'target.db', tmp_path / 'report.json'
 
         assert _migrate(scenario_source, target, report, '--legacy-id-key', 'references') == 0

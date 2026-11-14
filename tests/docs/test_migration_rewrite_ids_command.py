@@ -3,8 +3,9 @@
 The "Rewriting Entry Ids in Metadata" section shows the command an operator types to name the metadata paths that hold
 entry ids, and each of the two tests checks a different property of that command.
 
-Outside quotes, a path holding ``*`` is a shell wildcard, which a shell replaces with the names of the files that match it.
-The quoting test fails when a path of the command is not in single quotes, which make a shell pass the path unchanged.
+Outside quotes, bash, zsh and fish read a ``*`` in a path as a wildcard and replace the path with the names of the files
+that match it. The quoting test fails when a path of the command is not in single quotes, which make bash pass the path
+unchanged.
 
 The run test splits the command with ``shlex.split``, which applies a POSIX shell's quoting and word splitting but no
 pathname expansion, so it never receives a path a shell replaced. It runs the command with only its source and target
