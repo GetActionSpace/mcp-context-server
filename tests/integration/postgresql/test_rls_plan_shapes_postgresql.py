@@ -26,7 +26,6 @@ helper function, while they and a direct call are counted once the principal hel
 the planner cannot inline.
 """
 
-import json
 from collections.abc import AsyncGenerator
 from collections.abc import Awaitable
 from collections.abc import Callable
@@ -52,9 +51,12 @@ from app.backends.postgresql_backend.session_profiles import SessionProfile
 from app.repositories import RepositoryContainer
 from app.settings import get_settings
 from app.tools.search.hybrid import _prepare_hybrid_fts_query
+from tests.helpers import AsyncpgConnection
 from tests.helpers import Captured
 from tests.helpers import CapturingBackend
 from tests.helpers import rebind_package_settings
+from tests.integration.postgresql._plans import explain_custom
+from tests.integration.postgresql._plans import plan_nodes
 from tests.integration.postgresql._rls_matrix import REQUEST_ROLE
 from tests.integration.postgresql._rls_matrix import rls_matrix_db
 from tests.integration.postgresql._rls_profiles import PinnedIdentityProfile
@@ -192,21 +194,6 @@ VARIANTS: dict[str, tuple[Callable[[], SessionProfile], Scope]] = {
 }
 
 
-def _walk(node: object) -> list[dict[str, object]]:
-    """Return every plan node of an EXPLAIN (FORMAT JSON) document."""
-    found: list[dict[str, object]] = []
-    if isinstance(node, dict):
-        plan = cast('dict[str, object]', node)
-        if 'Node Type' in plan:
-            found.append(plan)
-        for child in plan.values():
-            found.extend(_walk(child))
-    elif isinstance(node, list):
-        for item in cast('list[object]', node):
-            found.extend(_walk(item))
-    return found
-
-
 @dataclass(frozen=True, slots=True)
 class PlanFacts:
     """Which indexes a plan searches with a condition, and where it evaluates the policy-role gate.
@@ -233,13 +220,12 @@ class PlanFacts:
 async def _plan(backend: StorageBackend, statement: Captured, *, disable_seqscan: bool) -> PlanFacts:
     """Plan ``statement`` verbosely as the request role bound to alice."""
 
-    async def _explain(conn: asyncpg.Connection) -> str:
+    async def _explain(conn: AsyncpgConnection) -> object:
         if disable_seqscan:
             await conn.execute('SET LOCAL enable_seqscan = off')
-        return str(await conn.fetchval(f'EXPLAIN (VERBOSE, FORMAT JSON) {statement.sql}', *statement.params))
+        return await explain_custom(conn, statement)
 
-    document = await backend.execute_read(_explain, access_scope=ALICE)
-    nodes = _walk(json.loads(document))
+    nodes = plan_nodes(await backend.execute_read(_explain, access_scope=ALICE))
     conditions = [str(node[key]) for node in nodes for key in CONDITION_KEYS if key in node]
     return PlanFacts(
         searched_indexes=frozenset(str(node['Index Name']) for node in nodes if 'Index Name' in node and 'Index Cond' in node),
@@ -360,11 +346,7 @@ async def test_targets_are_what_the_filters_select(plan_db: ScopedDb, pg_rls_db:
 
 async def _plan_nodes(backend: StorageBackend, statement: Captured, scope: AccessScope) -> list[dict[str, object]]:
     """Plan ``statement`` verbosely as the request role bound to ``scope`` and return its nodes."""
-
-    async def _explain(conn: asyncpg.Connection) -> str:
-        return str(await conn.fetchval(f'EXPLAIN (VERBOSE, FORMAT JSON) {statement.sql}', *statement.params))
-
-    return _walk(json.loads(await backend.execute_read(_explain, access_scope=scope)))
+    return plan_nodes(await backend.execute_read(explain_custom, statement, access_scope=scope))
 
 
 def _conditions(node: dict[str, object]) -> list[str]:
@@ -399,7 +381,7 @@ async def test_the_grants_scan_holds_no_subplan_and_reads_no_entries(plan_db: Sc
         grant_scans = [node for node in nodes if node.get('Relation Name') == GRANTS_TABLE]
         assert grant_scans, statement.sql
         for scan in grant_scans:
-            beneath = [node for node in _walk(scan.get('Plans', [])) if node is not scan]
+            beneath = [node for node in plan_nodes(scan.get('Plans', [])) if node is not scan]
             assert all(node.get('Parent Relationship') != 'SubPlan' for node in beneath), statement.sql
             assert all(node.get('Relation Name') != 'context_entries' for node in beneath), statement.sql
             for condition in (*_conditions(scan), *(text for node in beneath for text in _conditions(node))):

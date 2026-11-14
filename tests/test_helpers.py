@@ -10,7 +10,8 @@ tests and requires every environment that inherits the parent's to come from the
 
 Covers ``CapturingBackend``, the statement capture the query-plan tests share: on SQLite it records a statement sent
 through the connection and one sent through a cursor the connection opened, on PostgreSQL every statement sent through
-``fetch``, ``fetchrow``, ``fetchval`` and ``execute``, each with its bound values, while the read runs unchanged. And
+``fetch``, ``fetchrow``, ``fetchval`` and ``execute``, each with its bound values, while the read runs unchanged.
+``sqlite_query_plan``, the SQLite plan reader those tests share, plans a statement with its bound values. And
 importing the helpers loads neither the application nor its settings, which ``tests/run_server.py`` relies on: it
 imports them before it configures the server's environment.
 """
@@ -36,6 +37,7 @@ from tests.helpers import CapturingBackend
 from tests.helpers import RecordingSqliteConnection
 from tests.helpers import RlsCredentials
 from tests.helpers import postgresql_subprocess_env
+from tests.helpers import sqlite_query_plan
 
 TEST_URL = 'postgresql://mcp_app:mcp_app@localhost:5433/mcp_rls'
 RLS = RlsCredentials(migration_user='mcp_owner', migration_password='mcp_owner', policy_role='mcp_context_request')
@@ -168,6 +170,15 @@ class TestCapturingBackendOnSqlite:
 
         assert rows == [('first',), ('second', 2)]
         assert capturing.statements == [Captured('SELECT ?', ('first',)), Captured('SELECT ?, ?', ('second', 2))]
+
+
+@pytest.mark.asyncio
+async def test_sqlite_query_plan_returns_the_detail_of_every_step(async_db_initialized: StorageBackend) -> None:
+    plan = await sqlite_query_plan(
+        async_db_initialized, 'SELECT id FROM context_entries WHERE rowid_int = ? AND thread_id = ?', (7, 'thread'),
+    )
+
+    assert plan == ['SEARCH context_entries USING INTEGER PRIMARY KEY (rowid=?)']
 
 
 class _AsyncpgReadBackend:

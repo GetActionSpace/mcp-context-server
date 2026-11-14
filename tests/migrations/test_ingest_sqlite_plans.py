@@ -19,7 +19,6 @@ index, so the plans hold there only because the reads name the ingest index.
 """
 
 import re
-import sqlite3
 from collections.abc import AsyncGenerator
 from collections.abc import Awaitable
 from collections.abc import Callable
@@ -30,11 +29,11 @@ import pytest_asyncio
 
 from app.access_scope import AccessScope
 from app.backends import StorageBackend
-from app.backends.base import MAINTENANCE
 from app.ingest_sql import INGEST_INDEX_NAME
 from app.repositories import RepositoryContainer
 from tests.helpers import Captured
 from tests.helpers import CapturingBackend
+from tests.helpers import sqlite_query_plan
 from tests.repositories._access_scope_cases import ScopedDb
 from tests.repositories._access_scope_layouts import sqlite_scoped_db
 
@@ -163,15 +162,6 @@ async def _captured_statement(db: ScopedDb, read: Read, scope: AccessScope) -> C
     return capturing.statements[0]
 
 
-async def _plan(backend: StorageBackend, statement: Captured) -> list[str]:
-    """Return the detail column of every ``EXPLAIN QUERY PLAN`` row of ``statement``."""
-
-    def _explain(conn: sqlite3.Connection) -> list[str]:
-        return [str(row[3]) for row in conn.execute(f'EXPLAIN QUERY PLAN {statement.sql}', statement.params).fetchall()]
-
-    return await backend.execute_read(_explain, access_scope=MAINTENANCE)
-
-
 @pytest.mark.parametrize('scope', _SCOPES)
 @pytest.mark.parametrize('read', list(READS))
 @pytest.mark.asyncio
@@ -181,7 +171,7 @@ async def test_ingest_reads_search_the_ingest_index_without_sorting(
     run, constraints = READS[read]
     statement = await _captured_statement(plan_db, run, scope)
 
-    plan = await _plan(plan_db.backend, statement)
+    plan = await sqlite_query_plan(plan_db.backend, statement.sql, statement.params)
 
     entry_steps = [step for step in plan if _ENTRY_STEP.match(step)]
     assert len(entry_steps) == 1, f'{statement.sql!r} reads context_entries more than once or never: {plan}'

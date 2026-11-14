@@ -670,3 +670,17 @@ class CapturingBackend:
             return await async_operation(RecordingAsyncpgConnection(conn, statements), *op_args, **op_kwargs)
 
         return await self.backend.execute_read(_recorded_postgresql, *args, access_scope=access_scope, **kwargs)
+
+
+async def sqlite_query_plan(backend: 'StorageBackend', sql: str, params: Sequence[object]) -> list[str]:
+    """Plan one statement on a SQLite backend as the maintenance identity, its parameters bound to ``params``.
+
+    Returns:
+        The detail column of every ``EXPLAIN QUERY PLAN`` row, in plan order.
+    """
+    from app.backends.base import MAINTENANCE
+
+    def _explain(conn: sqlite3.Connection) -> list[str]:
+        return [str(row[3]) for row in conn.execute(f'EXPLAIN QUERY PLAN {sql}', params).fetchall()]
+
+    return await backend.execute_read(_explain, access_scope=MAINTENANCE)

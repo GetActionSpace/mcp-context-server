@@ -42,9 +42,9 @@ from app.access_scope import AccessMode
 from app.access_scope import AccessScope
 from app.access_scope import build_access_predicate
 from app.backends import StorageBackend
-from app.backends.base import MAINTENANCE
 from app.repositories import RepositoryContainer
 from tests.helpers import as_principal
+from tests.helpers import sqlite_query_plan
 from tests.repositories._access_scope_layouts import sqlite_scoped_db
 
 # A plan step that reads context_entries, under its table name or the statistics alias.
@@ -83,15 +83,6 @@ async def startup_backend(
     """SQLite backend prepared by server startup with compression on and seeded with the access rows."""
     async with sqlite_scoped_db(async_db_initialized, 'compressed', monkeypatch) as db:
         yield db.backend
-
-
-async def _plan(backend: StorageBackend, sql: str, params: list[Any]) -> list[str]:
-    """Return the detail column of every ``EXPLAIN QUERY PLAN`` row for one statement."""
-
-    def _explain(conn: sqlite3.Connection) -> list[str]:
-        return [str(row[3]) for row in conn.execute(f'EXPLAIN QUERY PLAN {sql}', params).fetchall()]
-
-    return await backend.execute_read(_explain, access_scope=MAINTENANCE)
 
 
 def _assert_entries_read_from_covering_index(sql: str, plan: list[str]) -> None:
@@ -174,7 +165,7 @@ class TestScopedStatementPlans:
         assert [statement for statement in internal if _NAMES_CONTEXT_ENTRIES.search(statement)] == []
         for statement in direct:
             if _NAMES_CONTEXT_ENTRIES.search(statement) and _SUMMARY_COUNT not in statement:
-                _assert_entries_read_from_covering_index(statement, await _plan(startup_backend, statement, []))
+                _assert_entries_read_from_covering_index(statement, await sqlite_query_plan(startup_backend, statement, []))
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('scope', _SCOPES)
@@ -198,6 +189,6 @@ class TestScopedStatementPlans:
         read = build_access_predicate(scope, mode=AccessMode.READ, backend_type='sqlite', outer='context_entries')
         sql = f'SELECT id FROM context_entries WHERE {client_filter}{read.sql}'
 
-        plan = await _plan(startup_backend, sql, [*client_params, *read.params])
+        plan = await sqlite_query_plan(startup_backend, sql, [*client_params, *read.params])
 
         _assert_entries_read_from_covering_index(sql, plan)

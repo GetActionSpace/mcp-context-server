@@ -11,7 +11,6 @@ prefix, computed from the stored rows and grants.
 """
 
 import re
-import sqlite3
 from collections.abc import AsyncGenerator
 from typing import cast
 
@@ -20,10 +19,10 @@ import pytest_asyncio
 
 from app.access_scope import AccessScope
 from app.backends import StorageBackend
-from app.backends.base import MAINTENANCE
 from app.repositories import RepositoryContainer
 from tests.helpers import Captured
 from tests.helpers import CapturingBackend
+from tests.helpers import sqlite_query_plan
 from tests.repositories._access_scope_cases import ScopedDb
 from tests.repositories._access_scope_layouts import sqlite_scoped_db
 from tests.repositories.context_repository._prefix_lookup import assert_lookup_matches_readable_ids
@@ -84,15 +83,6 @@ async def _captured_lookup(db: ScopedDb, prefix: str, scope: AccessScope) -> Cap
     return capturing.statements[0]
 
 
-async def _plan(backend: StorageBackend, statement: Captured) -> list[str]:
-    """Return the detail column of every step of the statement's query plan."""
-
-    def _explain(conn: sqlite3.Connection) -> list[str]:
-        return [str(row[3]) for row in conn.execute(f'EXPLAIN QUERY PLAN {statement.sql}', statement.params).fetchall()]
-
-    return await backend.execute_read(_explain, access_scope=MAINTENANCE)
-
-
 async def _leading_column(db: ScopedDb, index: str) -> str:
     """Return the first column of an index."""
     rows = await db.fetch_all(f"SELECT name FROM pragma_index_info('{index}') ORDER BY seqno LIMIT 1")
@@ -105,7 +95,7 @@ async def _leading_column(db: ScopedDb, index: str) -> str:
 async def test_prefix_lookup_searches_an_id_index_range(prefix: str, scope: AccessScope, plan_db: ScopedDb) -> None:
     statement = await _captured_lookup(plan_db, prefix, scope)
 
-    plan = await _plan(plan_db.backend, statement)
+    plan = await sqlite_query_plan(plan_db.backend, statement.sql, statement.params)
 
     entry_steps = [step for step in plan if _ENTRY_STEP.match(step)]
     assert len(entry_steps) == 1, plan

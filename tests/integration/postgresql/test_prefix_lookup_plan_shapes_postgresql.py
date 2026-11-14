@@ -33,9 +33,11 @@ from app.backends import StorageBackend
 from app.backends.postgresql_backend.session_profiles import RLS_READ_VIEWS
 from app.backends.postgresql_backend.session_profiles import RlsRequestProfile
 from app.repositories import RepositoryContainer
-from tests.helpers import AsyncpgConnection
 from tests.helpers import Captured
 from tests.helpers import CapturingBackend
+from tests.integration.postgresql._plans import explain_custom
+from tests.integration.postgresql._plans import explain_generic
+from tests.integration.postgresql._plans import plan_nodes
 from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import ScopedDb
 from tests.repositories._access_scope_layouts import postgresql_rls_scoped_db
@@ -53,7 +55,6 @@ BASE_RELATION = 'context_entries'
 PRIMARY_KEY = 'context_entries_pkey'
 INDEX_SCANS = frozenset({'Index Scan', 'Index Only Scan'})
 SORT_NODES = frozenset({'Sort', 'Incremental Sort'})
-PREPARED_NAME = 'prefix_lookup_plan_shape'
 PREFIX = 'a5a5a5a5'
 
 # Bob owns every tenth entry, alice the rest; every twentieth of alice's is public.
@@ -133,35 +134,6 @@ def seeded_db(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
     return _rls_off_db(cast(str, request.getfixturevalue('pg_test_url')), monkeypatch)
 
 
-def _walk(node: object) -> list[dict[str, object]]:
-    """Return every plan node of an EXPLAIN (FORMAT JSON) document."""
-    found: list[dict[str, object]] = []
-    if isinstance(node, dict):
-        plan = cast('dict[str, object]', node)
-        if 'Node Type' in plan:
-            found.append(plan)
-        for child in plan.values():
-            found.extend(_walk(child))
-    elif isinstance(node, list):
-        for item in cast('list[object]', node):
-            found.extend(_walk(item))
-    return found
-
-
-def _sql_literal(value: object) -> str:
-    """Render a bound argument of the captured statement as a SQL literal for ``EXECUTE``."""
-    if isinstance(value, bool):
-        raise TypeError(f'no boolean argument is expected: {value!r}')
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, str):
-        return "'" + value.replace("'", "''") + "'"
-    if isinstance(value, list):
-        elements = ', '.join(_sql_literal(element) for element in cast('list[object]', value))
-        return f'ARRAY[{elements}]::text[]'
-    raise TypeError(f'unexpected argument type {type(value).__name__}: {value!r}')
-
-
 async def _planned_lookup(db: ScopedDb, plan_mode: PlanMode) -> tuple[list[str], Captured, list[dict[str, object]]]:
     """Run the two-row lookup of :data:`PREFIX` as alice, then plan the statement it sent as the request backend."""
     capturing = CapturingBackend(db.backend)
@@ -169,20 +141,9 @@ async def _planned_lookup(db: ScopedDb, plan_mode: PlanMode) -> tuple[list[str],
     assert len(capturing.statements) == 1, capturing.statements
     statement = capturing.statements[0]
 
-    async def _explain(conn: AsyncpgConnection) -> str:
-        if plan_mode == 'custom':
-            return str(await conn.fetchval(f'EXPLAIN (VERBOSE, FORMAT JSON) {statement.sql}', *statement.params))
-        arguments = ', '.join(_sql_literal(value) for value in statement.params)
-        try:
-            async with conn.transaction():
-                await conn.execute(f'PREPARE {PREPARED_NAME} AS {statement.sql}')
-                await conn.execute('SET LOCAL plan_cache_mode = force_generic_plan')
-                return str(await conn.fetchval(f'EXPLAIN (VERBOSE, FORMAT JSON) EXECUTE {PREPARED_NAME}({arguments})'))
-        finally:
-            await conn.execute(f'DEALLOCATE {PREPARED_NAME}')
-
-    document = await db.backend.execute_read(_explain, access_scope=ALICE)
-    return found, statement, _walk(json.loads(document))
+    explain = explain_custom if plan_mode == 'custom' else explain_generic
+    document = await db.backend.execute_read(explain, statement, access_scope=ALICE)
+    return found, statement, plan_nodes(document)
 
 
 async def _id_leading_indexes(db: ScopedDb) -> frozenset[str]:

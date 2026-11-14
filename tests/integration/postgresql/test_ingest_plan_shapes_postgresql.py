@@ -40,9 +40,11 @@ from app.backends.postgresql_backend.session_profiles import RLS_READ_VIEWS
 from app.backends.postgresql_backend.session_profiles import RlsRequestProfile
 from app.ingest_sql import INGEST_INDEX_NAME
 from app.repositories import RepositoryContainer
-from tests.helpers import AsyncpgConnection
 from tests.helpers import Captured
 from tests.helpers import CapturingBackend
+from tests.integration.postgresql._plans import explain_custom
+from tests.integration.postgresql._plans import explain_generic
+from tests.integration.postgresql._plans import plan_nodes
 from tests.integration.postgresql._rls_urls import RlsUrls
 from tests.repositories._access_scope_cases import ScopedDb
 from tests.repositories._access_scope_layouts import postgresql_rls_scoped_db
@@ -61,7 +63,6 @@ BASE_RELATION = 'context_entries ce'
 COLLATED_KEY = '''((ce.metadata #>> '{ingest,source_id}') COLLATE "C")'''
 PLANNED_KEY = "metadata #>> '{ingest,source_id}'"
 SORT_NODES = frozenset({'Sort', 'Incremental Sort'})
-PREPARED_NAME = 'ingest_plan_shape'
 
 # Members of the corpus: bob owns every tenth, alice the rest, and every twentieth of
 # alice's is public.
@@ -139,52 +140,6 @@ OWNER_PAGES = frozenset({'first-page', 'next-page'})
 BOUNDED_READS = frozenset({'range', 'next-page'})
 
 
-def _walk(node: object) -> list[dict[str, object]]:
-    """Return every plan node of an EXPLAIN (FORMAT JSON) document."""
-    found: list[dict[str, object]] = []
-    if isinstance(node, dict):
-        plan = cast('dict[str, object]', node)
-        if 'Node Type' in plan:
-            found.append(plan)
-        for child in plan.values():
-            found.extend(_walk(child))
-    elif isinstance(node, list):
-        for item in cast('list[object]', node):
-            found.extend(_walk(item))
-    return found
-
-
-def _sql_literal(value: object) -> str:
-    """Render a bound argument of the captured statement as a SQL literal for ``EXECUTE``."""
-    if isinstance(value, bool):
-        raise TypeError(f'no boolean argument is expected: {value!r}')
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, str):
-        return "'" + value.replace("'", "''") + "'"
-    if isinstance(value, list):
-        elements = ', '.join(_sql_literal(element) for element in cast('list[object]', value))
-        return f'ARRAY[{elements}]::text[]'
-    raise TypeError(f'unexpected argument type {type(value).__name__}: {value!r}')
-
-
-async def _explain_custom(conn: AsyncpgConnection, statement: Captured) -> str:
-    """Plan the statement with its arguments bound, which the planner folds in as constants."""
-    return str(await conn.fetchval(f'EXPLAIN (VERBOSE, FORMAT JSON) {statement.sql}', *statement.params))
-
-
-async def _explain_generic(conn: AsyncpgConnection, statement: Captured) -> str:
-    """Plan the statement as a prepared statement held to its generic plan, which no argument value shapes."""
-    arguments = ', '.join(_sql_literal(value) for value in statement.params)
-    try:
-        async with conn.transaction():
-            await conn.execute(f'PREPARE {PREPARED_NAME} AS {statement.sql}')
-            await conn.execute('SET LOCAL plan_cache_mode = force_generic_plan')
-            return str(await conn.fetchval(f'EXPLAIN (VERBOSE, FORMAT JSON) EXECUTE {PREPARED_NAME}({arguments})'))
-    finally:
-        await conn.execute(f'DEALLOCATE {PREPARED_NAME}')
-
-
 async def _planned_read(db: ScopedDb, read: Read, *, plan_mode: PlanMode) -> tuple[Captured, list[dict[str, object]]]:
     """Run ``read`` on the request channel, then plan the statement it sent as the request backend bound to alice."""
     capturing = CapturingBackend(db.backend)
@@ -193,13 +148,9 @@ async def _planned_read(db: ScopedDb, read: Read, *, plan_mode: PlanMode) -> tup
     assert len(capturing.statements) == 1, capturing.statements
     statement = capturing.statements[0]
 
-    async def _explain(conn: AsyncpgConnection) -> str:
-        if plan_mode == 'custom':
-            return await _explain_custom(conn, statement)
-        return await _explain_generic(conn, statement)
-
-    document = await db.backend.execute_read(_explain, access_scope=ALICE)
-    return statement, _walk(json.loads(document))
+    explain = explain_custom if plan_mode == 'custom' else explain_generic
+    document = await db.backend.execute_read(explain, statement, access_scope=ALICE)
+    return statement, plan_nodes(document)
 
 
 def _plan_text(statement: Captured, nodes: list[dict[str, object]]) -> str:
