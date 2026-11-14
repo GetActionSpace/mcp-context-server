@@ -29,22 +29,33 @@ from app.cli.migrate_uuid.target_rows import access_backfill_values
 def _pg_skip_reason(row: sqlite3.Row, metadata: str | None) -> tuple[str, str] | None:
     """Return why the PostgreSQL target cannot accept a source entry row, or None.
 
-    SQLite accepts three classes of value the PostgreSQL target refuses. Unchecked, each
-    makes the INSERT raise mid-transaction, which rolls the whole run back and reports only
-    the raw driver error with no row identification:
+    SQLite accepts four classes of value the PostgreSQL target refuses, and the row is
+    skipped on the first one found:
 
     1. A NUL (U+0000) or unpaired UTF-16 surrogate in any column.
     2. jsonb metadata that is not valid JSON, that decodes to a NUL or an unpaired
        surrogate through an escape such as ``\\u0000``, or that holds a non-finite number: ``NaN``,
        ``Infinity``, or a literal too large for a double such as ``1e400``, which the
        rewriter cannot re-encode and so keeps verbatim.
-    3. A value an index of the target cannot hold. thread_id leads a btree whose tuple
-       width is bounded; text_content and summary are unindexed and may be arbitrarily
-       large. A string-, integer-, boolean- or float-typed METADATA_INDEXED_FIELDS key gets
-       the expression index idx_metadata_<field>, which the target holds once the server
-       has started on it: a string-typed value is bounded by the same btree width, and a
-       typed one must parse as its declared type (a hard SQL cast for integer and
-       boolean). Array- and object-typed fields build no expression index and are exempt.
+    3. A thread_id wider than the btree it leads, idx_context_entries_dedup_hash, can
+       hold. text_content and summary are unindexed and may be arbitrarily large.
+    4. A value under a METADATA_INDEXED_FIELDS key that its field refuses: a
+       string-typed value wider than the field's expression index idx_metadata_<field>
+       can hold, or an integer-, boolean- or float-typed value that does not parse as
+       the declared type. Array- and object-typed fields build no expression index and
+       are exempt.
+
+    Unchecked, a value of class 1, 2 or 3 makes the INSERT raise mid-transaction on every
+    target, because the column types and the thread_id index come with the base schema:
+    the whole run rolls back and reports only the raw driver error, naming no row. A class
+    4 value under a string-, integer- or boolean-typed field (an oversized value, or one
+    the hard SQL cast of an integer or boolean index rejects) does the same only on a
+    target that already carries idx_metadata_<field>, which the server creates when it
+    starts. On a target this command initialized, the INSERT succeeds and the target's
+    first server start fails to build that index (a failed cast stops it with exit 78).
+    A float-typed field's index reads JSON numbers only, through a cast that never fails,
+    so it refuses no value; a non-number under it is skipped because the server refuses a
+    value of another type than the field declares.
 
     The check runs on a dry run too, so it surfaces every affected row before a real run.
 
