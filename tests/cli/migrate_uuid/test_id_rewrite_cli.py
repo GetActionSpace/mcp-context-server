@@ -1,6 +1,7 @@
 """Acceptance tests of ``--rewrite-ids-at`` and ``--legacy-id-key`` on a SQLite-to-SQLite migration.
 
-Each test runs the command line the operator runs and reads the target database it wrote.
+Each test runs the command line the operator runs and checks the target database or the ``--report``
+file it produced, or, for a refused option, the exit status and message and that no target was written.
 """
 
 import asyncio

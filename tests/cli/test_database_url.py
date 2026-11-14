@@ -18,9 +18,8 @@ class TestUrlHelpers:
     def test_parse_backend_url_sqlalchemy_posix_absolute_form(self) -> None:
         """``sqlite:////abs/path`` collapses to a single-slash absolute path.
 
-        The SQLAlchemy absolute form on POSIX uses four slashes; keeping the
-        double-slash prefix would later be parsed as a file-URI authority by
-        the SQLite backend and rejected.
+        The SQLAlchemy absolute form on POSIX uses four slashes; the parser
+        returns it as a single-slash absolute path.
         """
         kind, addr = parse_backend_url('sqlite:////tmp/file.db')
         assert kind == 'sqlite'

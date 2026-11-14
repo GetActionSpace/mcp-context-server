@@ -36,19 +36,11 @@ class TestDryRun:
         legacy_source_db: Path,
         new_target_db_path: Path,
     ) -> None:
-        """Target ends up with zero rows after a dry-run."""
+        """A dry run counts the rows it would migrate and leaves no target file."""
         options = build_sqlite_options(legacy_source_db, new_target_db_path, dry_run=True)
         stats = run_migration_sqlite_to_sqlite(options)
         assert stats.rows_migrated > 0
-        # File may exist (schema initialized) but context_entries must be empty.
-        if new_target_db_path.exists():
-            conn = sqlite3.connect(str(new_target_db_path))
-            try:
-                row = conn.execute('SELECT COUNT(*) AS c FROM context_entries').fetchone()
-                assert row is not None
-                assert row[0] == 0
-            finally:
-                conn.close()
+        assert not new_target_db_path.exists()
 
     def test_dry_run_returns_zero_exit_code(
         self,

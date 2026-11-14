@@ -102,13 +102,13 @@ class TestValues:
         assert outcome.warnings == []
 
     def test_numeric_string_of_a_migrated_entry_is_rewritten(self) -> None:
-        """A numeric string naming a migrated entry becomes that entry's new id."""
+        """The string ``'5'``, naming a migrated entry, becomes that entry's new id."""
         result, outcome = _rewrite({'references': {'context_ids': ['5']}}, mapping={5: C})
         assert result == {'references': {'context_ids': [C]}}
         assert outcome.counts[DEFAULT_ID_PATH] == _counts(rewritten=1)
 
     def test_numeric_string_without_an_entry_is_not_migrated(self) -> None:
-        """A numeric string naming no migrated entry stays a string and is warned about."""
+        """The string ``'7'``, naming no migrated entry, stays a string and is warned about."""
         result, outcome = _rewrite({'references': {'context_ids': ['7']}}, mapping={})
         assert result == {'references': {'context_ids': ['7']}}
         assert outcome.counts[DEFAULT_ID_PATH] == _counts(not_migrated=1)

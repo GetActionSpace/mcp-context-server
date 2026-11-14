@@ -152,8 +152,8 @@ def _report(path: Path) -> dict[str, object]:
 
 @pytest.mark.parametrize('direction', ['sqlite_to_postgresql', 'postgresql_to_sqlite', 'postgresql_to_postgresql'])
 def test_default_path_and_stamp(direction: Direction, tmp_path: Path, create_database: CreateDatabase) -> None:
-    """The default path rewrites forward references and numeric strings, and every entry gets its old id under the key,
-    except one that already holds the key.
+    """The default path rewrites forward references and an id written as the string ``'1'``, and every entry gets its
+    old id under the key, except one that already holds the key.
     """
     endpoints = _Endpoints(direction, SCENARIO_ROWS, tmp_path, create_database)
     report = tmp_path / 'report.json'

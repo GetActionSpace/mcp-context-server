@@ -63,11 +63,15 @@ class TestReportOutput:
         assert 'rows migrated' in captured.out
 
     def test_summary_prints_each_path_and_the_stamp(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """One line per path in command-line order, then the stamp line, in singular or plural."""
+        """One line per path in the order of the run's ``id_paths``, then the stamp line, in singular or plural.
+
+        ``links.*`` comes first although it sorts after the default path, so a summary that
+        reordered the paths would fail.
+        """
         stats = MigrationStats(
             id_paths={
-                DEFAULT_ID_PATH: IdPathCounts(rewritten=4, not_migrated=1, kept=1),
                 'links.*': IdPathCounts(rewritten=1, not_migrated=2, kept=3),
+                DEFAULT_ID_PATH: IdPathCounts(rewritten=4, not_migrated=1, kept=1),
             },
             legacy_id=LegacyIdCounts(key='legacy_id', stamped=2, already_present=1, not_stamped=0),
         )
@@ -75,8 +79,10 @@ class TestReportOutput:
         print_summary(stats, 'sqlite:///source.db', 'sqlite:///target.db')
 
         lines = capsys.readouterr().out.splitlines()
-        first = lines.index(f'  ids at {DEFAULT_ID_PATH}: 4 rewritten, 1 not the id of a migrated entry, 1 other value kept')
-        assert lines[first + 1] == '  ids at links.*: 1 rewritten, 2 not ids of migrated entries, 3 other values kept'
+        first = lines.index('  ids at links.*: 1 rewritten, 2 not ids of migrated entries, 3 other values kept')
+        assert lines[first + 1] == (
+            f'  ids at {DEFAULT_ID_PATH}: 4 rewritten, 1 not the id of a migrated entry, 1 other value kept'
+        )
         assert lines[first + 2] == "  legacy id key 'legacy_id': 2 stamped, 1 already present, 0 not stamped"
 
     def test_summary_without_a_stamp_key_prints_no_stamp_line(self, capsys: pytest.CaptureFixture[str]) -> None:
