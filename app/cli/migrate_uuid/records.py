@@ -18,7 +18,9 @@ type StampOutcome = Literal['stamped', 'already_present', 'not_stamped']
 
 @dataclass
 class IdPathCounts:
-    """What one ``--rewrite-ids-at`` path found in the metadata that reached the target.
+    """The values one ``--rewrite-ids-at`` path found and how each was treated.
+
+    The counts cover one row's rewrite, or the sum over rows.
 
     Attributes:
         rewritten: Values that became a migrated entry's new id.
@@ -79,7 +81,8 @@ class MetadataOutcome:
 
     Attributes:
         metadata: The metadata text to store on the target, or None for none.
-        counts: Per path text, every given path present, the values found at it.
+        counts: Per path text, every given path present, the values this row's rewrite
+            counted at it; all zero when the metadata is kept verbatim.
         stamp: What became of the old id under ``--legacy-id-key``; None when no key is given.
         warnings: One per value that names no migrated entry.
         errors: Why the metadata was preserved verbatim or not stamped.
