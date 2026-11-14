@@ -141,9 +141,10 @@ class MetadataIdRewriter:
         """Rewrite the ids in one entry's metadata and stamp its old id.
 
         Re-encoding uses ``allow_nan=False``. ``json.loads`` accepts the non-standard
-        ``NaN``/``Infinity``/``-Infinity`` and silently turns a standard but overflowing
-        literal such as ``1e400`` into ``inf``, which a default ``json.dumps`` would write
-        back as a token no RFC 8259 parser accepts, in place of the source text. With
+        ``NaN``/``Infinity``/``-Infinity`` and silently turns a standard literal with a
+        fraction or an exponent that is too large for a double, such as ``1e400``, into
+        ``inf``, which a default ``json.dumps`` would write back as a token no RFC 8259
+        parser accepts, in place of the source text. With
         ``allow_nan=False`` the encoder raises instead, the rewrite is discarded and the
         original text is kept verbatim, so every path count of the outcome is zero, it
         carries no warning, and with a legacy id key its stamp is ``not_stamped``. A

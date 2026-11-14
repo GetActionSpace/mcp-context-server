@@ -28,11 +28,12 @@ def pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | N
     is rejected by PostgreSQL's jsonb parser (SQLSTATE 22P05). A ``jsonb`` column
     has a THIRD failure mode: a non-finite JSON number. ``json.loads`` accepts the
     non-standard tokens ``NaN``/``Infinity``/``-Infinity`` AND silently converts a
-    standard-but-overflowing literal such as ``1e400`` into ``inf``.
+    standard literal with a fraction or an exponent that is too large for a double,
+    such as ``1e400``, into ``inf``.
     :meth:`~app.cli.migrate_uuid.metadata_ids.MetadataIdRewriter.rewrite` re-encodes
     with ``allow_nan=False`` and, when it cannot re-encode, keeps the source text
     verbatim, so the text bound on the copy path still holds the non-standard token,
-    which the jsonb parser rejects, or the overflowing literal, which the server's own
+    which the jsonb parser rejects, or the literal read as ``inf``, which the server's own
     store boundary refuses through the same
     :func:`app.metadata_types.non_finite_metadata_error` guard. This check catches both
     before the bind, so a v3 target receives neither.

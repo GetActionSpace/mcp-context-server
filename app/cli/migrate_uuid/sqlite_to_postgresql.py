@@ -36,8 +36,9 @@ def _pg_skip_reason(row: sqlite3.Row, metadata: str | None) -> tuple[str, str] |
     2. jsonb metadata that is not valid JSON, that decodes to a NUL or an unpaired
        surrogate through an escape such as ``\\u0000``, or that holds a ``NaN``,
        ``Infinity`` or ``-Infinity`` token.
-    3. jsonb metadata holding a number literal too large for a double, such as
-       ``1e400``. The rewriter cannot re-encode it and so keeps the text verbatim.
+    3. jsonb metadata holding a number written with a fraction or an exponent that is
+       too large for a double, such as ``1e400``, which ``json.loads`` reads as ``inf``.
+       The rewriter cannot re-encode it and so keeps the text verbatim.
     4. A thread_id wider than :data:`PG_MAX_INDEXED_THREAD_ID_BYTES`, the budget for
        idx_context_entries_dedup_hash, the btree it leads. text_content and summary feed
        no btree index, so this check sets no width for them.
