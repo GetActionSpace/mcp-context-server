@@ -195,9 +195,13 @@ class TestIndexedMetadataFields:
         """A value the target's index cast rejects loses its row, not the whole run.
 
         SQLite indexes ``{"priority": "high"}`` under an integer-typed field without a
-        cast and stores it happily; the PostgreSQL expression index evaluates
-        ``(metadata->>'priority')::INTEGER`` on every INSERT and refuses it, aborting
-        the transaction with a raw driver error that names no source row.
+        cast and stores it happily. On a target that already carries
+        idx_metadata_priority, the expression index evaluates
+        ``(metadata->>'priority')::INTEGER`` on every INSERT and refuses it, so the whole
+        run rolls back with a raw driver error that names no source row. On a target this
+        command initialized, the index does not exist yet, so the INSERT succeeds and the
+        target's first server start fails to build the index (exit 78). Either way the
+        pre-check skips the row.
 
         Args:
             monkeypatch: Used to configure a typed indexed field.
