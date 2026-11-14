@@ -128,10 +128,11 @@ async def test_search_compressed_recall_postgresql(
     try:
         await init_database(backend=backend)
         # Semantic-search migration creates the embedding_metadata table
-        # _store_compressed_pg writes (with compression on it leaves out the fp32
-        # vec_context_embeddings table); chunking migration converts the 1:1 schema
-        # to 1:N; compression migration replaces the fp32 table with
-        # vec_context_embeddings_compressed + compression_metadata.
+        # _store_compressed_pg writes and, with compression on, leaves out the fp32
+        # vec_context_embeddings table. With compression on, the chunking migration
+        # only adds embedding_metadata.chunk_count, because its vec_context_embeddings
+        # statements are skipped. The compression migration creates
+        # vec_context_embeddings_compressed and compression_metadata.
         await apply_semantic_search_migration(backend=backend)
         await apply_chunking_migration(backend=backend)
         await apply_compression_migration(backend=backend)
