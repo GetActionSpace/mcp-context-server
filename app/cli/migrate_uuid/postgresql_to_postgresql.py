@@ -289,10 +289,12 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
             pg_skipped_context_ids = set(skip_reasons)
             # The metadata stored below differs from the metadata checked above only where
             # a value cites a skipped entry and stays as written instead of becoming a
-            # 32-character id. Such a value passes every check the id passed (an id fails
-            # the integer, float and boolean casts, so it could only sit in an untyped or
-            # string field, where the shorter original fits too), so each row is stored as
-            # checked, and its skip is taken from the first pass, never decided again.
+            # 32-character id. Such a value passes every check the id passed: an id fails
+            # the integer, float and boolean casts, so a passing one sits under an untyped
+            # top-level key, under an array- or object-typed one, which is exempt and has no
+            # check, or under a string-typed one, where the shorter original fits too. So
+            # each row is stored as checked, and its skip is taken from the first pass,
+            # never decided again.
             for entry in entry_rows:
                 source_id = int(entry['id'])
                 new_id = id_mapping[source_id]
