@@ -1,5 +1,7 @@
 """Tests for the database URL helpers shared by the migration CLI modes."""
 
+import pytest
+
 from app.cli._database_url import mask_credentials
 from app.cli._database_url import parse_backend_url
 
@@ -58,6 +60,19 @@ class TestUrlHelpers:
         kind, addr = parse_backend_url('/home/me/db.sqlite')
         assert kind == 'sqlite'
         assert addr == '/home/me/db.sqlite'
+
+    @pytest.mark.parametrize(
+        ('url', 'expected'),
+        [
+            ('postgres://u:p@h/db', ('postgresql', 'postgres://u:p@h/db')),
+            ('sqlite:data/file.db', ('sqlite', 'data/file.db')),
+            ('data/file.db', ('sqlite', 'data/file.db')),
+            ('file:///tmp/file.db', ('sqlite', '/tmp/file.db')),
+        ],
+    )
+    def test_parse_backend_url_other_accepted_forms(self, url: str, expected: tuple[str, str]) -> None:
+        """The short PostgreSQL scheme, a scheme without slashes, a relative path and a file URI are accepted."""
+        assert parse_backend_url(url) == expected
 
     def test_mask_credentials_redacts_password(self) -> None:
         """The password segment of a PostgreSQL URL is masked."""

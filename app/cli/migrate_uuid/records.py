@@ -97,11 +97,10 @@ class MigrationOptions:
     """Parsed CLI arguments.
 
     Attributes:
-        source_url: URL or path identifying the source database. Accepted
-            forms: ``sqlite:///abs/path/file.db``, ``/abs/path/file.db``,
-            ``postgresql://user:pass@host/db``.
-        target_url: URL or path identifying the target database. Same
-            forms as ``source_url``.
+        source_url: The source database: a SQLite file path or URL, or a
+            PostgreSQL URL, as ``app.cli._database_url.parse_backend_url``
+            classifies it.
+        target_url: The target database, in the same forms as ``source_url``.
         dry_run: When True, run the full migration logic in memory but
             issue no INSERT statements against the target.
         report_path: Optional path. When set, write the migration
