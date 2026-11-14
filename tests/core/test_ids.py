@@ -7,6 +7,8 @@ Covers the centralized identifier handling primitives:
   - ``normalize_id()`` -- accepts 32-char hex and 36-char hyphenated UUIDs
     and always emits lowercase hex output.
   - ``is_id_prefix()`` -- predicate for 8 to 31 char hex prefixes.
+  - ``id_prefix_bounds()`` -- the lowest and highest full id sharing a prefix,
+    the bounds of the range read a prefix lookup runs on the id index.
   - ``resolve_prefix()`` -- repository-backed unique-prefix resolution, decided
     over the rows the caller's scope may read.
   - ``resolve_or_normalize_id()`` / ``resolve_or_normalize_ids()`` -- the tool
@@ -26,6 +28,7 @@ from app.access_scope import AccessScope
 from app.access_scope import Scope
 from app.ids import generate_id
 from app.ids import generate_id_with_timestamp
+from app.ids import id_prefix_bounds
 from app.ids import is_id_prefix
 from app.ids import normalize_id
 from app.ids import resolve_or_normalize_id
@@ -283,6 +286,80 @@ class TestIsIdPrefix:
     def test_whitespace_stripped(self) -> None:
         """Surrounding whitespace is stripped before length and charset checks."""
         assert is_id_prefix('  0190abcd  ') is True
+
+
+# ============================================================================
+# id_prefix_bounds()
+# ============================================================================
+
+
+_HEX_DIGITS = '0123456789abcdef'
+
+
+class TestIdPrefixBounds:
+    """Tests for ``id_prefix_bounds()``: the inclusive range of full ids that start with a prefix."""
+
+    def test_eight_characters_pad_to_the_lowest_and_highest_id(self) -> None:
+        """The shortest prefix pads its remaining 24 digits with ``0`` and with ``f``."""
+        assert id_prefix_bounds('0190abcd') == ('0190abcd' + '0' * 24, '0190abcd' + 'f' * 24)
+
+    def test_thirty_one_characters_leave_one_digit(self) -> None:
+        """The longest prefix leaves only the last digit open, ``0`` at the low end and ``f`` at the high end."""
+        prefix = '0190abcdef1234567890abcdef12345'
+        assert id_prefix_bounds(prefix) == (prefix + '0', prefix + 'f')
+
+    def test_odd_length_pads_from_the_next_digit(self) -> None:
+        """A prefix ending inside a byte pads from the very next hex digit, not from the next byte."""
+        assert id_prefix_bounds('0190abcd1') == ('0190abcd1' + '0' * 23, '0190abcd1' + 'f' * 23)
+
+    def test_case_and_whitespace_are_folded(self) -> None:
+        """Surrounding whitespace is stripped and uppercase hex is folded, so both bounds are canonical ids."""
+        assert id_prefix_bounds('  0190ABCD  ') == ('0190abcd' + '0' * 24, '0190abcd' + 'f' * 24)
+
+    def test_every_id_with_the_prefix_lies_within_the_bounds(self) -> None:
+        """Ids sharing the prefix lie inside the bounds and the nearest ids with another prefix lie outside.
+
+        The bounds are checked both as the hex text SQLite compares and as the ``uuid`` values PostgreSQL
+        compares. For each prefix, the ids whose last prefix digit is one lower or one higher are the
+        closest ids that do not share it: the highest id below the range and the lowest id above it.
+        """
+        sample = [generate_id() for _ in range(20)]
+        sample += ['0' * 32, 'f' * 32, '0190abcdef1234567890abcdef123456']
+        for full_id in sample:
+            for length in range(8, 32):
+                prefix = full_id[:length]
+                low, high = id_prefix_bounds(prefix)
+                assert HEX_32_RE.match(low)
+                assert HEX_32_RE.match(high)
+                assert low.startswith(prefix)
+                assert high.startswith(prefix)
+                assert low <= full_id <= high
+                assert uuid.UUID(hex=low) <= uuid.UUID(hex=full_id) <= uuid.UUID(hex=high)
+
+                last = _HEX_DIGITS.index(prefix[-1])
+                if last > 0:
+                    below = (prefix[:-1] + _HEX_DIGITS[last - 1]).ljust(32, 'f')
+                    assert below < low
+                    assert uuid.UUID(hex=below) < uuid.UUID(hex=low)
+                if last < 15:
+                    above = (prefix[:-1] + _HEX_DIGITS[last + 1]).ljust(32, '0')
+                    assert above > high
+                    assert uuid.UUID(hex=above) > uuid.UUID(hex=high)
+
+    @pytest.mark.parametrize(
+        'value',
+        [
+            pytest.param('0190abc', id='seven-characters'),
+            pytest.param('0190abcdef1234567890abcdef123456', id='full-id'),
+            pytest.param('0190abcd-ef12-3456-7890-abcdef123456', id='hyphenated-id'),
+            pytest.param('0190abcd-ef12', id='hyphenated-fragment'),
+            pytest.param('0190abcZ', id='non-hex-character'),
+        ],
+    )
+    def test_rejects_what_is_not_a_prefix(self, value: str) -> None:
+        """Anything other than an 8-31 character hex prefix raises :class:`ValueError` naming the input."""
+        with pytest.raises(ValueError, match=re.escape(f'Invalid UUID prefix (must be 8-31 hex chars): {value!r}')):
+            id_prefix_bounds(value)
 
 
 # ============================================================================

@@ -1,31 +1,34 @@
-"""Shared test helper functions.
+"""Shared test helper functions and classes.
 
-Provides utility functions used across test infrastructure files
-(conftest.py, run_server.py) and test modules to avoid code duplication.
-Application modules are imported inside the helpers, apart from the
-standard-library-only ``app.access_scope``, so importing this module never
-loads the application or reads settings.
+Provides utilities used across test infrastructure files (conftest.py, run_server.py) and test modules to avoid code
+duplication, the statement capture the query-plan tests share among them. Application modules are imported inside the
+helpers, apart from the standard-library-only ``app.access_scope``, so importing this module never loads the application
+or reads settings.
 """
 
 import importlib
 import os
 import pkgutil
 import sqlite3
+from collections.abc import Awaitable
+from collections.abc import Callable
 from collections.abc import Generator
 from collections.abc import Iterable
+from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from contextlib import contextmanager
 from dataclasses import dataclass
 from types import ModuleType
 from typing import TYPE_CHECKING
 from typing import Any
+from typing import cast
+from typing import overload
 from unittest.mock import AsyncMock
 from unittest.mock import patch
 
 from pydantic import ValidationError as PydanticValidationError
 
 from app.access_scope import AccessScope
-from app.backends.base import MAINTENANCE
 
 if TYPE_CHECKING:
     import asyncpg
@@ -33,6 +36,7 @@ if TYPE_CHECKING:
     from fastmcp.exceptions import ValidationError as FastMCPValidationError
     from pydantic_core import ErrorDetails
 
+    from app.backends.base import BackendAccess
     from app.backends.base import StorageBackend
     from app.repositories.embedding_repository import EmbeddingRepository
     from app.settings import AppSettings
@@ -436,6 +440,8 @@ async def insert_grant(
         LookupError: If no entry has the id ``context_id`` on PostgreSQL, where the
             row's owner comes from the entry.
     """
+    from app.backends.base import MAINTENANCE
+
     values = (context_id, principal_type, principal_id, permission, granted_by)
 
     if backend.backend_type == 'sqlite':
@@ -468,6 +474,8 @@ async def read_grants(backend: 'StorageBackend', context_id: str) -> list[tuple[
         ``(principal_type, principal_id, permission, granted_by)`` tuples ordered by
         principal type, principal id and permission.
     """
+    from app.backends.base import MAINTENANCE
+
     if backend.backend_type == 'sqlite':
 
         def _read_sqlite(conn: sqlite3.Connection) -> list[tuple[str, str, str, str]]:
@@ -481,3 +489,198 @@ async def read_grants(backend: 'StorageBackend', context_id: str) -> list[tuple[
         return [(row[0], row[1], row[2], row[3]) for row in rows]
 
     return await backend.execute_read(_read_postgresql, access_scope=MAINTENANCE)
+
+
+@dataclass(frozen=True, slots=True)
+class Captured:
+    """One statement a repository sent, with the values it bound to the statement's parameters.
+
+    Attributes:
+        sql: The statement text.
+        params: The bound values, in parameter order.
+    """
+
+    sql: str
+    params: tuple[object, ...]
+
+
+type AsyncpgConnection = asyncpg.Connection[asyncpg.Record] | asyncpg.pool.PoolConnectionProxy[asyncpg.Record]
+
+
+class RecordingSqliteCursor:
+    """A SQLite cursor that records every statement it executes; every other attribute is the wrapped cursor's."""
+
+    def __init__(self, cursor: sqlite3.Cursor, statements: list[Captured]) -> None:
+        self._cursor = cursor
+        self._statements = statements
+
+    def execute(self, sql: str, params: Sequence[object] = ()) -> 'RecordingSqliteCursor':
+        """Record the statement, then execute it on the wrapped cursor.
+
+        Returns:
+            This cursor, as ``sqlite3.Cursor.execute`` returns its own cursor.
+        """
+        self._statements.append(Captured(sql, tuple(params)))
+        self._cursor.execute(sql, params)
+        return self
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._cursor, name)
+
+
+class RecordingSqliteConnection:
+    """A SQLite connection that records every statement sent through ``execute`` or through a cursor it opened."""
+
+    def __init__(self, conn: sqlite3.Connection, statements: list[Captured]) -> None:
+        self._conn = conn
+        self._statements = statements
+
+    def execute(self, sql: str, params: Sequence[object] = ()) -> sqlite3.Cursor:
+        """Record the statement, then execute it on the wrapped connection.
+
+        Returns:
+            The cursor the wrapped connection returned.
+        """
+        self._statements.append(Captured(sql, tuple(params)))
+        return self._conn.execute(sql, params)
+
+    def cursor(self) -> RecordingSqliteCursor:
+        """Open a cursor on the wrapped connection that records the statements it executes.
+
+        Returns:
+            The recording cursor.
+        """
+        return RecordingSqliteCursor(self._conn.cursor(), self._statements)
+
+
+class RecordingAsyncpgConnection:
+    """An asyncpg connection that records every statement sent through ``fetch``, ``fetchrow``, ``fetchval`` or ``execute``.
+
+    Every other attribute, ``transaction`` included, is the wrapped connection's.
+    """
+
+    def __init__(self, conn: AsyncpgConnection, statements: list[Captured]) -> None:
+        self._conn = conn
+        self._statements = statements
+
+    async def fetch(self, sql: str, *args: object) -> 'list[asyncpg.Record]':
+        """Record the statement, then run it on the wrapped connection.
+
+        Returns:
+            The rows the wrapped connection returned.
+        """
+        self._statements.append(Captured(sql, args))
+        return await self._conn.fetch(sql, *args)
+
+    async def fetchrow(self, sql: str, *args: object) -> 'asyncpg.Record | None':
+        """Record the statement, then run it on the wrapped connection.
+
+        Returns:
+            The row the wrapped connection returned.
+        """
+        self._statements.append(Captured(sql, args))
+        return await self._conn.fetchrow(sql, *args)
+
+    async def fetchval(self, sql: str, *args: object) -> object:
+        """Record the statement, then run it on the wrapped connection.
+
+        Returns:
+            The value the wrapped connection returned.
+        """
+        self._statements.append(Captured(sql, args))
+        return await self._conn.fetchval(sql, *args)
+
+    async def execute(self, sql: str, *args: object) -> str:
+        """Record the statement, then run it on the wrapped connection.
+
+        Returns:
+            The status the wrapped connection returned.
+        """
+        self._statements.append(Captured(sql, args))
+        return await self._conn.execute(sql, *args)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._conn, name)
+
+
+class CapturingBackend:
+    """A backend whose reads record every statement the repositories send, on SQLite and PostgreSQL alike.
+
+    Each read runs on the wrapped backend as the identity it passes, with the operation handed a
+    :class:`RecordingSqliteConnection` or a :class:`RecordingAsyncpgConnection` in place of the real
+    connection. It answers the members a repository read uses (``backend_type``, ``readable_relation``,
+    ``execute_read``), so ``RepositoryContainer(cast(StorageBackend, capturing))`` reads through it.
+
+    Attributes:
+        backend: The wrapped backend.
+        statements: Every statement recorded, in the order the reads sent them.
+    """
+
+    def __init__(self, backend: 'StorageBackend') -> None:
+        self.backend = backend
+        self.statements: list[Captured] = []
+
+    @property
+    def backend_type(self) -> str:
+        """The wrapped backend's type."""
+        return self.backend.backend_type
+
+    def readable_relation(self, table: str, *, alias: str) -> str:
+        """Return the wrapped backend's readable relation for ``table``.
+
+        Returns:
+            The relation the wrapped backend names for ``table`` under ``alias``.
+        """
+        return self.backend.readable_relation(table, alias=alias)
+
+    @overload
+    async def execute_read[T](
+        self, operation: Callable[..., Awaitable[T]], *args: object, access_scope: 'BackendAccess', **kwargs: object,
+    ) -> T: ...
+
+    @overload
+    async def execute_read[T](
+        self, operation: Callable[..., T], *args: object, access_scope: 'BackendAccess', **kwargs: object,
+    ) -> T: ...
+
+    async def execute_read[T](
+        self,
+        operation: Callable[..., T] | Callable[..., Awaitable[T]],
+        *args: object,
+        access_scope: 'BackendAccess',
+        **kwargs: object,
+    ) -> T:
+        """Run ``operation`` as a read of the wrapped backend, on a connection that records its statements.
+
+        Returns:
+            What ``operation`` returned.
+        """
+        statements = self.statements
+        if self.backend.backend_type == 'sqlite':
+            sync_operation = cast('Callable[..., T]', operation)
+
+            def _recorded_sqlite(conn: sqlite3.Connection, *op_args: object, **op_kwargs: object) -> T:
+                return sync_operation(RecordingSqliteConnection(conn, statements), *op_args, **op_kwargs)
+
+            return await self.backend.execute_read(_recorded_sqlite, *args, access_scope=access_scope, **kwargs)
+
+        async_operation = cast('Callable[..., Awaitable[T]]', operation)
+
+        async def _recorded_postgresql(conn: AsyncpgConnection, *op_args: object, **op_kwargs: object) -> T:
+            return await async_operation(RecordingAsyncpgConnection(conn, statements), *op_args, **op_kwargs)
+
+        return await self.backend.execute_read(_recorded_postgresql, *args, access_scope=access_scope, **kwargs)
+
+
+async def sqlite_query_plan(backend: 'StorageBackend', sql: str, params: Sequence[object]) -> list[str]:
+    """Plan one statement on a SQLite backend as the maintenance identity, its parameters bound to ``params``.
+
+    Returns:
+        The detail column of every ``EXPLAIN QUERY PLAN`` row, in plan order.
+    """
+    from app.backends.base import MAINTENANCE
+
+    def _explain(conn: sqlite3.Connection) -> list[str]:
+        return [str(row[3]) for row in conn.execute(f'EXPLAIN QUERY PLAN {sql}', params).fetchall()]
+
+    return await backend.execute_read(_explain, access_scope=MAINTENANCE)

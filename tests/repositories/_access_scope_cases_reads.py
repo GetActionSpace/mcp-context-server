@@ -10,7 +10,9 @@ and never matches a prefix.
 - S4: ``find_ids_by_prefix`` matches readable rows only, before its LIMIT, so hidden rows
   ordered first never crowd out a readable match; prefix resolution through
   :func:`app.ids.resolve_or_normalize_id` turns that into a unique match, a no-match or an
-  ambiguity computed over readable rows alone.
+  ambiguity computed over readable rows alone. Rows at both edges of a prefix's range and
+  the first id past it match exactly the prefixes they start with, at the shortest (8), an
+  odd (9) and the longest (31) prefix length.
 - S5: ``check_entry_exists`` reports a readable row with its source, version, owner and
   whether the caller may modify it, and an unreadable row exactly like a missing one.
 - S7: ``probe_ids`` maps every readable requested id to whether the caller may modify and
@@ -58,8 +60,16 @@ PREFIX_THREAD = 'access-prefixes'
 PREFIX_A = 'a5a5a5a5'
 PREFIX_B = 'b6b6b6b6'
 PREFIX_C = 'c7c7c7c7'
+PREFIX_D = 'd7d7d7d7'
 PREFIX_ABSENT = 'd9d9d9d9'
-PREFIXES = (PREFIX_A, PREFIX_B, PREFIX_C, PREFIX_ABSENT)
+# The fourth group holds the lowest and the highest id that start with PREFIX_D and the
+# first id past them, so a range read whose bounds or comparisons are off by one digit
+# drops an edge row or takes in the neighbor.
+PREFIX_D_LOW = PREFIX_D + '0' * 23
+PREFIX_D_HIGH = PREFIX_D + 'f' * 23
+PREFIX_D_ODD = PREFIX_D + 'f'
+PREFIX_D_NEXT = 'd7d7d7d8'
+PREFIXES = (PREFIX_A, PREFIX_B, PREFIX_C, PREFIX_D, PREFIX_D_LOW, PREFIX_D_HIGH, PREFIX_D_ODD, PREFIX_D_NEXT, PREFIX_ABSENT)
 
 # The prefixed rows in id order: (label, id, owner, visibility, grants).
 _PREFIXED_ROWS: tuple[tuple[str, str, str, Visibility, tuple[Grant, ...]], ...] = (
@@ -72,6 +82,19 @@ _PREFIXED_ROWS: tuple[tuple[str, str, str, Visibility, tuple[Grant, ...]], ...] 
     ('prefix_b_alice_bob_read', PREFIX_B + '2' * 24, 'alice', 'private', (Grant('user', 'bob', 'read'),)),
     ('prefix_c_alice_team_read', PREFIX_C + '1' * 24, 'alice', 'private', (Grant('group', TEAM_GROUP, 'read'),)),
     ('prefix_c_bob_private', PREFIX_C + '2' * 24, 'bob', 'private', ()),
+    # Public, so every scope reads the edge rows and the neighbor alike.
+    ('prefix_d_low', PREFIX_D + '0' * 24, 'alice', 'public', ()),
+    ('prefix_d_high', PREFIX_D + 'f' * 24, 'alice', 'public', ()),
+    ('prefix_d_next', PREFIX_D_NEXT + '0' * 24, 'alice', 'public', ()),
+)
+
+# What a two-row lookup of each prefix of the fourth group returns, the same for every scope.
+_PREFIX_D_MATCHES: PrefixMatches = (
+    (PREFIX_D, ('prefix_d_low', 'prefix_d_high')),
+    (PREFIX_D_LOW, ('prefix_d_low',)),
+    (PREFIX_D_HIGH, ('prefix_d_high',)),
+    (PREFIX_D_ODD, ('prefix_d_high',)),
+    (PREFIX_D_NEXT, ('prefix_d_next',)),
 )
 
 # What a two-row lookup of each prefix returns per scope, in id order.
@@ -80,36 +103,42 @@ _PREFIX_MATCHES: dict[str, PrefixMatches] = {
         (PREFIX_A, ('prefix_a_alice_private_1', 'prefix_a_alice_private_2')),
         (PREFIX_B, ('prefix_b_alice_private', 'prefix_b_alice_bob_read')),
         (PREFIX_C, ('prefix_c_alice_team_read',)),
+        *_PREFIX_D_MATCHES,
         (PREFIX_ABSENT, ()),
     ),
     'bob': (
         (PREFIX_A, ('prefix_a_alice_public',)),
         (PREFIX_B, ('prefix_b_alice_bob_read',)),
         (PREFIX_C, ('prefix_c_bob_private',)),
+        *_PREFIX_D_MATCHES,
         (PREFIX_ABSENT, ()),
     ),
     'carol': (
         (PREFIX_A, ('prefix_a_alice_public',)),
         (PREFIX_B, ()),
         (PREFIX_C, ('prefix_c_alice_team_read',)),
+        *_PREFIX_D_MATCHES,
         (PREFIX_ABSENT, ()),
     ),
     'dave': (
         (PREFIX_A, ('prefix_a_alice_public',)),
         (PREFIX_B, ()),
         (PREFIX_C, ()),
+        *_PREFIX_D_MATCHES,
         (PREFIX_ABSENT, ()),
     ),
     'anonymous': (
         (PREFIX_A, ('prefix_a_alice_public',)),
         (PREFIX_B, ()),
         (PREFIX_C, ()),
+        *_PREFIX_D_MATCHES,
         (PREFIX_ABSENT, ()),
     ),
     'system': (
         (PREFIX_A, ('prefix_a_alice_private_1', 'prefix_a_alice_private_2')),
         (PREFIX_B, ('prefix_b_alice_private', 'prefix_b_alice_bob_read')),
         (PREFIX_C, ('prefix_c_alice_team_read', 'prefix_c_bob_private')),
+        *_PREFIX_D_MATCHES,
         (PREFIX_ABSENT, ()),
     ),
 }

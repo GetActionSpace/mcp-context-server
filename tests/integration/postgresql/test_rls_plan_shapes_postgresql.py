@@ -26,7 +26,6 @@ helper function, while they and a direct call are counted once the principal hel
 the planner cannot inline.
 """
 
-import json
 from collections.abc import AsyncGenerator
 from collections.abc import Awaitable
 from collections.abc import Callable
@@ -43,7 +42,6 @@ from app.access_scope import SYSTEM_SCOPE
 from app.access_scope import AccessScope
 from app.access_scope import Scope
 from app.backends import StorageBackend
-from app.backends.base import BackendAccess
 from app.backends.postgresql_backend import PostgreSQLBackend
 from app.backends.postgresql_backend.session import NO_CREDENTIAL_OVERRIDE
 from app.backends.postgresql_backend.session import quote_pg_identifier
@@ -53,7 +51,12 @@ from app.backends.postgresql_backend.session_profiles import SessionProfile
 from app.repositories import RepositoryContainer
 from app.settings import get_settings
 from app.tools.search.hybrid import _prepare_hybrid_fts_query
+from tests.helpers import AsyncpgConnection
+from tests.helpers import Captured
+from tests.helpers import CapturingBackend
 from tests.helpers import rebind_package_settings
+from tests.integration.postgresql._plans import explain_custom
+from tests.integration.postgresql._plans import plan_nodes
 from tests.integration.postgresql._rls_matrix import REQUEST_ROLE
 from tests.integration.postgresql._rls_matrix import rls_matrix_db
 from tests.integration.postgresql._rls_profiles import PinnedIdentityProfile
@@ -93,71 +96,10 @@ TARGETS: tuple[tuple[str, str, Visibility], ...] = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class Captured:
-    """One statement a repository sent, with its arguments as the repository bound them."""
-
-    sql: str
-    args: tuple[object, ...]
-
-
-type AnyConnection = asyncpg.Connection[asyncpg.Record] | asyncpg.pool.PoolConnectionProxy[asyncpg.Record]
-
-
-class _RecordingConnection:
-    """A connection that records every statement before running it on the real connection."""
-
-    def __init__(self, conn: AnyConnection, statements: list[Captured]) -> None:
-        self._conn = conn
-        self._statements = statements
-
-    async def fetch(self, sql: str, *args: object) -> list[asyncpg.Record]:
-        self._statements.append(Captured(sql, args))
-        return await self._conn.fetch(sql, *args)
-
-    async def fetchrow(self, sql: str, *args: object) -> asyncpg.Record | None:
-        self._statements.append(Captured(sql, args))
-        return await self._conn.fetchrow(sql, *args)
-
-    async def fetchval(self, sql: str, *args: object) -> object:
-        self._statements.append(Captured(sql, args))
-        return await self._conn.fetchval(sql, *args)
-
-    async def execute(self, sql: str, *args: object) -> str:
-        self._statements.append(Captured(sql, args))
-        return await self._conn.execute(sql, *args)
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._conn, name)
-
-
-class _CapturingBackend:
-    """A request backend whose reads record the statements the repositories send."""
-
-    def __init__(self, backend: PostgreSQLBackend) -> None:
-        self.backend = backend
-        self.statements: list[Captured] = []
-
-    @property
-    def backend_type(self) -> str:
-        return self.backend.backend_type
-
-    def readable_relation(self, table: str, *, alias: str) -> str:
-        return self.backend.readable_relation(table, alias=alias)
-
-    async def execute_read[T](
-        self, operation: Callable[..., Awaitable[T]], *args: object, access_scope: BackendAccess, **kwargs: object,
-    ) -> T:
-        async def _recorded(conn: AnyConnection, *op_args: object, **op_kwargs: object) -> T:
-            return await operation(_RecordingConnection(conn, self.statements), *op_args, **op_kwargs)
-
-        return await self.backend.execute_read(_recorded, *args, access_scope=access_scope, **kwargs)
-
-
 @asynccontextmanager
 async def capturing_repositories(
     url: str, profile: SessionProfile,
-) -> AsyncGenerator[tuple[RepositoryContainer, _CapturingBackend]]:
+) -> AsyncGenerator[tuple[RepositoryContainer, CapturingBackend]]:
     """Open repositories over a request backend with ``profile`` whose reads are recorded.
 
     Args:
@@ -170,7 +112,7 @@ async def capturing_repositories(
     backend = PostgreSQLBackend(connection_string=url, profile=profile, credentials=NO_CREDENTIAL_OVERRIDE)
     await backend.initialize()
     try:
-        capturing = _CapturingBackend(backend)
+        capturing = CapturingBackend(backend)
         yield RepositoryContainer(cast(StorageBackend, capturing)), capturing
     finally:
         await backend.shutdown()
@@ -252,21 +194,6 @@ VARIANTS: dict[str, tuple[Callable[[], SessionProfile], Scope]] = {
 }
 
 
-def _walk(node: object) -> list[dict[str, object]]:
-    """Return every plan node of an EXPLAIN (FORMAT JSON) document."""
-    found: list[dict[str, object]] = []
-    if isinstance(node, dict):
-        plan = cast('dict[str, object]', node)
-        if 'Node Type' in plan:
-            found.append(plan)
-        for child in plan.values():
-            found.extend(_walk(child))
-    elif isinstance(node, list):
-        for item in cast('list[object]', node):
-            found.extend(_walk(item))
-    return found
-
-
 @dataclass(frozen=True, slots=True)
 class PlanFacts:
     """Which indexes a plan searches with a condition, and where it evaluates the policy-role gate.
@@ -290,16 +217,15 @@ class PlanFacts:
     text: str
 
 
-async def _plan(backend: PostgreSQLBackend, statement: Captured, *, disable_seqscan: bool) -> PlanFacts:
+async def _plan(backend: StorageBackend, statement: Captured, *, disable_seqscan: bool) -> PlanFacts:
     """Plan ``statement`` verbosely as the request role bound to alice."""
 
-    async def _explain(conn: asyncpg.Connection) -> str:
+    async def _explain(conn: AsyncpgConnection) -> object:
         if disable_seqscan:
             await conn.execute('SET LOCAL enable_seqscan = off')
-        return str(await conn.fetchval(f'EXPLAIN (VERBOSE, FORMAT JSON) {statement.sql}', *statement.args))
+        return await explain_custom(conn, statement)
 
-    document = await backend.execute_read(_explain, access_scope=ALICE)
-    nodes = _walk(json.loads(document))
+    nodes = plan_nodes(await backend.execute_read(_explain, access_scope=ALICE))
     conditions = [str(node[key]) for node in nodes for key in CONDITION_KEYS if key in node]
     return PlanFacts(
         searched_indexes=frozenset(str(node['Index Name']) for node in nodes if 'Index Name' in node and 'Index Cond' in node),
@@ -334,7 +260,7 @@ async def _captured_plans(
         plans: list[tuple[PlanFacts, PlanFacts]] = []
         for statement in searches:
             assert (variant == 'app-predicate') is ('owner_id' in statement.sql), statement.sql
-            base = Captured(statement.sql.replace(VIEW_RELATION, BASE_RELATION), statement.args)
+            base = Captured(statement.sql.replace(VIEW_RELATION, BASE_RELATION), statement.params)
             plans.append((
                 await _plan(capturing.backend, statement, disable_seqscan=True),
                 await _plan(capturing.backend, base, disable_seqscan=True),
@@ -418,13 +344,9 @@ async def test_targets_are_what_the_filters_select(plan_db: ScopedDb, pg_rls_db:
     assert set(plan_db.labels_of(str(row['id']) for row in fts_rows)) == expected
 
 
-async def _plan_nodes(backend: PostgreSQLBackend, statement: Captured, scope: AccessScope) -> list[dict[str, object]]:
+async def _plan_nodes(backend: StorageBackend, statement: Captured, scope: AccessScope) -> list[dict[str, object]]:
     """Plan ``statement`` verbosely as the request role bound to ``scope`` and return its nodes."""
-
-    async def _explain(conn: asyncpg.Connection) -> str:
-        return str(await conn.fetchval(f'EXPLAIN (VERBOSE, FORMAT JSON) {statement.sql}', *statement.args))
-
-    return _walk(json.loads(await backend.execute_read(_explain, access_scope=scope)))
+    return plan_nodes(await backend.execute_read(explain_custom, statement, access_scope=scope))
 
 
 def _conditions(node: dict[str, object]) -> list[str]:
@@ -459,7 +381,7 @@ async def test_the_grants_scan_holds_no_subplan_and_reads_no_entries(plan_db: Sc
         grant_scans = [node for node in nodes if node.get('Relation Name') == GRANTS_TABLE]
         assert grant_scans, statement.sql
         for scan in grant_scans:
-            beneath = [node for node in _walk(scan.get('Plans', [])) if node is not scan]
+            beneath = [node for node in plan_nodes(scan.get('Plans', [])) if node is not scan]
             assert all(node.get('Parent Relationship') != 'SubPlan' for node in beneath), statement.sql
             assert all(node.get('Relation Name') != 'context_entries' for node in beneath), statement.sql
             for condition in (*_conditions(scan), *(text for node in beneath for text in _conditions(node))):
@@ -496,7 +418,7 @@ async def _track_functions(conn: asyncpg.Connection) -> str:
     return str(await conn.fetchval('SHOW track_functions'))
 
 
-async def _read_then_flush(repos: RepositoryContainer, backend: PostgreSQLBackend, plan_db: ScopedDb) -> None:
+async def _read_then_flush(repos: RepositoryContainer, backend: StorageBackend, plan_db: ScopedDb) -> None:
     """Run the routed read and the child-table read as carol, then flush the session's statistics."""
     await repos.context.search_contexts(limit=50, scope=CAROL)
     await repos.tags.get_tags_for_context(plan_db.ids[CAROL_GRANTED_LABEL], scope=CAROL)
