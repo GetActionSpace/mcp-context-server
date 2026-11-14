@@ -1,10 +1,12 @@
 """Tests for the SQLite copy helpers: free-form text, embeddings, chunk internals and vec0 rowids survive the migration."""
 
+import json
 import sqlite3
 from pathlib import Path
 
 import pytest
 
+from app.cli.migrate_uuid.records import MigrationStats
 from app.cli.migrate_uuid.sqlite_to_sqlite import run_migration_sqlite_to_sqlite
 from tests.cli.migrate_uuid._sources import build_sqlite_options
 from tests.cli.migrate_uuid._sources import seed_source_db
@@ -300,48 +302,77 @@ class TestPreBoundaryColumnSource:
             tgt.close()
 
 
+# Free-form columns naming the ids of migrated entries, in prose and as JSON at the default
+# id path, beside metadata whose id the same run rewrites.
+FREE_FORM_ROWS: list[dict[str, object]] = [
+    {
+        'id': 1,
+        'thread_id': 'thread-free',
+        'source': 'user',
+        'content_type': 'text',
+        'text_content': 'see entry 1 and entry 3',
+        'metadata': '{"references": {"context_ids": [3]}}',
+        'summary': 'A reply citing entry 1.',
+        'created_at': '2025-06-01 09:00:00',
+    },
+    {
+        'id': 2,
+        'thread_id': 'thread-free',
+        'source': 'agent',
+        'content_type': 'text',
+        'text_content': '{"references": {"context_ids": [1]}}',
+        'metadata': None,
+        'summary': '{"references": {"context_ids": [1]}}',
+        'created_at': '2025-06-01 09:01:00',
+    },
+    {
+        'id': 3,
+        'thread_id': 'thread-free',
+        'source': 'user',
+        'content_type': 'text',
+        'text_content': 'entry 2 replies to entry 1',
+        'metadata': None,
+        'created_at': '2025-06-01 09:02:00',
+    },
+]
+
+
+def _migrate_free_form_source(tmp_path: Path) -> tuple[MigrationStats, Path, Path]:
+    """Migrate a source seeded with :data:`FREE_FORM_ROWS` into a new SQLite target.
+
+    Returns:
+        The run's statistics, the source path and the target path.
+    """
+    source = tmp_path / 'free-form-source.db'
+    target = tmp_path / 'free-form-target.db'
+    seed_source_db(source, FREE_FORM_ROWS)
+    stats = run_migration_sqlite_to_sqlite(build_sqlite_options(source, target))
+    return stats, source, target
+
+
+def _column_in_creation_order(path: Path, column: str) -> list[object]:
+    """Return one ``context_entries`` column of every row, oldest row first."""
+    conn = sqlite3.connect(str(path))
+    try:
+        return [row[0] for row in conn.execute(f'SELECT {column} FROM context_entries ORDER BY created_at ASC')]
+    finally:
+        conn.close()
+
+
 class TestFreeFormColumnsUntouched:
     """The rewrite reaches metadata only: numbers in free-form text columns are copied as written."""
 
-    def test_text_content_not_rewritten(
-        self,
-        legacy_source_db: Path,
-        new_target_db_path: Path,
-    ) -> None:
-        """text_content containing integer-style mentions is copied verbatim."""
-        options = build_sqlite_options(legacy_source_db, new_target_db_path)
-        stats = run_migration_sqlite_to_sqlite(options)
+    @pytest.mark.parametrize('column', ['text_content', 'summary'])
+    def test_column_copied_byte_for_byte(self, tmp_path: Path, column: str) -> None:
+        """Ids of migrated entries named in the column, in prose or as JSON, are copied as written."""
+        stats, source, target = _migrate_free_form_source(tmp_path)
+        assert stats.errors == []
         assert stats.rows_migrated == 3
+        assert _column_in_creation_order(target, column) == _column_in_creation_order(source, column)
 
-        src_conn = sqlite3.connect(str(legacy_source_db))
-        tgt_conn = sqlite3.connect(str(new_target_db_path))
-        try:
-            src_rows = [row[0] for row in src_conn.execute(
-                'SELECT text_content FROM context_entries ORDER BY created_at ASC, id ASC',
-            )]
-            tgt_rows = [row[0] for row in tgt_conn.execute(
-                'SELECT text_content FROM context_entries ORDER BY created_at ASC',
-            )]
-        finally:
-            src_conn.close()
-            tgt_conn.close()
-        assert tgt_rows == src_rows
-        assert any('8944' in (text or '') for text in tgt_rows)
-
-    def test_summary_not_rewritten(
-        self,
-        legacy_source_db: Path,
-        new_target_db_path: Path,
-    ) -> None:
-        """summary column is preserved byte-for-byte across migration."""
-        options = build_sqlite_options(legacy_source_db, new_target_db_path)
-        run_migration_sqlite_to_sqlite(options)
-        tgt_conn = sqlite3.connect(str(new_target_db_path))
-        try:
-            row = tgt_conn.execute(
-                "SELECT summary FROM context_entries WHERE summary LIKE '%8944%'",
-            ).fetchone()
-        finally:
-            tgt_conn.close()
-        assert row is not None
-        assert row[0] == 'A reply that mentions ID 8944 inline.'
+    def test_metadata_of_the_same_run_is_rewritten(self, tmp_path: Path) -> None:
+        """The run that copies the free-form columns as written rewrites the id its metadata names."""
+        _, _, target = _migrate_free_form_source(tmp_path)
+        new_ids = _column_in_creation_order(target, 'id')
+        metadata = _column_in_creation_order(target, 'metadata')
+        assert json.loads(str(metadata[0])) == {'references': {'context_ids': [new_ids[2]]}}
