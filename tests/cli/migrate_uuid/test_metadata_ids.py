@@ -399,6 +399,13 @@ class TestReencode:
         assert len(outcome.errors) == 1
         assert 'cannot round-trip as JSON' in outcome.errors[0]
 
+    def test_ids_beside_a_large_finite_number_are_rewritten_and_counted(self) -> None:
+        """A large but finite number re-encodes, so the ids beside it are rewritten and counted."""
+        result, outcome = _rewrite({'references': {'context_ids': [1, 2]}, 'score': 1e300})
+        assert result == {'references': {'context_ids': [A, B]}, 'score': 1e300}
+        assert outcome.counts == {DEFAULT_ID_PATH: _counts(rewritten=2)}
+        assert outcome.errors == []
+
     def test_finite_metadata_still_round_trips(self) -> None:
         """Large but finite numbers and non-ASCII text are written back unchanged."""
         outcome = _rewriter().rewrite('{"score": 1e300, "name": "café", "a": [1, 2]}', 3)
