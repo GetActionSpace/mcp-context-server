@@ -407,29 +407,22 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                     'target afterward). Metadata rows are still migrated.',
                 )
             if source_has_embeddings:
-                # A skipped parent's embedding rows are excluded the same way its
-                # tags and attachments are: the copies resolve their parent through
-                # this mapping, so dropping the skipped ids from it turns an FK
-                # violation that would abort the run into their own skip-and-warn.
-                embedding_id_mapping = {
-                    source_key: target_key
-                    for source_key, target_key in id_mapping.items()
-                    if source_key not in pg_skipped_context_ids
-                }
                 # A dry run against a target the real run auto-initializes counts
                 # through the same mapping, so it reports the rows, skips and warnings
                 # of that run; the copies then take the target as the auto-init builds
                 # it instead of probing tables that do not exist yet.
                 target_has_schema = target_initialized or not options.dry_run
                 await copy_embedding_metadata_pg(
-                    source_conn, target_conn, embedding_id_mapping, stats, options.dry_run,
+                    source_conn, target_conn, id_mapping, stats, options.dry_run,
+                    skipped_ids=pg_skipped_context_ids,
                     target_has_schema=target_has_schema,
                 )
                 # Gate the vector copy on the SOURCE vec table (copy_vec_embeddings_pg
                 # reads FROM vec_context_embeddings, which would crash if absent).
                 if source_has_vec:
                     await copy_vec_embeddings_pg(
-                        source_conn, target_conn, embedding_id_mapping, stats, options.dry_run,
+                        source_conn, target_conn, id_mapping, stats, options.dry_run,
+                        skipped_ids=pg_skipped_context_ids,
                         target_has_schema=target_has_schema,
                     )
 

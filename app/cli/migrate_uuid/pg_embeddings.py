@@ -1,6 +1,7 @@
 """Copy of embedding metadata and fp32 vectors between PostgreSQL databases."""
 
 from collections.abc import Mapping
+from collections.abc import Set as AbstractSet
 from typing import TYPE_CHECKING
 
 from app.cli.migrate_uuid.records import MigrationStats
@@ -16,6 +17,7 @@ async def copy_embedding_metadata_pg(
     stats: MigrationStats,
     dry_run: bool,
     *,
+    skipped_ids: AbstractSet[int],
     target_has_schema: bool,
 ) -> None:
     """Copy ``embedding_metadata`` rows from a PostgreSQL source to a PostgreSQL target.
@@ -24,7 +26,9 @@ async def copy_embedding_metadata_pg(
     asyncpg placeholders, native UUID binding, and asyncpg's ``fetch``
     cursor. The source ``context_id`` is a BIGINT (integer-keyed v2
     schema); the target ``context_id`` is a UUID (v3 schema). Mapping
-    is applied via ``id_mapping``.
+    is applied via ``id_mapping``. A row whose entry the run skipped, or
+    whose entry is absent from the source, is left out with a warning
+    naming which, since the target holds no entry for it to reference.
 
     Args:
         source: asyncpg connection to the PostgreSQL source database.
@@ -34,6 +38,7 @@ async def copy_embedding_metadata_pg(
         stats: Mutated to record ``embedding_metadata_migrated`` and
             warnings.
         dry_run: When True, skip INSERTs (counters still increment).
+        skipped_ids: Old ids of the source entries the run skips.
         target_has_schema: False for a dry run whose target has no schema yet. The
             target is then not probed: the real run builds it with
             :func:`~app.cli.migrate_uuid.pg_target.initialize_target_postgresql`,
@@ -76,6 +81,11 @@ async def copy_embedding_metadata_pg(
     inserted = 0
     for row in rows:
         source_id = int(row['context_id'])
+        if source_id in skipped_ids:
+            stats.warnings.append(
+                f'embedding_metadata row context_id={source_id} skipped: parent context_entries row was skipped',
+            )
+            continue
         mapped = id_mapping.get(source_id)
         if mapped is None:
             stats.warnings.append(
@@ -104,6 +114,7 @@ async def copy_vec_embeddings_pg(
     stats: MigrationStats,
     dry_run: bool,
     *,
+    skipped_ids: AbstractSet[int],
     target_has_schema: bool,
 ) -> None:
     """Copy ``vec_context_embeddings`` rows from a PostgreSQL source to a PostgreSQL target.
@@ -114,7 +125,9 @@ async def copy_vec_embeddings_pg(
     initialized. Probes both source and target for the chunking
     migration's ``start_index``/``end_index`` columns (added by
     ``add_chunking_postgresql.sql``); when present on both sides, the
-    columns are copied through.
+    columns are copied through. A row whose entry the run skipped, or
+    whose entry is absent from the source, is left out with a warning
+    naming which, since the target holds no entry for it to reference.
 
     Args:
         source: asyncpg connection to the PostgreSQL source database.
@@ -123,6 +136,7 @@ async def copy_vec_embeddings_pg(
             ``context_entries.id`` -> ``created_at`` rows.
         stats: Mutated to record ``vec_rows_migrated`` and warnings.
         dry_run: When True, skip INSERTs (counters still increment).
+        skipped_ids: Old ids of the source entries the run skips.
         target_has_schema: False for a dry run whose target has no schema yet. The
             target is then not probed: the real run builds it with
             :func:`~app.cli.migrate_uuid.pg_target.initialize_target_postgresql`,
@@ -192,6 +206,11 @@ async def copy_vec_embeddings_pg(
     inserted = 0
     for row in rows:
         source_id = int(row['context_id'])
+        if source_id in skipped_ids:
+            stats.warnings.append(
+                f'vec_context_embeddings row context_id={source_id} skipped: parent context_entries row was skipped',
+            )
+            continue
         mapped = id_mapping.get(source_id)
         if mapped is None:
             stats.warnings.append(

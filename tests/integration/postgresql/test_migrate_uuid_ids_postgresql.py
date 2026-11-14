@@ -364,10 +364,12 @@ def test_dry_run_into_an_empty_postgresql_target_counts_the_embeddings_the_real_
     assert real_report['vec_rows_migrated'] == 1
     for key in ('rows_migrated', 'embedding_metadata_migrated', 'vec_rows_migrated', 'errors'):
         assert dry_report[key] == real_report[key], key
-    missing = 'references missing context_id'
-    assert _warnings_with(dry_report, missing) == _warnings_with(real_report, missing) == [
-        'embedding_metadata row references missing context_id=2; skipped',
-        'vec_context_embeddings row references missing context_id=2; skipped',
+    skipped = 'row context_id=2 skipped'
+    assert _warnings_with(dry_report, skipped) == _warnings_with(real_report, skipped) == [
+        'embedding_metadata row context_id=2 skipped: parent context_entries row was skipped',
+        'vec_context_embeddings row context_id=2 skipped: parent context_entries row was skipped',
     ]
+    missing = 'references missing context_id'
+    assert _warnings_with(dry_report, missing) == _warnings_with(real_report, missing) == []
     assert _warnings_with(dry_report, 'would be auto-initialized') != []
     assert _warnings_with(dry_report, 'initialize the target schema first') == []
