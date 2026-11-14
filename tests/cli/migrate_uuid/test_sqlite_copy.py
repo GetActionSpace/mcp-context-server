@@ -278,9 +278,8 @@ class TestPreBoundaryColumnSource:
         source_pre_boundary_columns: Path,
         new_target_db_path: Path,
     ) -> None:
-        """The unguarded boundary-column SELECT would raise OperationalError; the guarded
-        copier instead migrates the row and defaults start_index/end_index to 0 on a target
-        that has the columns.
+        """A source chunk table without start_index/end_index migrates its row, and the target's start_index and
+        end_index are 0.
         """
         options = build_sqlite_options(source_pre_boundary_columns, new_target_db_path)
         stats = run_migration_sqlite_to_sqlite(options)
