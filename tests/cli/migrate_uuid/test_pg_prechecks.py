@@ -1,22 +1,21 @@
 """Tests for the PostgreSQL storability and index-size pre-check helpers.
 
-A NUL (U+0000), an unpaired UTF-16 surrogate or a non-finite JSON number is legal in
-a SQLite value but fatal in its PostgreSQL column, and SQLite indexes a value of any
-size while PostgreSQL refuses an index tuple larger than BTMaxItemSize (2704 bytes on
-btree version 4). These helpers name such a value per column so the cross-backend
-copy loops skip its row instead of aborting the run. The tests of the index pre-checks
-pin two properties:
+A NUL (U+0000), an unpaired UTF-16 surrogate or a ``NaN``/``Infinity`` token is legal
+in a SQLite value but fatal in its PostgreSQL column. A number literal too large for a
+double, such as ``1e400``, is stored by jsonb, but the server refuses it at its store
+boundary. These helpers name such a value per column so the cross-backend copy loops
+skip its row. The tests of the index pre-checks pin two properties:
 
-* the payload budget is derived from the widest index each value feeds, so a value
-  that passes really is indexable (thread_id shares its tuple with the ``source`` and
+* each budget fits ``PG_BTREE_MAX_ITEM_BYTES`` under the byte model of
+  ``pg_prechecks``: thread_id shares its tuple with the ``source`` and
   ``content_hash`` columns of idx_context_entries_dedup_hash, while a tag and a
-  string-typed metadata field are indexed on their own);
+  string-typed metadata value get the larger budget. No test here checks against
+  PostgreSQL that a value at a budget is indexable;
 * a value under a ``METADATA_INDEXED_FIELDS`` key is checked against its field: a
-  string-typed value against the same ceiling as the field's ``idx_metadata_<field>``
-  expression index, and an integer-, float- or boolean-typed value against the
-  declared type, which an integer or boolean index also applies as a cast, an old id
-  stamped by ``--legacy-id-key`` included; array- and object-typed fields build no
-  expression index and are exempt.
+  string-typed value against that larger budget, and an integer-, float- or
+  boolean-typed value against the declared type, which an integer or boolean index
+  also applies as a cast, an old id stamped by ``--legacy-id-key`` included; array-
+  and object-typed fields build no expression index and are exempt.
 """
 
 import json
@@ -89,30 +88,27 @@ class TestNonFiniteJsonNumbers:
         """The recorded reason identifies the non-finite float so the row can be repaired."""
         reason = pg_unstorable_column_reason('{"score": 1e400}', is_jsonb=True)
         assert reason is not None
-        assert 'Non-finite float' in reason
+        assert 'Non-finite float inf ' in reason
 
 
-# Bytes an index tuple spends on things other than the checked payload, used by the
-# arithmetic assertions below: the MAXALIGNed IndexTupleData header with a null bitmap
-# (16) plus the long varlena header a text datum past 126 bytes carries (4).
+# The header bytes of the per-tuple reserve in pg_prechecks (16 + 4 of its 16 + 4 + 8,
+# without the 8 of slack), used by the arithmetic assertions below.
 _INDEX_TUPLE_HEADER_BYTES = 16 + 4
 
 
-# The trailing columns of idx_context_entries_dedup_hash(thread_id, source, content_hash):
-# 'agent' as a short-header varlena (6) and a 64-character SHA-256 hex string (65).
+# The bytes PG_MAX_INDEXED_THREAD_ID_BYTES reserves for the source and content_hash
+# columns of idx_context_entries_dedup_hash(thread_id, source, content_hash).
 _DEDUP_TRAILING_COLUMN_BYTES = 6 + 65
 
 
 class TestBtreeBudgets:
-    """The accepted payload sizes really fit the index tuples they land in."""
+    """The budgets fit PG_BTREE_MAX_ITEM_BYTES under the byte model of pg_prechecks."""
 
     def test_thread_id_budget_fits_the_dedup_index_tuple(self) -> None:
-        """A thread_id at the budget still fits idx_context_entries_dedup_hash.
+        """A thread_id at its budget, with the header and trailing-column bytes, fits PG_BTREE_MAX_ITEM_BYTES.
 
-        The base schema declares that index on (thread_id, source, content_hash), so the
-        thread_id payload shares its tuple with two more datums. A budget that accounts
-        only for the tuple header lets a value pass the guard and then abort the whole
-        run with ``index row size ... exceeds btree version 4 maximum 2704``.
+        The base schema declares idx_context_entries_dedup_hash on (thread_id, source,
+        content_hash), so the thread_id payload shares its tuple with two more datums.
         """
         widest_tuple = (
             _INDEX_TUPLE_HEADER_BYTES + PG_MAX_INDEXED_THREAD_ID_BYTES + _DEDUP_TRAILING_COLUMN_BYTES
@@ -120,11 +116,11 @@ class TestBtreeBudgets:
         assert widest_tuple <= PG_BTREE_MAX_ITEM_BYTES
 
     def test_single_column_budget_fits_its_index_tuple(self) -> None:
-        """A tag or string-typed metadata value at the budget fits its own index tuple."""
+        """A value at PG_MAX_INDEXED_VALUE_BYTES, with the header bytes, fits PG_BTREE_MAX_ITEM_BYTES."""
         assert _INDEX_TUPLE_HEADER_BYTES + PG_MAX_INDEXED_VALUE_BYTES <= PG_BTREE_MAX_ITEM_BYTES
 
     def test_thread_id_budget_is_the_narrower_one(self) -> None:
-        """thread_id gets less room than a value indexed on its own."""
+        """thread_id gets less room than a tag or a string-typed metadata value."""
         assert PG_MAX_INDEXED_THREAD_ID_BYTES < PG_MAX_INDEXED_VALUE_BYTES
 
     def test_boundary_values_are_accepted_and_rejected(self) -> None:
@@ -136,9 +132,9 @@ class TestBtreeBudgets:
             assert str(budget) in reason
 
     def test_multibyte_values_are_measured_in_utf8_bytes(self) -> None:
-        """A short string of wide code points can still exceed the byte budget."""
-        # Each code point encodes to 3 UTF-8 bytes, so half the budget in characters
-        # is one and a half budgets in bytes.
+        """A string within the budget in characters but over it in UTF-8 bytes is flagged."""
+        # Each code point encodes to 3 UTF-8 bytes, so a string of budget characters is
+        # three budgets in bytes.
         value = '中' * PG_MAX_INDEXED_THREAD_ID_BYTES
         assert pg_unindexable_column_reason(value, PG_MAX_INDEXED_THREAD_ID_BYTES) is not None
 
@@ -167,10 +163,10 @@ class TestIndexedMetadataFields:
         assert first_pg_unindexable_metadata_field(metadata) is None
 
     def test_array_and_object_fields_are_not_expression_indexed(self) -> None:
-        """The default ``references``/``technologies`` fields are served by the GIN index.
+        """The default ``references``/``technologies`` fields build no expression index.
 
         They are excluded from expression indexing on both backends, so a large value
-        under them is perfectly storable and must not cost the row its migration.
+        under them is not checked for width and does not cost the row its migration.
         """
         metadata = json.dumps(
             {

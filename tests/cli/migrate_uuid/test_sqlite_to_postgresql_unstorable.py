@@ -1,9 +1,9 @@
 """Regression tests for the SQLite->PostgreSQL unstorable-value pre-check.
 
 A NUL (U+0000) or unpaired UTF-16 surrogate is legal in a SQLite TEXT value but
-fatal on PostgreSQL: asyncpg rejects a NUL text bind (``CharacterNotInRepertoireError``,
-SQLSTATE 22021) and PostgreSQL's jsonb parser rejects the ``\\u0000`` escape the
-store path emits for a metadata NUL (SQLSTATE 22P05). A jsonb column has a third
+fatal on PostgreSQL: PostgreSQL refuses a NUL in a text value, and its jsonb parser
+rejects the ``\\u0000`` escape the store path emits for a metadata NUL (SQLSTATE
+22P05). A jsonb column has a third
 divergence class: a non-finite JSON number. ``json.loads`` accepts the non-standard
 tokens ``NaN``/``Infinity``/``-Infinity`` and silently turns a standard but overflowing
 literal such as ``1e400`` into ``inf``. The metadata rewriter cannot re-encode such a
@@ -11,10 +11,10 @@ value, so it keeps the source text verbatim, and attachment metadata is bound as
 source holds it. A verbatim ``NaN`` or ``Infinity`` token fails the ``::jsonb`` cast and,
 unscreened, aborts the whole cross-backend migration mid-transaction with only a raw
 driver error and no row identification. A verbatim ``1e400`` passes the cast, since jsonb
-stores a number as numeric, but the server refuses a non-finite number at its store
-boundary, so the target must not receive it either. These tests prove each such row is
-identified and skipped with an error, the run does not crash, and ``--dry-run`` surfaces
-the same rows without inserting.
+stores it as a JSON number, but the server refuses a non-finite number at its store
+boundary, and the pre-check skips it too. These tests prove each such row is identified
+and skipped with an error and the run does not crash; the ``--dry-run`` tests show the
+same rows reported and nothing written.
 
 The full-run tests drive the real ``run_migration_mixed_sqlite_to_postgresql``
 against a fake asyncpg target connection (the PostgreSQL probe helpers are patched
@@ -171,7 +171,7 @@ async def _run_with_fake_target(
 
 
 def _mixed_source_with_nul_rows(path: Path) -> None:
-    """Seed a source exercising every NUL guard plus the skipped-parent cascade."""
+    """Seed a source with a NUL in text_content, metadata, a tag and an image_metadata, plus children of a skipped parent."""
     _seed_source(
         path,
         entries=[
@@ -246,8 +246,7 @@ class TestSqliteToPostgresqlNulPrecheck:
 
     @pytest.mark.asyncio
     async def test_dry_run_surfaces_nul_rows_without_inserting(self, tmp_path: Path) -> None:
-        """--dry-run reports every unstorable row (restoring the preview guarantee) yet
-        writes nothing to the target."""
+        """--dry-run reports every unstorable row and writes nothing to the target."""
         source = tmp_path / 'nul_source_dry.db'
         _mixed_source_with_nul_rows(source)
 
@@ -256,6 +255,8 @@ class TestSqliteToPostgresqlNulPrecheck:
         errors = '\n'.join(stats.errors)
         assert 'context_entries row id=2' in errors
         assert 'context_entries row id=3' in errors
+        assert "tags row context_entry_id=1 column 'tag'" in errors
+        assert "image_attachments row context_entry_id=1 column 'image_metadata'" in errors
 
         # No write of any kind reaches the target under a dry run.
         assert all(not statement.startswith('INSERT') for statement in conn.statements())
@@ -313,8 +314,8 @@ class TestSqliteToPostgresqlNulPrecheck:
 
         content_hash is a plain TEXT column bound raw at the INSERT (no CHECK
         constraint on either backend). Left out of the unstorable-string pre-check
-        candidates, a NUL there would pass the pre-check and asyncpg would reject
-        the bind mid-transaction (CharacterNotInRepertoireError, SQLSTATE 22021),
+        candidates, a NUL there would pass the pre-check, and PostgreSQL, which
+        refuses a NUL in a text value, would reject the INSERT mid-transaction,
         rolling back the whole cross-backend migration with only the raw driver
         error and no row identification. The pre-check inspects content_hash, so
         the offending row is skipped and reported while the clean data migrates
@@ -358,7 +359,7 @@ class TestSqliteToPostgresqlNulPrecheck:
 
     @pytest.mark.asyncio
     async def test_dry_run_surfaces_content_hash_nul_row(self, tmp_path: Path) -> None:
-        """--dry-run identifies the content_hash-NUL row without inserting, restoring the preview."""
+        """--dry-run identifies the content_hash-NUL row without inserting."""
         source = tmp_path / 'content_hash_nul_source_dry.db'
         _seed_source(
             source,
@@ -476,6 +477,7 @@ class TestSqliteToPostgresqlNonFinitePrecheck:
         errors = '\n'.join(stats.errors)
         for row_id in (2, 3, 4):
             assert f'context_entries row id={row_id}' in errors
+        assert "image_attachments row context_entry_id=1 column 'image_metadata'" in errors
 
         assert all(not statement.startswith('INSERT') for statement in conn.statements())
         assert 'BEGIN' not in conn.statements()
@@ -484,7 +486,7 @@ class TestSqliteToPostgresqlNonFinitePrecheck:
 
 
 def _source_with_oversized_indexed_values(path: Path) -> None:
-    """Seed a source carrying values SQLite indexes but a PostgreSQL btree cannot."""
+    """Seed a source carrying a thread_id and a tag over their PostgreSQL index budgets."""
     _seed_source(
         path,
         entries=[
@@ -512,13 +514,10 @@ def _source_with_oversized_indexed_values(path: Path) -> None:
 
 
 class TestSqliteToPostgresqlIndexSizePrecheck:
-    """A legacy value SQLite indexed without limit must not abort the whole run.
+    """A legacy value over its PostgreSQL index budget is skipped, not fatal.
 
-    SQLite places no size limit on an indexed value, so a corpus predating the
-    write-path length caps can hold a thread_id or tag larger than the PostgreSQL
-    target's btree index-tuple budget. Bound straight into the target, that value
-    aborts the INSERT mid-transaction, ROLLBACKs every other row, and reports a raw
-    driver error naming no source row -- so it is screened per row instead, exactly
+    A corpus predating the write-path length caps can hold a thread_id or tag larger
+    than the PostgreSQL target's btree index-tuple budget, so it is screened per row,
     like the NUL/surrogate class.
     """
 
@@ -553,6 +552,8 @@ class TestSqliteToPostgresqlIndexSizePrecheck:
 
         stats, conn = await _run_with_fake_target(source, dry_run=True)
 
-        assert 'context_entries row id=2' in '\n'.join(stats.errors)
+        errors = '\n'.join(stats.errors)
+        assert 'context_entries row id=2' in errors
+        assert "tags row context_entry_id=1 column 'tag'" in errors
         assert all(not statement.startswith('INSERT') for statement in conn.statements())
         assert stats.rows_migrated == 1
