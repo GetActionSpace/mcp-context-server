@@ -375,5 +375,10 @@ def test_dry_run_into_an_empty_postgresql_target_counts_the_embeddings_the_real_
     ]
     missing = 'references missing context_id'
     assert _warnings_with(dry_report, missing) == _warnings_with(real_report, missing) == []
-    assert _warnings_with(dry_report, 'would be auto-initialized') != []
-    assert _warnings_with(dry_report, 'initialize the target schema first') == []
+    assert dry_report['warnings'] == [
+        'target PostgreSQL database has no context_entries table; it would be auto-initialized on a real run',
+        'row 1: metadata.references.context_ids[0] holds 2, the id of an entry this run skipped; not rewritten',
+        'row 3: metadata.references.context_ids[0] holds 2, the id of an entry this run skipped; not rewritten',
+        'embedding_metadata row context_id=2 skipped: parent context_entries row was skipped',
+        'vec_context_embeddings row context_id=2 skipped: parent context_entries row was skipped',
+    ]

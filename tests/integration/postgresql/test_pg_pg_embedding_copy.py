@@ -591,8 +591,8 @@ async def test_pg_pg_dry_run_counts_vectors_for_target_without_fp32_vec_table(
     """A dry run against an initialized target without the fp32 vec table counts the rows and writes nothing.
 
     The real run stops at the vector backstop, so the dry run warns that it would abort and counts the
-    source's vector rows through the id mapping as for a target that has the vector layout, with no
-    'initialize the target schema first' warning.
+    source's vector rows through the id mapping as for a target that has the vector layout. The backstop's
+    warning is its only warning.
     """
     await _seed_source_with_embeddings(isolated_pg_v2_source_db, n_docs=3)
     db_name = 'mcp_pg_pg_dryrun_no_fp32_vec'
@@ -623,10 +623,15 @@ async def test_pg_pg_dry_run_counts_vectors_for_target_without_fp32_vec_table(
         assert stats.rows_migrated == 3
         assert stats.embedding_metadata_migrated == 3
         assert stats.vec_rows_migrated == 3
-        assert any(
-            'vec_context_embeddings' in w and w.endswith('(a real run would abort)') for w in stats.warnings
-        )
-        assert not any('initialize the target schema first' in w for w in stats.warnings)
+        assert stats.warnings == [
+            (
+                'source has embeddings but the target lacks the fp32 vec_context_embeddings table (the target was likely '
+                'initialized with ENABLE_EMBEDDING_COMPRESSION=true or ENABLE_EMBEDDING_GENERATION=false). Re-create the '
+                'target with ENABLE_EMBEDDING_GENERATION=true and ENABLE_EMBEDDING_COMPRESSION=false (or let this CLI '
+                'auto-initialize an empty target), run the migration, then run --compress to enable compression. '
+                '(a real run would abort)'
+            ),
+        ]
 
         tgt = await asyncpg.connect(target_url)
         try:
@@ -646,8 +651,8 @@ async def test_pg_pg_dry_run_on_empty_target_reports_symmetric_counts(
 ) -> None:
     """A dry run against a bare target reports the counts the real run copies and writes nothing.
 
-    The embedding counter and the vector counter both report 3, with no 'initialize the target schema first' warning,
-    because a real run auto-initializes the target and copies every row.
+    The embedding counter and the vector counter both report 3, because a real run auto-initializes the target and
+    copies every row. The notice that the target would be auto-initialized is the only warning.
     """
     await _seed_source_with_embeddings(isolated_pg_v2_source_db, n_docs=3)
     db_name = 'mcp_pg_pg_dryrun_empty'
@@ -666,7 +671,9 @@ async def test_pg_pg_dry_run_on_empty_target_reports_symmetric_counts(
         # The dry run counts the embedding and vector rows the real run copies.
         assert stats.embedding_metadata_migrated == 3
         assert stats.vec_rows_migrated == 3
-        assert not any('initialize the target schema first' in w for w in stats.warnings)
+        assert stats.warnings == [
+            'target PostgreSQL database has no context_entries table; it would be auto-initialized on a real run',
+        ]
 
         # Dry-run wrote nothing: the bare target still has no context_entries table.
         tgt = await asyncpg.connect(target_url)
