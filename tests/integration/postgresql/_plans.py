@@ -39,11 +39,14 @@ def plan_nodes(node: object) -> list[dict[str, object]]:
 def sql_literal(value: object) -> str:
     """Render a bound argument of a captured statement as a SQL literal for ``EXECUTE``.
 
+    Only integers, strings and lists of them have a literal here.
+
     Returns:
-        The literal: an integer as written, a string quoted, a list of strings as a ``text[]`` array.
+        The literal: an integer as written, a string quoted, a list as a ``text[]`` array of its elements.
 
     Raises:
-        TypeError: When the value is a boolean or of a type the repositories do not bind.
+        TypeError: When the value, or an element of a list, is a boolean or of any other type,
+            the ``datetime`` the date-filtered search reads bind on PostgreSQL included.
     """
     if isinstance(value, bool):
         raise TypeError(f'no boolean argument is expected: {value!r}')
@@ -68,6 +71,9 @@ async def explain_custom(conn: AsyncpgConnection, statement: Captured) -> object
 
 async def explain_generic(conn: AsyncpgConnection, statement: Captured) -> object:
     """Plan the statement as a prepared statement held to its generic plan, then deallocate it.
+
+    The arguments reach ``EXECUTE`` as the literals :func:`sql_literal` renders, so a statement
+    binding a value it has no literal for fails with its ``TypeError`` before anything is prepared.
 
     Returns:
         The parsed ``EXPLAIN (VERBOSE, FORMAT JSON)`` document.

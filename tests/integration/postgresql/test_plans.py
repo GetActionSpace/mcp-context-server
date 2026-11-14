@@ -12,6 +12,8 @@ generic plan with the parameter ``$1``, which only a plan no argument value shap
 connection.
 """
 
+import datetime as dt
+
 import asyncpg
 import pytest
 
@@ -72,7 +74,14 @@ def test_sql_literal_renders_each_bound_argument(value: object, literal: str) ->
 
 
 @pytest.mark.parametrize(
-    'value', [pytest.param(True, id='bool'), pytest.param(1.5, id='float'), pytest.param(None, id='none')],
+    'value',
+    [
+        pytest.param(True, id='bool'),
+        pytest.param(1.5, id='float'),
+        pytest.param(None, id='none'),
+        pytest.param(dt.datetime(2026, 1, 1, tzinfo=dt.UTC), id='datetime'),
+        pytest.param(['team-x', True], id='list-with-bool'),
+    ],
 )
 def test_sql_literal_refuses_a_value_it_has_no_literal_for(value: object) -> None:
     with pytest.raises(TypeError):
