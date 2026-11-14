@@ -235,8 +235,8 @@ def test_reference_to_a_skipped_row_is_not_rewritten(
     assert loaded['legacy_id'] == {'key': 'legacy_id', 'stamped': 2, 'already_present': 0, 'not_stamped': 0}
     assert loaded['rows_migrated'] == 2
     assert row_warnings(loaded) == [
-        'row 1: metadata.references.context_ids[0] holds 2, the id of an entry this run skipped; preserved',
-        'row 3: metadata.references.context_ids[0] holds 2, the id of an entry this run skipped; preserved',
+        'row 1: metadata.references.context_ids[0] holds 2, the id of an entry this run skipped; not rewritten',
+        'row 3: metadata.references.context_ids[0] holds 2, the id of an entry this run skipped; not rewritten',
     ]
     errors = loaded['errors']
     assert isinstance(errors, list)
@@ -278,8 +278,8 @@ def test_a_row_is_skipped_by_the_metadata_it_would_store_once_rewritten(
         'references.context_ids': {'rewritten': 0, 'not_migrated': 1, 'kept': 0},
     }
     assert row_warnings(loaded) == [
-        'row 2: metadata.parent holds 1, the id of an entry this run skipped; preserved',
-        'row 3: metadata.references.context_ids[0] holds 2, the id of an entry this run skipped; preserved',
+        'row 2: metadata.parent holds 1, the id of an entry this run skipped; not rewritten',
+        'row 3: metadata.references.context_ids[0] holds 2, the id of an entry this run skipped; not rewritten',
     ]
     errors = [str(error) for error in loaded['errors']] if isinstance(loaded['errors'], list) else []
     assert len(errors) == 2

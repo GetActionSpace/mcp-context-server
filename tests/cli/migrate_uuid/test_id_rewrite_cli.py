@@ -174,7 +174,7 @@ class TestLegacyIdKey:
         assert isinstance(errors, list)
         assert len(errors) == 1
         assert str(errors[0]).startswith('row 5: metadata JSON parse failed')
-        assert str(errors[0]).endswith("so the old id was not stamped under 'legacy_id'")
+        assert str(errors[0]).endswith("; no id in it was rewritten, and the old id was not stamped under 'legacy_id'")
 
     def test_non_object_metadata_is_not_stamped(self, tmp_path: Path) -> None:
         """Metadata that is not an object cannot take a key, which is reported and makes the run fail."""

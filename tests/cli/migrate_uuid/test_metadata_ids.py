@@ -17,8 +17,8 @@ B = 'b' * 32
 C = 'c' * 32
 E = 'e' * 32
 MAPPING: dict[int, str] = {1: A, 2: B, 5: C, 7: E}
-SKIPPED_WORDING = 'the id of an entry this run skipped; preserved'
-NOT_MIGRATED_WORDING = 'which is not the id of a migrated entry; preserved'
+SKIPPED_WORDING = 'the id of an entry this run skipped; not rewritten'
+NOT_MIGRATED_WORDING = 'which is not the id of a migrated entry; not rewritten'
 
 
 def _rewriter(
@@ -321,7 +321,7 @@ class TestLegacyIdStamp:
         assert outcome.counts == {DEFAULT_ID_PATH: _counts()}
         assert len(outcome.errors) == 1
         assert outcome.errors[0].startswith('row 6: metadata JSON parse failed (')
-        assert outcome.errors[0].endswith("); preserved verbatim, so the old id was not stamped under 'legacy_id'")
+        assert outcome.errors[0].endswith("); no id in it was rewritten, and the old id was not stamped under 'legacy_id'")
 
     def test_unparseable_metadata_without_a_key_is_reported(self) -> None:
         """Text that does not parse is preserved verbatim with an error, and nothing is stamped."""
@@ -330,7 +330,7 @@ class TestLegacyIdStamp:
         assert outcome.stamp is None
         assert len(outcome.errors) == 1
         assert outcome.errors[0].startswith('row 6: metadata JSON parse failed (')
-        assert outcome.errors[0].endswith('); preserved verbatim')
+        assert outcome.errors[0].endswith('); no id in it was rewritten')
 
     @pytest.mark.parametrize(
         ('metadata', 'json_type'),
@@ -364,9 +364,7 @@ class TestReencode:
         assert outcome.metadata == '{"score": 1e400}'
         assert len(outcome.errors) == 1
         assert outcome.errors[0].startswith('row 1: metadata contains a number Python cannot round-trip as JSON (')
-        assert outcome.errors[0].endswith(
-            '); the original metadata is preserved verbatim and any ids inside it were NOT rewritten',
-        )
+        assert outcome.errors[0].endswith('); no id in it was rewritten')
 
     @pytest.mark.parametrize('metadata', ['{"score": Infinity}', '{"a": NaN}', '{"score": -Infinity}'])
     def test_non_standard_tokens_are_preserved(self, metadata: str) -> None:

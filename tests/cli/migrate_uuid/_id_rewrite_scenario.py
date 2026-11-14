@@ -59,7 +59,7 @@ SCENARIO_ROWS: list[dict[str, object]] = [
 
 # The one value the default path finds that names no source entry.
 NOT_MIGRATED_WARNING = (
-    'row 3: metadata.references.context_ids[2] holds 999, which is not the id of a migrated entry; preserved'
+    'row 3: metadata.references.context_ids[2] holds 999, which is not the id of a migrated entry; not rewritten'
 )
 
 
