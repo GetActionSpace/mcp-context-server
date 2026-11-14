@@ -1,4 +1,4 @@
-"""Tests for the SQLite copy helpers: embeddings, chunk internals and vec0 rowids survive the migration."""
+"""Tests for the SQLite copy helpers: free-form text, embeddings, chunk internals and vec0 rowids survive the migration."""
 
 import sqlite3
 from pathlib import Path
@@ -298,3 +298,50 @@ class TestPreBoundaryColumnSource:
             assert row['end_index'] == 0
         finally:
             tgt.close()
+
+
+class TestFreeFormColumnsUntouched:
+    """The rewrite reaches metadata only: numbers in free-form text columns are copied as written."""
+
+    def test_text_content_not_rewritten(
+        self,
+        legacy_source_db: Path,
+        new_target_db_path: Path,
+    ) -> None:
+        """text_content containing integer-style mentions is copied verbatim."""
+        options = build_sqlite_options(legacy_source_db, new_target_db_path)
+        stats = run_migration_sqlite_to_sqlite(options)
+        assert stats.rows_migrated == 3
+
+        src_conn = sqlite3.connect(str(legacy_source_db))
+        tgt_conn = sqlite3.connect(str(new_target_db_path))
+        try:
+            src_rows = [row[0] for row in src_conn.execute(
+                'SELECT text_content FROM context_entries ORDER BY created_at ASC, id ASC',
+            )]
+            tgt_rows = [row[0] for row in tgt_conn.execute(
+                'SELECT text_content FROM context_entries ORDER BY created_at ASC',
+            )]
+        finally:
+            src_conn.close()
+            tgt_conn.close()
+        assert tgt_rows == src_rows
+        assert any('8944' in (text or '') for text in tgt_rows)
+
+    def test_summary_not_rewritten(
+        self,
+        legacy_source_db: Path,
+        new_target_db_path: Path,
+    ) -> None:
+        """summary column is preserved byte-for-byte across migration."""
+        options = build_sqlite_options(legacy_source_db, new_target_db_path)
+        run_migration_sqlite_to_sqlite(options)
+        tgt_conn = sqlite3.connect(str(new_target_db_path))
+        try:
+            row = tgt_conn.execute(
+                "SELECT summary FROM context_entries WHERE summary LIKE '%8944%'",
+            ).fetchone()
+        finally:
+            tgt_conn.close()
+        assert row is not None
+        assert row[0] == 'A reply that mentions ID 8944 inline.'

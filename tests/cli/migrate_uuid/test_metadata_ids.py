@@ -1,10 +1,8 @@
 """Tests for the rewrite of entry ids at metadata paths and the stamp of a migrated entry's old id."""
 
 import json
-import sqlite3
 from collections.abc import Mapping
 from collections.abc import Sequence
-from pathlib import Path
 
 import pytest
 
@@ -13,8 +11,6 @@ from app.cli.migrate_uuid.id_paths import IdPath
 from app.cli.migrate_uuid.metadata_ids import MetadataIdRewriter
 from app.cli.migrate_uuid.records import IdPathCounts
 from app.cli.migrate_uuid.records import MetadataOutcome
-from app.cli.migrate_uuid.sqlite_to_sqlite import run_migration_sqlite_to_sqlite
-from tests.cli.migrate_uuid._sources import build_sqlite_options
 
 A = 'a' * 32
 B = 'b' * 32
@@ -413,50 +409,3 @@ class TestReencode:
         assert json.loads(outcome.metadata) == {'score': 1e300, 'name': 'café', 'a': [1, 2]}
         assert 'café' in outcome.metadata
         assert outcome.errors == []
-
-
-class TestFreeFormColumnsUntouched:
-    """The rewrite reaches metadata only: numbers in free-form text columns are copied as written."""
-
-    def test_text_content_not_rewritten(
-        self,
-        legacy_source_db: Path,
-        new_target_db_path: Path,
-    ) -> None:
-        """text_content containing integer-style mentions is copied verbatim."""
-        options = build_sqlite_options(legacy_source_db, new_target_db_path)
-        stats = run_migration_sqlite_to_sqlite(options)
-        assert stats.rows_migrated == 3
-
-        src_conn = sqlite3.connect(str(legacy_source_db))
-        tgt_conn = sqlite3.connect(str(new_target_db_path))
-        try:
-            src_rows = [row[0] for row in src_conn.execute(
-                'SELECT text_content FROM context_entries ORDER BY created_at ASC, id ASC',
-            )]
-            tgt_rows = [row[0] for row in tgt_conn.execute(
-                'SELECT text_content FROM context_entries ORDER BY created_at ASC',
-            )]
-        finally:
-            src_conn.close()
-            tgt_conn.close()
-        assert tgt_rows == src_rows
-        assert any('8944' in (text or '') for text in tgt_rows)
-
-    def test_summary_not_rewritten(
-        self,
-        legacy_source_db: Path,
-        new_target_db_path: Path,
-    ) -> None:
-        """summary column is preserved byte-for-byte across migration."""
-        options = build_sqlite_options(legacy_source_db, new_target_db_path)
-        run_migration_sqlite_to_sqlite(options)
-        tgt_conn = sqlite3.connect(str(new_target_db_path))
-        try:
-            row = tgt_conn.execute(
-                "SELECT summary FROM context_entries WHERE summary LIKE '%8944%'",
-            ).fetchone()
-        finally:
-            tgt_conn.close()
-        assert row is not None
-        assert row[0] == 'A reply that mentions ID 8944 inline.'
