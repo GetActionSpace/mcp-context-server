@@ -600,7 +600,7 @@ async def test_pg_pg_dry_run_counts_vectors_for_target_without_fp32_vec_table(
     try:
         setup = await asyncpg.connect(target_url)
         try:
-            # The same target shape as the backstop test: context_entries, no embedding tables.
+            # A pre-existing target with context_entries and no embedding tables.
             await setup.execute(
                 'CREATE TABLE context_entries ('
                 '  id UUID PRIMARY KEY, thread_id TEXT NOT NULL, source TEXT NOT NULL,'
