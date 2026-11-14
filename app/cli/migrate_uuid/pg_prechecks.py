@@ -43,12 +43,12 @@ def pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | N
     ``\\u0000`` escape to a real U+0000 the walker detects) plus the shared
     non-finite-number guard on that same decoded structure. For a ``jsonb`` column
     a value ``json.loads`` cannot parse is itself unstorable: the target binds it
-    through a ``$n::jsonb`` cast
-    that PostgreSQL rejects mid-transaction (SQLSTATE 22P02), aborting the whole
-    migration with no row identification -- the exact failure this pre-check
-    exists to convert into a skip-and-warn -- so malformed JSON returns a reason
-    rather than passing as storable. (A raw TEXT column has no such cast, so
-    unparseable content is not rejected there.)
+    through a ``$n::jsonb`` cast that PostgreSQL rejects mid-transaction
+    (SQLSTATE 22P02), aborting the whole migration with no row identification --
+    the exact failure this pre-check exists to convert into a per-row skip
+    recorded as an error -- so malformed JSON returns a reason rather than passing
+    as storable. (A raw TEXT column has no such cast, so unparseable content is
+    not rejected there.)
 
     Args:
         value: The raw SQLite column value (already serialized to a JSON string
@@ -98,8 +98,8 @@ def pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | N
 # Unchecked, such a value aborts the INSERT mid-transaction when the target already
 # carries idx_metadata_<field>, ROLLBACKs the entire run, and reports a raw driver error
 # naming no source row -- the exact failure the NUL/surrogate pre-check exists to convert
-# into a per-row skip-and-warn. On a target without that index, the INSERT succeeds and
-# the target's first server startup fails to build it.
+# into a per-row skip recorded as an error. On a target without that index, the INSERT
+# succeeds and the target's first server startup fails to build it.
 #
 # The budget is deliberately measured against the UNCOMPRESSED value. PostgreSQL
 # compresses an index attribute larger than 512 bytes in line, so a highly repetitive

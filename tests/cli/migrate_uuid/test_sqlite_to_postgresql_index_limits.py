@@ -3,9 +3,11 @@
 SQLite indexes a value of any size; PostgreSQL refuses an index tuple larger than
 BTMaxItemSize (2704 bytes on btree version 4). A legacy corpus predating the
 write-path length caps can therefore hold a thread_id, a tag, or an indexed metadata
-value the PostgreSQL target cannot index, and binding it aborts the INSERT
-mid-transaction, ROLLBACKs the whole run, and reports a raw driver error naming no
-source row. The pre-check converts that into a per-row skip-and-warn.
+value the PostgreSQL target cannot index. Binding such a thread_id or tag aborts the
+INSERT mid-transaction, ROLLBACKs the whole run, and reports a raw driver error naming
+no source row, and so does such a metadata value on a target that already carries its
+expression index. The pre-check turns that into a per-row skip, recorded as an error
+that names the row and the column, so the rest of the run completes and the run exits 1.
 
 The full-run tests drive the real ``run_migration_mixed_sqlite_to_postgresql`` against
 a fake asyncpg target connection (the PostgreSQL probe helpers are patched out), so no
