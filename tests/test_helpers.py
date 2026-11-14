@@ -197,7 +197,7 @@ async def test_records_every_asyncpg_statement_and_passes_everything_else_throug
         return [
             await recording.fetch('SELECT $1', 1),
             await recording.fetchrow('SELECT $1, $2', 2, 'b'),
-            await recording.fetchval('SELECT 3'),
+            await recording.fetchval('SELECT $1', 3),
             await recording.execute('SET LOCAL x = $1', 4),
             recording.transaction(),
             label,
@@ -210,10 +210,13 @@ async def test_records_every_asyncpg_statement_and_passes_everything_else_throug
     assert capturing.statements == [
         Captured('SELECT $1', (1,)),
         Captured('SELECT $1, $2', (2, 'b')),
-        Captured('SELECT 3', ()),
+        Captured('SELECT $1', (3,)),
         Captured('SET LOCAL x = $1', (4,)),
     ]
+    conn.fetch.assert_awaited_once_with('SELECT $1', 1)
     conn.fetchrow.assert_awaited_once_with('SELECT $1, $2', 2, 'b')
+    conn.fetchval.assert_awaited_once_with('SELECT $1', 3)
+    conn.execute.assert_awaited_once_with('SET LOCAL x = $1', 4)
 
 
 def test_importing_the_helpers_loads_neither_the_application_nor_its_settings() -> None:
