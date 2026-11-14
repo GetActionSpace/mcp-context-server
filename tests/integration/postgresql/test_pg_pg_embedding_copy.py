@@ -533,7 +533,7 @@ async def test_pg_pg_migration_aborts_when_target_lacks_fp32_vec_table(
 ) -> None:
     """Defensive backstop: source has embeddings but target lacks the fp32 vec table.
 
-    Simulates a pre-existing target initialized compression-on (or semantic-off):
+    Simulates a pre-existing target initialized compression-on:
     the migration MUST record an error and abort before writing any rows, never
     silently dropping the embeddings at exit 0.
     """
