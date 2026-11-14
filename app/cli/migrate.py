@@ -134,8 +134,8 @@ def build_parser() -> argparse.ArgumentParser:
             'ids: an integer, or a string holding an integer in the form JSON writes one ("7", '
             'not "007" or "+7"), that is the id of a migrated entry becomes its new id, and any '
             'other value is kept and counted per path in the summary. In metadata holding a number '
-            'Python cannot write back as JSON, no id is rewritten, nothing is counted and the run '
-            'reports an error. '
+            'Python cannot write back as JSON, no id is rewritten, no value is counted per path and '
+            'the run reports an error. '
             f'Default: {DEFAULT_ID_PATH}; paths you give replace it. Only for the v2->v3 migration.'
         ),
     )

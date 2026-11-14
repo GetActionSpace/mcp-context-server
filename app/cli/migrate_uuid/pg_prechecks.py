@@ -1,8 +1,9 @@
-"""Pre-flight checks for values a PostgreSQL target cannot store or that exceed the index budgets set here.
+"""Pre-flight checks of the values a migration is about to write to a PostgreSQL target.
 
-A source row whose text or JSON PostgreSQL rejects is reported before its INSERT
-would abort the run; a row whose indexed column exceeds the byte budget set here is
-reported and skipped too.
+A check returns a reason for a value a PostgreSQL target cannot take (a NUL, an unpaired
+surrogate, text the jsonb parser refuses), for a value the server refuses to store (a
+number read as non-finite, a value of another type than its indexed metadata field
+declares) and for a value over an index byte budget set here.
 """
 
 import json
@@ -17,7 +18,7 @@ from app.metadata_types import unstorable_string_error
 
 
 def pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | None:
-    """Return why a SQLite value cannot be stored on the PostgreSQL target, else None.
+    """Return the reason a PostgreSQL target cannot take a SQLite value or the server refuses to store it, else None.
 
     An embedded NUL (U+0000) or unpaired UTF-16 surrogate is legal in a SQLite
     TEXT value but fatal on PostgreSQL: PostgreSQL refuses a NUL in a text value,
@@ -244,17 +245,16 @@ def first_pg_unindexable_metadata_field(metadata_json: str | None) -> tuple[str,
 def first_pg_unstorable_column(
     columns: Iterable[tuple[str, str | None, bool]],
 ) -> tuple[str, str] | None:
-    """Return the first ``(column, reason)`` a PostgreSQL target cannot store, else None.
+    """Return the first ``(column, reason)`` that :func:`pg_unstorable_column_reason` reports, else None.
 
     Each candidate is a ``(name, value, is_jsonb)`` triple. Columns are checked in
-    the given order and the first offending one short-circuits, so a caller can
-    identify the exact column that would abort the row's INSERT on PostgreSQL.
+    the given order, and the first one with a reason is returned.
 
     Args:
         columns: Ordered ``(column_name, value, is_jsonb)`` candidates for one row.
 
     Returns:
-        The ``(column_name, reason)`` of the first unstorable column, else None.
+        The ``(column_name, reason)`` of the first column with a reason, else None.
     """
     for name, value, is_jsonb in columns:
         reason = pg_unstorable_column_reason(value, is_jsonb=is_jsonb)
