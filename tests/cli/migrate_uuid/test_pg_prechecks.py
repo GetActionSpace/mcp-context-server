@@ -4,16 +4,19 @@ A NUL (U+0000), an unpaired UTF-16 surrogate or a non-finite JSON number is lega
 a SQLite value but fatal in its PostgreSQL column, and SQLite indexes a value of any
 size while PostgreSQL refuses an index tuple larger than BTMaxItemSize (2704 bytes on
 btree version 4). These helpers name such a value per column so the cross-backend
-copy loops skip its row instead of aborting the run. The index-size tests pin two
-properties:
+copy loops skip its row instead of aborting the run. The tests of the index pre-checks
+pin two properties:
 
 * the payload budget is derived from the widest index each value feeds, so a value
   that passes really is indexable (thread_id shares its tuple with the ``source`` and
   ``content_hash`` columns of idx_context_entries_dedup_hash, while a tag and a
   string-typed metadata field are indexed on their own);
-* every column the target schema indexes is covered, including the values stored
-  under string-typed ``METADATA_INDEXED_FIELDS`` keys, whose expression index
-  ``idx_metadata_<field>`` carries the same ceiling.
+* a value under a ``METADATA_INDEXED_FIELDS`` key is checked against its field: a
+  string-typed value against the same ceiling as the field's ``idx_metadata_<field>``
+  expression index, and an integer-, float- or boolean-typed value against the
+  declared type, which an integer or boolean index also applies as a cast, an old id
+  stamped by ``--legacy-id-key`` included; array- and object-typed fields build no
+  expression index and are exempt.
 """
 
 import json
