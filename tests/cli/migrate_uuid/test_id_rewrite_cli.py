@@ -116,6 +116,15 @@ class TestRewriteAtPaths:
             DEFAULT_ID_PATH: {'rewritten': 1, 'not_migrated': 0, 'kept': 0},
         }
 
+    def test_a_file_name_in_place_of_a_path_finds_nothing(self, scenario_source: Path, tmp_path: Path) -> None:
+        """``links.md``, the name a shell puts in place of an unquoted ``links.*``, exits 0 with zero counts."""
+        target, report = tmp_path / 'target.db', tmp_path / 'report.json'
+
+        assert _migrate(scenario_source, target, report, '--dry-run', '--rewrite-ids-at', 'links.md') == 0
+
+        assert not target.exists()
+        assert _report(report)['id_paths'] == {'links.md': {'rewritten': 0, 'not_migrated': 0, 'kept': 0}}
+
 
 class TestLegacyIdKey:
     """The stamp of each migrated entry's old id."""
@@ -215,6 +224,8 @@ class TestOptionValidation:
             (['--legacy-id-key', 'legacy_id', '--compress'], IN_PLACE_REFUSAL),
             (['--legacy-id-key', 'legacy_id', '--embed-missing'], IN_PLACE_REFUSAL),
             (['--rewrite-ids-at', 'links.*', '--reassign-owner', 'a', 'b'], IN_PLACE_REFUSAL),
+            # The words a shell passes for an unquoted links.* when two files match it.
+            (['--rewrite-ids-at', 'links.md', 'links.txt'], 'unrecognized arguments: links.txt'),
             *[
                 (['--rewrite-ids-at', path], f"argument --rewrite-ids-at: '{path}' has an empty key")
                 for path in ('', '.a', 'a.', 'a..b')

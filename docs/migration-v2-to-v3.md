@@ -144,7 +144,7 @@ mcp-context-server-migrate \
   --dry-run --report report.json
 ```
 
-Put each path in single quotes, as above, so the shell passes it to the CLI unchanged. Outside quotes, a `*` is a shell wildcard: zsh and fish stop with an error before the CLI starts, and bash replaces the path with the names of the files in the current directory that match it, when there are any (`links.md` for `links.*`). The CLI then receives a path that finds nothing, and the run exits 0 with zero counts for it. In PowerShell, single quotes pass a path unchanged too. In cmd, write the paths without quotes: cmd passes a `*` to the CLI unchanged, while it keeps single quotes as part of the path.
+Put each path in single quotes, as above, so the shell passes it to the CLI unchanged. Outside quotes, a `*` is a shell wildcard, and bash, zsh and fish all replace the path with the names of the files in the current directory that match it. With one matching file (`links.md` for `links.*`), the CLI receives a path that finds nothing, and the run exits 0 with zero counts for it. With two or more, the CLI receives each further name as an argument of its own and exits with status 2 on an unrecognized argument. When no file matches, zsh and fish stop with an error before the CLI starts, and bash passes the path unchanged. In PowerShell, single quotes pass a path unchanged too. In cmd, write the paths without quotes: cmd passes a `*` to the CLI unchanged, while it keeps single quotes as part of the path.
 
 #### Stamping the Old Id
 
