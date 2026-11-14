@@ -295,3 +295,65 @@ def test_dry_run_matches_real_run(direction: Direction, tmp_path: Path, create_d
     assert row_warnings(real_report) != []
     assert row_warnings(dry_report) == row_warnings(real_report)
     assert real_report['rows_migrated'] == (2 if to_postgresql else len(SCENARIO_ROWS))
+
+
+async def _seed_pg_embeddings(url: str, old_ids: list[int]) -> None:
+    """Give each named entry of a seeded PostgreSQL source one embedding_metadata row and one vector."""
+    conn = await asyncpg.connect(url)
+    try:
+        await conn.execute('CREATE EXTENSION IF NOT EXISTS vector')
+        await conn.execute(
+            'CREATE TABLE embedding_metadata ('
+            '  context_id BIGINT NOT NULL PRIMARY KEY, model_name TEXT NOT NULL, dimensions INTEGER NOT NULL,'
+            '  chunk_count INTEGER NOT NULL DEFAULT 1,'
+            '  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,'
+            '  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);'
+            'CREATE TABLE vec_context_embeddings ('
+            '  id BIGSERIAL PRIMARY KEY, context_id BIGINT NOT NULL, embedding vector(3),'
+            '  start_index INTEGER NOT NULL DEFAULT 0, end_index INTEGER NOT NULL DEFAULT 0);',
+        )
+        for old_id in old_ids:
+            await conn.execute(
+                "INSERT INTO embedding_metadata (context_id, model_name, dimensions) VALUES ($1, 'fake-model', 3)",
+                old_id,
+            )
+            await conn.execute(
+                "INSERT INTO vec_context_embeddings (context_id, embedding, end_index) VALUES ($1, '[0.1,0.2,0.3]', 7)",
+                old_id,
+            )
+    finally:
+        await conn.close()
+
+
+def _warnings_with(report: dict[str, object], text: str) -> list[str]:
+    """Return the warnings of a report that contain ``text``."""
+    warnings = report['warnings']
+    assert isinstance(warnings, list)
+    return [str(message) for message in warnings if text in str(message)]
+
+
+def test_dry_run_into_an_empty_postgresql_target_counts_the_embeddings_the_real_run_copies(
+    tmp_path: Path, create_database: CreateDatabase,
+) -> None:
+    """A dry run into a target the real run initializes leaves out a skipped entry's embeddings, as the real run does."""
+    direction: Direction = 'postgresql_to_postgresql'
+    endpoints = _Endpoints(direction, _rows_with_a_skipped_entry(direction), tmp_path, create_database)
+    asyncio.run(_seed_pg_embeddings(endpoints.source_url, [1, 2]))
+    dry, real = tmp_path / 'dry.json', tmp_path / 'real.json'
+
+    assert endpoints.migrate(dry, '--dry-run') == 1
+    assert endpoints.target_written() is False
+    assert endpoints.migrate(real) == 1
+
+    dry_report, real_report = _report(dry), _report(real)
+    assert real_report['embedding_metadata_migrated'] == 1
+    assert real_report['vec_rows_migrated'] == 1
+    for key in ('rows_migrated', 'embedding_metadata_migrated', 'vec_rows_migrated', 'errors'):
+        assert dry_report[key] == real_report[key], key
+    missing = 'references missing context_id'
+    assert _warnings_with(dry_report, missing) == _warnings_with(real_report, missing) == [
+        'embedding_metadata row references missing context_id=2; skipped',
+        'vec_context_embeddings row references missing context_id=2; skipped',
+    ]
+    assert _warnings_with(dry_report, 'would be auto-initialized') != []
+    assert _warnings_with(dry_report, 'initialize the target schema first') == []

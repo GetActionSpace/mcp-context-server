@@ -111,7 +111,7 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
         # The vector table is detected INDEPENDENTLY of embedding_metadata: a source can
         # carry the metadata table without a vec_context_embeddings table (e.g. semantic
         # search was provisioned but never populated, or the vec table was dropped). The
-        # vector copy and its dry-run COUNT must gate on THIS, not on embedding_metadata,
+        # vector copy must gate on THIS, not on embedding_metadata,
         # or `SELECT ... FROM vec_context_embeddings` crashes the whole migration -- the
         # SQLite path already detects the vec table separately.
         source_has_vec = await pg_table_exists(source_conn, 'vec_context_embeddings')
@@ -407,41 +407,31 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                     'target afterward). Metadata rows are still migrated.',
                 )
             if source_has_embeddings:
-                if options.dry_run and not target_initialized:
-                    # The target would be auto-initialized on a real run, so its
-                    # vec_context_embeddings table does not exist yet. Report
-                    # symmetric would-migrate counts straight from the source
-                    # instead of letting copy_vec_embeddings_pg emit a
-                    # contradictory "initialize the target schema first" warning
-                    # with vec_rows_migrated=0 (which would falsely imply the
-                    # embeddings are lost). Mirrors the SQLite dry-run, which
-                    # previews against an initialized target.
-                    stats.embedding_metadata_migrated = int(
-                        await source_conn.fetchval('SELECT COUNT(*) FROM embedding_metadata') or 0,
-                    )
-                    if source_has_vec:
-                        stats.vec_rows_migrated = int(
-                            await source_conn.fetchval('SELECT COUNT(*) FROM vec_context_embeddings') or 0,
-                        )
-                else:
-                    # A skipped parent's embedding rows are excluded the same way its
-                    # tags and attachments are: the copies resolve their parent through
-                    # this mapping, so dropping the skipped ids from it turns an FK
-                    # violation that would abort the run into their own skip-and-warn.
-                    embedding_id_mapping = {
-                        source_key: target_key
-                        for source_key, target_key in id_mapping.items()
-                        if source_key not in pg_skipped_context_ids
-                    }
-                    await copy_embedding_metadata_pg(
+                # A skipped parent's embedding rows are excluded the same way its
+                # tags and attachments are: the copies resolve their parent through
+                # this mapping, so dropping the skipped ids from it turns an FK
+                # violation that would abort the run into their own skip-and-warn.
+                embedding_id_mapping = {
+                    source_key: target_key
+                    for source_key, target_key in id_mapping.items()
+                    if source_key not in pg_skipped_context_ids
+                }
+                # A dry run against a target the real run auto-initializes counts
+                # through the same mapping, so it reports the rows, skips and warnings
+                # of that run; the copies then take the target as the auto-init builds
+                # it instead of probing tables that do not exist yet.
+                target_has_schema = target_initialized or not options.dry_run
+                await copy_embedding_metadata_pg(
+                    source_conn, target_conn, embedding_id_mapping, stats, options.dry_run,
+                    target_has_schema=target_has_schema,
+                )
+                # Gate the vector copy on the SOURCE vec table (copy_vec_embeddings_pg
+                # reads FROM vec_context_embeddings, which would crash if absent).
+                if source_has_vec:
+                    await copy_vec_embeddings_pg(
                         source_conn, target_conn, embedding_id_mapping, stats, options.dry_run,
+                        target_has_schema=target_has_schema,
                     )
-                    # Gate the vector copy on the SOURCE vec table (copy_vec_embeddings_pg
-                    # reads FROM vec_context_embeddings, which would crash if absent).
-                    if source_has_vec:
-                        await copy_vec_embeddings_pg(
-                            source_conn, target_conn, embedding_id_mapping, stats, options.dry_run,
-                        )
 
             if not options.dry_run:
                 await target_conn.execute('COMMIT')
