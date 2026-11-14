@@ -171,7 +171,7 @@ def first_pg_unindexable_metadata_field(metadata_json: str | None) -> tuple[str,
     first server startup (which creates the index) when the CLI initialized the target
     itself. A source can also hold a value over the width budget below, or a value of
     another type than the field declares, which the running server refuses to store.
-    Each is checked, in the order it would fail:
+    Each is checked by the field's type hint:
 
     * WIDTH, for a ``string``-typed field, against :data:`PG_MAX_INDEXED_VALUE_BYTES`,
       the budget a tag also gets. The width is measured on the text the expression

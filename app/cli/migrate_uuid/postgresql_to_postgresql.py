@@ -59,10 +59,13 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
         target_conn = await pg_connect(options.target_url)
         await source_conn.execute('BEGIN TRANSACTION READ ONLY')
 
-        # Bind the configured POSTGRESQL_SCHEMA EXPLICITLY for every TARGET probe so they
-        # inspect the schema the migration will WRITE to even before it is created --
-        # current_schema() would fall back to public and mis-resolve a non-default schema
-        # (false abort, or silent wrong-schema copy). See target_pg_has_data.
+        # Bind the configured POSTGRESQL_SCHEMA EXPLICITLY for the two TARGET probes that can
+        # run before that schema exists, the data check and the context_entries probe, so
+        # they inspect the schema the migration will WRITE to -- current_schema() would fall
+        # back to public and mis-resolve a non-default schema (false abort, or silent
+        # wrong-schema copy). See target_pg_has_data. The FTS probe binds it too. The vec
+        # table backstop and the embedding copies probe through current_schema(), and only
+        # after context_entries was found in, or created in, the configured schema.
         from app.settings import get_settings
         target_schema = get_settings().storage.postgresql_schema
 
@@ -197,8 +200,8 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
 
         # Defensive backstop (never silently drop embeddings): a PRE-EXISTING
         # target that has context_entries but lacks the fp32 vec_context_embeddings
-        # table (e.g. initialized with compression enabled or semantic search
-        # disabled) cannot receive the source's embeddings -- refuse rather than
+        # table (e.g. initialized with compression enabled or embedding
+        # generation disabled) cannot receive the source's embeddings -- refuse rather than
         # discard them. Skipped when the target was just auto-initialized
         # (target_initialized is False): a real run already created the fp32 vec
         # table via initialize_target_postgresql, and a dry run reports the
@@ -210,8 +213,8 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                     'source has embeddings but the target lacks the fp32 '
                     'vec_context_embeddings table (the target was likely '
                     'initialized with ENABLE_EMBEDDING_COMPRESSION=true or '
-                    'ENABLE_SEMANTIC_SEARCH=false). Re-create the target with '
-                    'ENABLE_SEMANTIC_SEARCH=true and ENABLE_EMBEDDING_COMPRESSION=false '
+                    'ENABLE_EMBEDDING_GENERATION=false). Re-create the target with '
+                    'ENABLE_EMBEDDING_GENERATION=true and ENABLE_EMBEDDING_COMPRESSION=false '
                     '(or let this CLI auto-initialize an empty target), run the '
                     'migration, then run --compress to enable compression.'
                 )
@@ -260,14 +263,15 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
             )
             # The metadata expression indexes are deliberately absent from the PostgreSQL
             # base schema (a database this CLI initialized has none until its first server
-            # startup), so a PostgreSQL SOURCE can legitimately hold a value over the budget
-            # of the TARGET's idx_metadata_<field>, or one an integer or boolean index's
-            # cast rejects. Unchecked, a value the cast rejects aborts the INSERT
-            # mid-transaction and rolls the whole run back with a raw driver error naming
-            # no source row when the target already carries idx_metadata_<field>; on a
-            # target without it, the INSERT succeeds and the target's first server start
-            # fails to build that index. The same check skips a value that does not parse
-            # as a float-typed field's declared type, which the server refuses to store.
+            # startup), so a PostgreSQL SOURCE can hold an indexed metadata value the cast of
+            # an integer or boolean idx_metadata_<field> rejects. Unchecked, such a value
+            # aborts the INSERT mid-transaction and rolls the whole run back with a raw
+            # driver error naming no source row when the target already carries
+            # idx_metadata_<field>; on a target without it, the INSERT succeeds and the
+            # target's first server start fails to build that index. The same check skips a
+            # string-typed value over the pre-check's budget, PG_MAX_INDEXED_VALUE_BYTES, and
+            # a value that does not parse as a float-typed field's declared type, which the
+            # server refuses to store.
             # thread_id and tags get no equivalent check here: their indexes ARE in the
             # base schema, so the source already holds those values in btree indexes.
             # Checked unconditionally so --dry-run surfaces the row too.
@@ -290,11 +294,13 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
             # The metadata stored below differs from the metadata checked above only where
             # a value cites a skipped entry and stays as written instead of becoming a
             # 32-character id. Such a value passes every check the id passed: an id fails
-            # the integer, float and boolean casts, so a passing one sits under an untyped
-            # top-level key, under an array- or object-typed one, which is exempt and has no
-            # check, or under a string-typed one, where the shorter original fits too. So
-            # each row is stored as checked, and its skip is taken from the first pass,
-            # never decided again.
+            # the integer and boolean checks, and fails the float check unless it reads as a
+            # decimal number (digits only, or digits around one 'e'), so a passing one sits
+            # under an untyped top-level key, under an array- or object-typed one, which is
+            # exempt and has no check, under a string-typed one, where the shorter original
+            # fits too, or under a float-typed one, where the original passes too. So each
+            # row is stored as checked, and its skip is taken from the first pass, never
+            # decided again.
             for entry in entry_rows:
                 source_id = int(entry['id'])
                 new_id = id_mapping[source_id]
