@@ -1,10 +1,10 @@
 """Tests for the PostgreSQL storability and index-size pre-check helpers.
 
 A NUL (U+0000), an unpaired UTF-16 surrogate or a ``NaN``/``Infinity`` token is legal
-in a SQLite value but fatal in its PostgreSQL column. A number literal too large for a
-double, such as ``1e400``, is stored by jsonb, but the server refuses it at its store
-boundary. These helpers name such a value per column so the cross-backend copy loops
-skip its row. The tests of the index pre-checks pin two properties:
+in a SQLite value but fatal in its PostgreSQL column. ``1e400``, a number with an
+exponent too large for a double that ``json.loads`` reads as ``inf``, is stored by
+jsonb, but the server refuses it at its store boundary. These helpers name such a
+value per column so the cross-backend copy loops skip its row. The tests of the index pre-checks pin two properties:
 
 * each budget fits ``PG_BTREE_MAX_ITEM_BYTES`` under the byte model of
   ``pg_prechecks``: thread_id shares its tuple with the ``source`` and
@@ -68,6 +68,7 @@ class TestNonFiniteJsonNumbers:
         'metadata_json',
         [
             '{"score": 1e400}',        # standard JSON that json.loads turns into inf
+            '{"score": 1' + '0' * 400 + '.0}',  # a fraction too large for a double, also inf
             '{"score": Infinity}',     # non-standard token json.loads accepts
             '{"score": -Infinity}',
             '{"a": NaN}',
@@ -79,9 +80,10 @@ class TestNonFiniteJsonNumbers:
         assert pg_unstorable_column_reason(metadata_json, is_jsonb=True) is not None
 
     def test_finite_numbers_and_clean_json_pass(self) -> None:
-        """Ordinary finite numbers stay storable."""
+        """Finite numbers stay storable, a 401-digit integer included, which ``json.loads`` reads as an exact int."""
         assert pg_unstorable_column_reason('{"score": 1.5}', is_jsonb=True) is None
         assert pg_unstorable_column_reason('{"score": 1e300}', is_jsonb=True) is None
+        assert pg_unstorable_column_reason('{"score": 1' + '0' * 400 + '}', is_jsonb=True) is None
         assert pg_unstorable_column_reason('{"a": [1, 2, 3]}', is_jsonb=True) is None
 
     def test_message_names_the_offending_value(self) -> None:

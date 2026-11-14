@@ -5,12 +5,13 @@ fatal on PostgreSQL: PostgreSQL refuses a NUL in a text value, and its jsonb par
 rejects the ``\\u0000`` escape the store path emits for a metadata NUL (SQLSTATE
 22P05). A jsonb column has a third
 divergence class: a non-finite JSON number. ``json.loads`` accepts the non-standard
-tokens ``NaN``/``Infinity``/``-Infinity`` and silently turns a standard but overflowing
-literal such as ``1e400`` into ``inf``. The metadata rewriter cannot re-encode such a
-value, so it keeps the source text verbatim, and attachment metadata is bound as the
-source holds it. A verbatim ``NaN`` or ``Infinity`` token fails the ``::jsonb`` cast and,
-unscreened, aborts the whole cross-backend migration mid-transaction with only a raw
-driver error and no row identification. A verbatim ``1e400`` passes the cast, since jsonb
+tokens ``NaN``/``Infinity``/``-Infinity`` and silently turns a standard literal with a
+fraction or an exponent that is too large for a double, such as ``1e400``, into ``inf``.
+The metadata rewriter cannot re-encode such a value, so it keeps the source text
+verbatim, and attachment metadata is bound as the source holds it. A verbatim ``NaN``
+or ``Infinity`` token fails the ``::jsonb`` cast and, unscreened, aborts the whole
+cross-backend migration mid-transaction with only a raw driver error and no row
+identification. A verbatim ``1e400`` passes the cast, since jsonb
 stores it as a JSON number, but the server refuses a non-finite number at its store
 boundary, and the pre-check skips it too. These tests show a row holding a NUL, a
 ``\\u0000`` escape, malformed JSON, ``1e400``, ``Infinity`` or ``NaN``, or an over-budget
