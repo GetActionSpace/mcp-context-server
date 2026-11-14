@@ -29,17 +29,24 @@ from app.cli.migrate_uuid.target_rows import access_backfill_values
 def _pg_skip_reason(row: sqlite3.Row, metadata: str | None) -> tuple[str, str] | None:
     """Return why the PostgreSQL target cannot accept a source entry row, or None.
 
-    A NUL (U+0000) or unpaired UTF-16 surrogate is legal in a SQLite TEXT value but fatal
-    on the PostgreSQL target: unchecked, the asyncpg bind raises mid-transaction, rolls the
-    whole run back, and reports only the raw driver error with no row identification. The
-    other SQLite-accepts, PostgreSQL-rejects class is a value SQLite indexed happily but
-    the target's btree cannot hold. Only the columns the target schema itself indexes are
-    checked for that; text_content and summary are unindexed and may be arbitrarily large.
-    Every METADATA_INDEXED_FIELDS key of the metadata bound into the target is indexed by
-    the expression index idx_metadata_<field>, under the same btree ceiling for a
-    string-typed field, and a typed one holds only values of its declared type (a hard SQL
-    cast for integer and boolean). The check runs on a dry run too, so it surfaces every
-    affected row before a real run.
+    SQLite accepts three classes of value the PostgreSQL target refuses. Unchecked, each
+    makes the INSERT raise mid-transaction, which rolls the whole run back and reports only
+    the raw driver error with no row identification:
+
+    1. A NUL (U+0000) or unpaired UTF-16 surrogate in any column.
+    2. jsonb metadata that is not valid JSON, that decodes to a NUL or an unpaired
+       surrogate through an escape such as ``\\u0000``, or that holds a non-finite number: ``NaN``,
+       ``Infinity``, or a literal too large for a double such as ``1e400``, which the
+       rewriter cannot re-encode and so keeps verbatim.
+    3. A value an index of the target cannot hold. thread_id leads a btree whose tuple
+       width is bounded; text_content and summary are unindexed and may be arbitrarily
+       large. A string-, integer-, boolean- or float-typed METADATA_INDEXED_FIELDS key gets
+       the expression index idx_metadata_<field>, which the target holds once the server
+       has started on it: a string-typed value is bounded by the same btree width, and a
+       typed one must parse as its declared type (a hard SQL cast for integer and
+       boolean). Array- and object-typed fields build no expression index and are exempt.
+
+    The check runs on a dry run too, so it surfaces every affected row before a real run.
 
     Args:
         row: The source ``context_entries`` row.
