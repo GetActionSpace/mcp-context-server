@@ -27,7 +27,7 @@ from app.cli.migrate_uuid.target_rows import access_backfill_values
 
 
 def _pg_skip_reason(row: sqlite3.Row, metadata: str | None) -> tuple[str, str] | None:
-    """Return why the PostgreSQL target cannot accept a source entry row, or None.
+    """Return why a source entry row is skipped on its way to the PostgreSQL target, or None.
 
     SQLite accepts five classes of value that this check keeps from the PostgreSQL target,
     and the row is skipped on the first one found:
@@ -68,7 +68,7 @@ def _pg_skip_reason(row: sqlite3.Row, metadata: str | None) -> tuple[str, str] |
         metadata: The metadata text the target would store for it.
 
     Returns:
-        The column and the reason of the first value the target cannot accept, or None.
+        The column and the reason of the first value that skips the row, or None.
     """
     thread_id = row['thread_id']
     return first_pg_unstorable_column(
@@ -209,12 +209,10 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                 if skip_reason is not None:
                     skip_reasons[source_id] = skip_reason
             storing_rewriter = rewriter.excluding(skip_reasons.keys())
-            # Source ids of context_entries rows skipped for a PostgreSQL-unstorable
-            # value. Their tags/image_attachments children must be skipped too: the
-            # parent id stays in id_mapping (so the orphan-FK check would not catch
-            # them), and inserting a child that references a never-inserted parent
-            # would raise an FK violation on PostgreSQL -- relocating the very abort
-            # this guard prevents.
+            # Source ids of the skipped context_entries rows. Their tags/image_attachments
+            # children must be skipped too: the parent id stays in id_mapping (so the
+            # orphan-FK check would not catch them), and inserting a child that references
+            # a never-inserted parent would raise an FK violation on PostgreSQL.
             skipped_context_ids = set(skip_reasons)
             # The metadata stored below differs from the metadata checked above only where
             # a value cites a skipped entry and stays as written instead of becoming a

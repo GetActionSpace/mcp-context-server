@@ -1,8 +1,8 @@
-"""Pre-flight checks for values a PostgreSQL target cannot store or that exceed its index budgets.
+"""Pre-flight checks for values a PostgreSQL target cannot store or that exceed the index budgets set here.
 
-A source row whose text or JSON PostgreSQL rejects is reported before the INSERT
-would abort the run, and so is a row whose indexed column exceeds the byte budget
-set here.
+A source row whose text or JSON PostgreSQL rejects is reported before its INSERT
+would abort the run; a row whose indexed column exceeds the byte budget set here is
+reported and skipped too.
 """
 
 import json
@@ -20,8 +20,8 @@ def pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | N
     """Return why a SQLite value cannot be stored on the PostgreSQL target, else None.
 
     An embedded NUL (U+0000) or unpaired UTF-16 surrogate is legal in a SQLite
-    TEXT value but fatal on PostgreSQL: PostgreSQL refuses a NUL in a text value
-    (SQLSTATE 54000), and an unpaired surrogate is not UTF-8-encodable at all. A
+    TEXT value but fatal on PostgreSQL: PostgreSQL refuses a NUL in a text value,
+    and an unpaired surrogate is not UTF-8-encodable at all. A
     ``jsonb`` column has a second failure mode -- the store path serializes a
     metadata NUL as the JSON escape ``\\u0000`` (six
     ASCII characters, not a literal byte), which passes the raw-string check yet
@@ -126,8 +126,7 @@ def pg_unindexable_column_reason(value: str | None, max_bytes: int) -> str | Non
             :data:`PG_MAX_INDEXED_VALUE_BYTES` for a tag or a string-typed metadata value.
 
     Returns:
-        A reason string when the encoded value exceeds the index-tuple budget,
-        else None.
+        A reason string when the encoded value exceeds ``max_bytes``, else None.
     """
     if value is None:
         return None
@@ -135,10 +134,9 @@ def pg_unindexable_column_reason(value: str | None, max_bytes: int) -> str | Non
     if encoded_bytes <= max_bytes:
         return None
     return (
-        f'the value is {encoded_bytes} UTF-8 bytes, which exceeds the PostgreSQL btree '
-        f'index-tuple budget of {max_bytes} bytes for this indexed '
-        f'column; SQLite indexes it without a size limit, so this row is skipped -- shorten '
-        f'the value in the source database and rerun to migrate it'
+        f"the value is {encoded_bytes} UTF-8 bytes, over the pre-check's budget of {max_bytes} "
+        f'bytes for this indexed column, so this row is skipped -- shorten the value in the '
+        f'source database and rerun to migrate it'
     )
 
 
