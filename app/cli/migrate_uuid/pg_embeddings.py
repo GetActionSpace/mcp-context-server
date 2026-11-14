@@ -119,10 +119,10 @@ async def copy_vec_embeddings_pg(
 ) -> None:
     """Copy ``vec_context_embeddings`` rows from a PostgreSQL source to a PostgreSQL target.
 
-    Only ``context_id`` is remapped (BIGINT -> UUID). The ``embedding``
-    pgvector column is copied verbatim; the source must have pgvector
-    installed and the target must have ``vec_context_embeddings``
-    initialized. Probes both source and target for the chunking
+    ``context_id`` is remapped (BIGINT -> UUID), and the target assigns each
+    row a new ``id``. The ``embedding`` pgvector column is copied verbatim;
+    the source must have pgvector installed and the target must have
+    ``vec_context_embeddings`` initialized. Probes both source and target for the chunking
     migration's ``start_index``/``end_index`` columns (added by
     ``add_chunking_postgresql.sql``); when present on both sides, the
     columns are copied through. A row whose entry the run skipped, or

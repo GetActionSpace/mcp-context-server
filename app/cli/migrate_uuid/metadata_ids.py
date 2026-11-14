@@ -91,7 +91,9 @@ class MetadataIdRewriter:
     the run migrates becomes that entry's new 32-character id. Every other value stays as
     written: an integer or numeric string naming no migrated entry is counted
     ``not_migrated`` with a warning, anything else is counted ``kept``. When several
-    paths find the same value, the first path given rewrites and counts it.
+    paths find the same value, the first path given rewrites and counts it. Metadata
+    that does not parse, or that holds a number Python cannot write back as JSON, is
+    returned unchanged with an error, no id rewritten and nothing counted.
     """
 
     def __init__(
@@ -167,9 +169,9 @@ class MetadataIdRewriter:
         try:
             root: object = json.loads(metadata_json)
         except json.JSONDecodeError as exc:
-            message = f'row {old_id}: metadata JSON parse failed ({exc}); preserved verbatim'
+            message = f'row {old_id}: metadata JSON parse failed ({exc}); no id in it was rewritten'
             if key is not None:
-                message += f', so the old id was not stamped under {key!r}'
+                message += f', and the old id was not stamped under {key!r}'
             return self._preserved(metadata_json, message)
         warnings: list[str] = []
         owners: dict[Location, str] = {}
@@ -184,7 +186,7 @@ class MetadataIdRewriter:
         except ValueError as exc:
             message = (
                 f'row {old_id}: metadata contains a number Python cannot round-trip as JSON ({exc}); '
-                'the original metadata is preserved verbatim and any ids inside it were NOT rewritten'
+                'no id in it was rewritten'
             )
             if key is not None:
                 message += f', and the old id was not stamped under {key!r}'
@@ -271,7 +273,7 @@ class MetadataIdRewriter:
             if number in self._unmigrated_ids
             else 'which is not the id of a migrated entry'
         )
-        warnings.append(f'row {old_id}: {render_location(location)} holds {value!r}, {reason}; preserved')
+        warnings.append(f'row {old_id}: {render_location(location)} holds {value!r}, {reason}; not rewritten')
         return value
 
     def _stamp(self, root: object, old_id: int) -> tuple[StampOutcome | None, str | None]:

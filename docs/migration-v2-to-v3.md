@@ -121,7 +121,7 @@ Each value found, or each element when the value is a list, is classified:
 - An integer or such a string that is not the id of a migrated entry stays exactly as written, an integer as an integer and a string as a string. It is counted `not_migrated`, with a warning that names the row and the location (see [Values That Are Not Ids of Migrated Entries](#values-that-are-not-ids-of-migrated-entries)).
 - Any other value (another string such as a 32-character id, a boolean, a float, `null`, or a list or object inside the list found) stays as written. It is counted `kept`, with no message.
 
-None of these outcomes is an error, so they leave the exit status at 0. When two paths find the same value, the first path on the command line rewrites and counts it. The CLI builds the complete table of old and new ids before it rewrites any metadata, so an entry that cites a newer entry is rewritten like one that cites an older entry.
+None of these outcomes is an error, so they leave the exit status at 0. Metadata holding a number Python cannot write back as JSON (such as `1e400` or `NaN`) is the exception: no id in it is rewritten, nothing in it is counted, and the run reports an error and exits with status 1 (see step 3 of [What the CLI Does](#what-the-cli-does)). When two paths find the same value, the first path on the command line rewrites and counts it. The CLI builds the complete table of old and new ids before it rewrites any metadata, so an entry that cites a newer entry is rewritten like one that cites an older entry.
 
 The summary prints one line per path in command-line order, and the report holds the same counts under `id_paths`, including a path that found nothing:
 
@@ -178,11 +178,11 @@ The CLI performs the following steps in order:
 
 3. **Rewrite entry ids at the metadata paths.** For each row, finds the values at every `--rewrite-ids-at` path (by default `**.references.context_ids`) in the parsed `metadata`, replaces each integer or numeric string that is the id of a migrated entry with that entry's new 32-character id, and keeps and counts every other value, as [Rewriting Entry Ids in Metadata](#rewriting-entry-ids-in-metadata) describes. On a PostgreSQL target every skip is decided before any row is stored, so the id of a skipped row is kept as written wherever it is cited (see [Rows a PostgreSQL Target Cannot Accept](#rows-a-postgresql-target-cannot-accept)). Metadata that is not valid JSON, or that holds a number Python cannot write back as JSON (such as `1e400` or `NaN`), is recorded as an error and copied verbatim with no id rewritten, except that a PostgreSQL target written from a SQLite source skips the row instead of copying it and adds a `column 'metadata' skipped` error (see [Rows a PostgreSQL Target Cannot Accept](#rows-a-postgresql-target-cannot-accept)).
 
-4. **Stamp the old id** (only with `--legacy-id-key NAME`). After the row's ids are rewritten, stores the row's old integer id under the top-level key `NAME` unless the metadata already holds that key, as [Stamping the Old Id](#stamping-the-old-id) describes.
+4. **Stamp the old id** (only with `--legacy-id-key NAME`). After the row's ids are rewritten, stores the row's old integer id under the top-level key `NAME` unless the metadata already holds that key. Metadata that does not parse, is not a JSON object, or holds a number Python cannot write back as JSON is not stamped and is reported as an error, as [Stamping the Old Id](#stamping-the-old-id) describes.
 
 5. **Copy free-form text byte-for-byte.** The `text_content` and `summary` columns are copied unchanged. Any mention of an integer ID inside the prose (for example, "see entry 8944") is left as-is. The CLI does not attempt to rewrite free-form text -- such substrings become inert references after migration, which is the intended outcome (eliminating false positives from regex-style ID detection across the corpus).
 
-6. **Copy tags, image attachments, embedding metadata, embedding chunks, and vector rows.** Only the `context_id` foreign-key column is remapped to the new UUIDv7 hex value. Internal embedding identifiers (`embedding_chunks.id`, `embedding_chunks.vec_rowid`, vec0 rowids, `vec_context_embeddings.id`) are preserved verbatim because the project's chunking-layer architecture uses INTEGER bridges to vec0; only the outer `context_id` foreign key changes type.
+6. **Copy tags, image attachments, embedding metadata, embedding chunks, and vector rows.** Tags (one row per distinct label of an entry) and image attachments are copied in every direction with `context_entry_id` remapped to the new UUIDv7 hex value, and the target assigns their row ids. Embedding metadata, embedding chunks and vector rows are copied only between two databases of the same backend, with each `context_id` remapped the same way. A SQLite target keeps `embedding_chunks.id`, `embedding_chunks.vec_rowid` and the vec0 rowids unchanged, because the chunking layer bridges each chunk to its vec0 row through these INTEGER ids; a PostgreSQL target assigns new `vec_context_embeddings.id` values.
 
 7. **Rebuild the SQLite FTS5 index.** When the source has `context_entries_fts`, the CLI issues `INSERT INTO context_entries_fts(context_entries_fts) VALUES('rebuild')` against the target to re-index the copied rows. The FTS5 rowid alignment with `context_entries.rowid_int` is preserved.
 
@@ -202,11 +202,11 @@ This is a pure operator-side optimization and is NOT required for correct operat
 
 ### Values That Are Not Ids of Migrated Entries
 
-When a path's summary line counts values as not the id of a migrated entry (`not_migrated` under `id_paths` in the report), the metadata at that path held an integer or a numeric string that names no entry this run migrated. The run keeps each such value exactly as written and names it in a warning, with its location in the metadata:
+When a path's summary line counts values as not the id of a migrated entry (`not_migrated` under `id_paths` in the report), the metadata at that path held an integer or a numeric string that names no entry this run migrated. The run does not rewrite such a value: it names the value in a warning, with its location in the metadata, and an entry the run stores keeps the value exactly as written:
 
 ```text
-row 3: metadata.references.context_ids[2] holds 999, which is not the id of a migrated entry; preserved
-row 1: metadata.references.context_ids[0] holds 2, the id of an entry this run skipped; preserved
+row 3: metadata.references.context_ids[2] holds 999, which is not the id of a migrated entry; not rewritten
+row 1: metadata.references.context_ids[0] holds 2, the id of an entry this run skipped; not rewritten
 ```
 
 The first form most often cites an entry deleted before the migration; under a broad path such as `links.*` it can also be a number that is not an entry id at all, which is worth checking with a dry run. The second form appears only on a PostgreSQL target and cites an entry the same run skipped (see [Rows a PostgreSQL Target Cannot Accept](#rows-a-postgresql-target-cannot-accept)): repair that entry at the source and rerun, and the value is rewritten. Neither form is an error. Code that reads these paths after the migration should expect both 32-character ids and the legacy values kept there; the arrays stay queryable with the `array_contains` metadata filter operator, so you can find and clean them in the migrated database.

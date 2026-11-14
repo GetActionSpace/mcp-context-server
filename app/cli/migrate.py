@@ -131,7 +131,9 @@ def build_parser() -> argparse.ArgumentParser:
             'dots and read from the top of the metadata; "*" stands for any one key and a '
             'leading "**." matches at any depth. The value found may be one id or a list of '
             'ids: an integer or numeric string that is the id of a migrated entry becomes its '
-            'new id, and any other value is kept and counted per path in the summary. '
+            'new id, and any other value is kept and counted per path in the summary. In metadata '
+            'holding a number Python cannot write back as JSON, no id is rewritten and the run '
+            'reports an error. '
             f'Default: {DEFAULT_ID_PATH}; paths you give replace it. Only for the v2->v3 migration.'
         ),
     )
@@ -144,7 +146,9 @@ def build_parser() -> argparse.ArgumentParser:
             "Store each migrated entry's old integer id in its metadata under the top-level "
             'key NAME (letters, digits, "_" and "-"; "ingest" is reserved), so '
             'search_context(metadata={NAME: <old id>}) finds it. An entry that already holds '
-            'NAME keeps its value. Only for the v2->v3 migration.'
+            'NAME keeps its value. Metadata that does not parse, is not a JSON object, or holds a '
+            'number Python cannot write back as JSON is not stamped, and the run reports an error. '
+            'Only for the v2->v3 migration.'
         ),
     )
     mode_group = parser.add_mutually_exclusive_group()
