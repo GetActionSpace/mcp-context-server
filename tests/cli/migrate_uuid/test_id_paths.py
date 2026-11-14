@@ -286,5 +286,7 @@ class TestNumericId:
         ['', '-', '-0', '00', '007', ' 7', '7 ', '7\n', '+7', '7.0', '1_0', '1e3', '٧', 'd' * 32],
     )
     def test_other_forms_do_not_match(self, text: str) -> None:
-        """Padding, signs, separators, decimals and non-ASCII digits do not match."""
+        """The empty string, leading zeros, surrounding whitespace, a leading '+', '-0' or a bare '-', digit separators,
+        decimals, exponents, non-ASCII digits and a hex id do not match.
+        """
         assert NUMERIC_ID.fullmatch(text) is None
