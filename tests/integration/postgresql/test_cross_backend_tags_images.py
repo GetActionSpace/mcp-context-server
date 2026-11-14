@@ -131,7 +131,7 @@ async def test_sqlite_to_pg_copies_tags_and_images(
     tmp_path: Path,
     pg_test_url: str,
 ) -> None:
-    """SQLite->PG migration copies tags + image attachments (Defect A)."""
+    """SQLite->PG migration copies tags and image attachments."""
     source_path = tmp_path / 'v2_source.db'
     _seed_sqlite_v2_source(source_path)
 
@@ -166,7 +166,7 @@ async def test_pg_to_sqlite_copies_tags_images_and_rebuilds_fts(
     isolated_pg_v2_source_with_tags_images: str,
     tmp_path: Path,
 ) -> None:
-    """PG->SQLite migration copies tags + images and rebuilds the FTS index (Defects B + C)."""
+    """PG->SQLite migration copies tags and images and rebuilds the FTS index."""
     target_path = tmp_path / 'v3_target.db'
 
     options = MigrationOptions(
@@ -201,7 +201,7 @@ async def test_pg_to_sqlite_image_null_created_at_does_not_crash(
     pg_test_url: str,
     tmp_path: Path,
 ) -> None:
-    """A schema-legal NULL image created_at is preserved as NULL, not a crash (Defect: None.isoformat())."""
+    """A NULL image created_at migrates from PostgreSQL to SQLite as NULL."""
     db_name = 'mcp_cross_pg_null_ts'
     url = await make_isolated_db(pg_test_url, db_name)
     try:
@@ -246,7 +246,7 @@ async def test_sqlite_to_pg_image_null_created_at_does_not_crash(
     tmp_path: Path,
     pg_test_url: str,
 ) -> None:
-    """A schema-legal NULL image created_at is preserved as NULL, not a crash (_coerce_datetime(None))."""
+    """A NULL image created_at migrates from SQLite to PostgreSQL as NULL."""
     source_path = tmp_path / 'null_ts_source.db'
     conn = sqlite3.connect(str(source_path))
     try:
