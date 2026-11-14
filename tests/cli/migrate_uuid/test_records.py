@@ -45,7 +45,7 @@ class TestMigrationOptions:
     """Defaults the runners rely on."""
 
     def test_defaults_rewrite_the_default_path_and_stamp_nothing(self) -> None:
-        """Options built without the new fields rewrite the default path only."""
+        """Options built without id_paths or legacy_id_key rewrite the default path only and stamp nothing."""
         options = MigrationOptions(source_url='source.db', target_url='target.db')
         assert options.id_paths == (IdPath.parse(DEFAULT_ID_PATH),)
         assert options.legacy_id_key is None
