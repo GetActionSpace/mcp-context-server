@@ -75,10 +75,10 @@ async def drop_isolated_db(pg_test_url: str, db_name: str) -> None:
 async def seed_pg_v2_source(url: str, rows: list[dict[str, object]]) -> None:
     """Create the v2 tables in the database at ``url`` and insert ``rows`` under their ids.
 
-    Each row has the keys ``seed_source_db`` takes for a SQLite source: ``id``,
-    ``thread_id``, ``source``, ``content_type``, ``text_content``, ``metadata`` (a dict
-    or list stored as JSON, text stored as written, or None) and ``created_at`` (an ISO
-    text read as UTC).
+    Each row has the keys ``seed_source_db`` takes for a SQLite source: ``id``, ``thread_id``, ``source``,
+    ``content_type``, ``text_content``, ``metadata`` (a dict or list stored as JSON, or None) and ``created_at``
+    (an ISO text read as UTC). A v2 PostgreSQL source keeps metadata in a JSONB column, so unlike a SQLite
+    source it never holds metadata text that is not JSON.
 
     Args:
         url: The connection URL of an empty database.
@@ -99,7 +99,7 @@ async def seed_pg_v2_source(url: str, rows: list[dict[str, object]]) -> None:
                 row['source'],
                 row['content_type'],
                 row['text_content'],
-                json.dumps(metadata) if isinstance(metadata, (dict, list)) else metadata,
+                json.dumps(metadata) if metadata is not None else None,
                 created_at,
             )
     finally:
