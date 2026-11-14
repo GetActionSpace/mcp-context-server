@@ -1,8 +1,10 @@
 """Acceptance tests of ``--rewrite-ids-at`` and ``--legacy-id-key`` in the migration directions through PostgreSQL.
 
 Each test runs the command line the operator runs against databases created for it on the
-test container, then reads the target. The expectations are the shared scenario's, so
-every direction is held to what the SQLite-to-SQLite migration produces.
+test container, then reads the target. The default path, a given path and the stamp are
+checked against the shared scenario in every direction, so each is held to what the
+SQLite-to-SQLite migration produces. The tests of skipped rows and of the dry run write
+their own expectations, because only a PostgreSQL target skips rows.
 """
 
 import asyncio
@@ -24,6 +26,7 @@ from tests.cli.migrate_uuid._id_rewrite_scenario import SCENARIO_ROWS
 from tests.cli.migrate_uuid._id_rewrite_scenario import TargetEntry
 from tests.cli.migrate_uuid._id_rewrite_scenario import assert_default_rewrite
 from tests.cli.migrate_uuid._id_rewrite_scenario import assert_legacy_stamp
+from tests.cli.migrate_uuid._id_rewrite_scenario import assert_named_paths
 from tests.cli.migrate_uuid._id_rewrite_scenario import new_id
 from tests.cli.migrate_uuid._id_rewrite_scenario import read_sqlite_target
 from tests.cli.migrate_uuid._id_rewrite_scenario import row_warnings
@@ -158,6 +161,17 @@ def test_default_path_and_stamp(direction: Direction, tmp_path: Path, create_dat
     rows, loaded = endpoints.read_target(), _report(report)
     assert_default_rewrite(rows, loaded)
     assert_legacy_stamp(rows, loaded)
+
+
+@pytest.mark.parametrize('direction', ['sqlite_to_postgresql', 'postgresql_to_sqlite', 'postgresql_to_postgresql'])
+def test_given_paths_replace_the_default(direction: Direction, tmp_path: Path, create_database: CreateDatabase) -> None:
+    """A path given on the command line is rewritten in place of the default one."""
+    endpoints = _Endpoints(direction, SCENARIO_ROWS, tmp_path, create_database)
+    report = tmp_path / 'report.json'
+
+    assert endpoints.migrate(report, '--rewrite-ids-at', 'links.closed_by') == 0
+
+    assert_named_paths(endpoints.read_target(), _report(report))
 
 
 @pytest.mark.parametrize('direction', _TO_POSTGRESQL)
