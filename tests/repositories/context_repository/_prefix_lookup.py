@@ -11,8 +11,9 @@ from app.ids import resolve_or_normalize_id
 from tests.repositories._access_scope_cases import ScopedDb
 
 # The prefix lengths the comparison cuts from each sampled id: both ends of the accepted
-# 8-31 range, odd and even lengths, and lengths inside every group of the hyphenated form.
-PREFIX_LENGTHS = (8, 9, 12, 16, 23, 31)
+# 8-31 range, odd and even lengths, and a length ending in every group of the hyphenated
+# form (8-4-4-4-12 hex digits).
+PREFIX_LENGTHS = (8, 9, 12, 16, 18, 23, 31)
 # The length of the prefix the case-folding step sends.
 _FOLDED_PREFIX_LENGTH = 16
 
