@@ -133,6 +133,12 @@ class _Endpoints:
             return read_sqlite_target(self._target_path)
         return asyncio.run(_read_postgresql_target(self.target_url))
 
+    def target_written(self) -> bool:
+        """Whether a run wrote the target: the SQLite file exists, or the PostgreSQL entries table does."""
+        if self._target_path is not None:
+            return self._target_path.exists()
+        return asyncio.run(_has_entries_table(self.target_url))
+
 
 def _report(path: Path) -> dict[str, object]:
     """Load a ``--report`` file."""
@@ -265,18 +271,27 @@ def test_a_row_is_skipped_by_the_metadata_it_would_store_once_rewritten(
     assert errors[1].startswith("context_entries row id=2 thread_id='thread-ids' column 'metadata.parent' skipped")
 
 
-def test_dry_run_matches_real_run(tmp_path: Path, create_database: CreateDatabase) -> None:
-    """A dry run reports what the real run that follows it writes, and writes nothing."""
-    direction: Direction = 'sqlite_to_postgresql'
-    endpoints = _Endpoints(direction, _rows_with_a_skipped_entry(direction), tmp_path, create_database)
+@pytest.mark.parametrize('direction', ['sqlite_to_postgresql', 'postgresql_to_sqlite', 'postgresql_to_postgresql'])
+def test_dry_run_matches_real_run(direction: Direction, tmp_path: Path, create_database: CreateDatabase) -> None:
+    """A dry run reports what the real run that follows it writes, and writes nothing.
+
+    A PostgreSQL target runs the rows with a skipped entry, so the skip, the references
+    to it and the stamp outcomes are compared; the SQLite target runs the shared scenario.
+    """
+    to_postgresql = direction in _TO_POSTGRESQL
+    rows = _rows_with_a_skipped_entry(direction) if to_postgresql else SCENARIO_ROWS
+    exit_code = 1 if to_postgresql else 0
+    endpoints = _Endpoints(direction, rows, tmp_path, create_database)
     dry, real = tmp_path / 'dry.json', tmp_path / 'real.json'
 
-    assert endpoints.migrate(dry, '--dry-run', '--legacy-id-key', 'legacy_id') == 1
-    assert asyncio.run(_has_entries_table(endpoints.target_url)) is False
-    assert endpoints.migrate(real, '--legacy-id-key', 'legacy_id') == 1
+    assert endpoints.migrate(dry, '--dry-run', '--legacy-id-key', 'legacy_id') == exit_code
+    assert endpoints.target_written() is False
+    assert endpoints.migrate(real, '--legacy-id-key', 'legacy_id') == exit_code
+    assert endpoints.target_written() is True
 
     dry_report, real_report = _report(dry), _report(real)
     for key in ('rows_migrated', 'id_paths', 'legacy_id', 'errors'):
         assert dry_report[key] == real_report[key], key
+    assert row_warnings(real_report) != []
     assert row_warnings(dry_report) == row_warnings(real_report)
-    assert real_report['rows_migrated'] == 2
+    assert real_report['rows_migrated'] == (2 if to_postgresql else len(SCENARIO_ROWS))
