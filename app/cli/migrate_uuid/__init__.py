@@ -7,8 +7,11 @@ Source database
     ``INTEGER PRIMARY KEY AUTOINCREMENT`` on SQLite). The CLI reads from this database read-only.
 
 Target database
-    A freshly created database conforming to the current schema (``TEXT`` primary key on SQLite, ``UUID`` primary key
-    on PostgreSQL).
+    An empty database whose current schema (``TEXT`` primary key on SQLite, ``UUID`` primary key on PostgreSQL) the
+    command builds: on SQLite a new or empty file; on PostgreSQL an existing empty database the operator creates, whose
+    schema the command initializes when ``context_entries`` is absent. A target that is already initialized must hold
+    no ``context_entries`` rows and, when a same-backend run copies the source's embeddings, must have the fp32 vector
+    layout: no compression provenance on SQLite, and a ``vec_context_embeddings`` table on PostgreSQL.
 
 Migration behavior
     - Builds the complete integer-to-UUIDv7 table of every row before any metadata is rewritten, so an entry that
