@@ -32,8 +32,12 @@ def source_row(old_id: int, metadata: object, created_at: str) -> dict[str, obje
 
 # Entry 1, the oldest, cites entry 3, a newer one, so its rewrite needs the complete id
 # table. Entry 2 cites entry 1 by a numeric string and holds ids under ``links``, which
-# the default path does not reach. Entry 3 holds every kind of value a path can find,
-# and a single id at depth. Entry 4 has no metadata; entry 5 already holds ``legacy_id``.
+# the default path does not reach. Entry 3 holds the id of a migrated entry as an
+# integer and as a numeric string (both rewritten), an integer naming no entry
+# (not_migrated), and a 32-hex string, a zero-padded numeric string and a boolean
+# (kept), plus a single id at depth. Floats, null, lists and objects at a path are
+# covered by ``TestValues`` in ``test_metadata_ids.py``. Entry 4 has no metadata; entry
+# 5 already holds ``legacy_id``.
 SCENARIO_ROWS: list[dict[str, object]] = [
     source_row(1, {'references': {'context_ids': [3]}}, '2024-01-01 10:00:00'),
     source_row(
