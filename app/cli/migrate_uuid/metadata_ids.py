@@ -26,9 +26,11 @@ def _id_number(value: object) -> int | None:
     """Return the entry id a value names, or None when it names none.
 
     A JSON integer names itself. A string names an integer only in the exact text JSON
-    writes for one (``NUMERIC_ID``), so padded, signed, separated or non-ASCII digit
-    strings, which read as codes rather than ids, are not taken for ids. A boolean is
-    never an id.
+    writes for one (``NUMERIC_ID``): ASCII digits without a leading zero, after an
+    optional leading minus, so ``"-5"`` reads as -5. Strings with leading zeros or
+    surrounding whitespace, a leading ``+``, ``"-0"``, digit separators, a decimal point
+    or non-ASCII digits read as codes rather than ids and are not taken for ids. A boolean
+    is never an id.
 
     Args:
         value: A value found at a path.
