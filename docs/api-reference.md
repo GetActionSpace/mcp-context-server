@@ -29,7 +29,7 @@ Whitespace is stripped and the value is folded to lowercase before validation. S
 
 **Prefix Lookup:**
 
-Every tool parameter that accepts a context identifier ALSO accepts a hex prefix of 8 to 31 characters, including the bulk and batch list parameters (each element is resolved independently). The server resolves each prefix against the stored entries the caller may read, so an entry the caller cannot read never matches a prefix or makes one ambiguous:
+Every tool parameter that accepts a context identifier ALSO accepts a hex prefix of 8 to 31 characters, including the bulk and batch list parameters (each element is resolved independently). Each lookup reads only the stored IDs that begin with the prefix, through the ID index, instead of testing every stored entry. The server resolves each prefix against the stored entries the caller may read, so an entry the caller cannot read never matches a prefix or makes one ambiguous:
 
 - Exactly one match: resolves to that entry's full ID.
 - Zero matches: returns an error `No context entry matches prefix '<prefix>'`.

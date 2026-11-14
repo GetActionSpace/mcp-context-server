@@ -24,6 +24,8 @@ Module contents
       specific :class:`datetime.datetime`.
     - :func:`normalize_id` -- validate and canonicalize any accepted input.
     - :func:`is_id_prefix` -- predicate for partial-hex prefix strings.
+    - :func:`id_prefix_bounds` -- the lowest and the highest full ID that
+      start with a prefix, the bounds of a range read over the ordered ID.
     - :func:`resolve_prefix` -- resolve a prefix to a unique full ID via a
       repository implementing the :class:`_PrefixResolverRepo` protocol,
       matching only the entries the caller's scope may read.
@@ -155,6 +157,29 @@ def is_id_prefix(value: str) -> bool:
     if not (8 <= len(s) < 32):
         return False
     return all(c in '0123456789abcdef' for c in s)
+
+
+def id_prefix_bounds(prefix: str) -> tuple[ContextId, ContextId]:
+    """Return the lowest and the highest full ID that start with ``prefix``.
+
+    Every ID starting with the prefix lies between the two bounds, inclusive, and every 32-character lowercase
+    hex string between them starts with the prefix, so a range read over the ordered ID answers a prefix
+    lookup. The order is the same on both backends: lowercase hex text compared byte by byte on SQLite, the
+    16 bytes of a native ``uuid`` on PostgreSQL.
+
+    Args:
+        prefix: An 8-31 character hex prefix; whitespace is stripped and case is folded.
+
+    Returns:
+        The prefix padded to 32 characters with ``0``, and padded with ``f``.
+
+    Raises:
+        ValueError: If ``prefix`` is not an 8-31 character hex prefix.
+    """
+    s = prefix.strip().lower()
+    if not is_id_prefix(s):
+        raise ValueError(f'Invalid UUID prefix (must be 8-31 hex chars): {prefix!r}')
+    return s.ljust(32, '0'), s.ljust(32, 'f')
 
 
 async def resolve_prefix(prefix: str, repo: _PrefixResolverRepo, *, scope: Scope) -> ContextId:

@@ -7,15 +7,37 @@ before the helper pins the routing, the row-level security credentials when they
 given, and the caller's overrides. ``RlsCredentials.environment`` names the variables
 that start a server with row-level security. A structural test reads the integration
 tests and requires every environment that inherits the parent's to come from the helper.
+
+Covers ``CapturingBackend``, the statement capture the query-plan tests share: on SQLite it records a statement sent
+through the connection and one sent through a cursor the connection opened, on PostgreSQL every statement sent through
+``fetch``, ``fetchrow``, ``fetchval`` and ``execute``, each with its bound values, while the read runs unchanged.
+``sqlite_query_plan``, the SQLite plan reader those tests share, plans a statement with its bound values. And
+importing the helpers loads neither the application nor its settings, which ``tests/run_server.py`` relies on: it
+imports them before it configures the server's environment.
 """
 
 import ast
+import json
+import sqlite3
+import subprocess
+import sys
 from pathlib import Path
+from typing import cast
+from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
 
 import pytest
 
+from app.backends.base import MAINTENANCE
+from app.backends.base import BackendAccess
+from app.backends.base import StorageBackend
+from tests.helpers import AsyncpgConnection
+from tests.helpers import Captured
+from tests.helpers import CapturingBackend
+from tests.helpers import RecordingSqliteConnection
 from tests.helpers import RlsCredentials
 from tests.helpers import postgresql_subprocess_env
+from tests.helpers import sqlite_query_plan
 
 TEST_URL = 'postgresql://mcp_app:mcp_app@localhost:5433/mcp_rls'
 RLS = RlsCredentials(migration_user='mcp_owner', migration_password='mcp_owner', policy_role='mcp_context_request')
@@ -116,3 +138,116 @@ def test_every_postgresql_subprocess_environment_comes_from_the_helper() -> None
     ]
 
     assert hand_built == []
+
+
+class TestCapturingBackendOnSqlite:
+    """Reads of a real SQLite backend, run through the capture."""
+
+    @pytest.mark.asyncio
+    async def test_records_a_statement_sent_through_the_connection(self, async_db_initialized: StorageBackend) -> None:
+        capturing = CapturingBackend(async_db_initialized)
+
+        def _read(conn: sqlite3.Connection, offset: int, *, label: str) -> list[tuple[object, ...]]:
+            return [tuple(row) for row in conn.execute('SELECT ? + ?, ?', (offset, 2, label)).fetchall()]
+
+        rows = await capturing.execute_read(_read, 1, access_scope=MAINTENANCE, label='x')
+
+        assert rows == [(3, 'x')]
+        assert capturing.statements == [Captured('SELECT ? + ?, ?', (1, 2, 'x'))]
+
+    @pytest.mark.asyncio
+    async def test_records_a_statement_sent_through_a_cursor(self, async_db_initialized: StorageBackend) -> None:
+        capturing = CapturingBackend(async_db_initialized)
+
+        def _read(conn: sqlite3.Connection) -> list[tuple[object, ...]]:
+            cursor = conn.cursor()
+            cursor.execute('SELECT ?', ('first',))
+            first = [tuple(row) for row in cursor.fetchall()]
+            second = [tuple(row) for row in cursor.execute('SELECT ?, ?', ['second', 2]).fetchall()]
+            return first + second
+
+        rows = await capturing.execute_read(_read, access_scope=MAINTENANCE)
+
+        assert rows == [('first',), ('second', 2)]
+        assert capturing.statements == [Captured('SELECT ?', ('first',)), Captured('SELECT ?, ?', ('second', 2))]
+
+
+@pytest.mark.asyncio
+async def test_sqlite_query_plan_returns_the_detail_of_every_step(async_db_initialized: StorageBackend) -> None:
+    plan = await sqlite_query_plan(
+        async_db_initialized, 'SELECT id FROM context_entries WHERE rowid_int = ? AND thread_id = ?', (7, 'thread'),
+    )
+
+    assert plan == ['SEARCH context_entries USING INTEGER PRIMARY KEY (rowid=?)']
+
+
+class _AsyncpgReadBackend:
+    """A PostgreSQL-typed backend whose reads hand the operation one fixed connection."""
+
+    backend_type = 'postgresql'
+
+    def __init__(self, conn: object) -> None:
+        self.conn = conn
+
+    async def execute_read(self, operation: object, *args: object, access_scope: BackendAccess, **kwargs: object) -> object:
+        assert access_scope is MAINTENANCE
+        return await cast('AsyncMock', operation)(self.conn, *args, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_records_every_asyncpg_statement_and_passes_everything_else_through() -> None:
+    conn = AsyncMock()
+    conn.fetch.return_value = ['row']
+    conn.fetchrow.return_value = 'one row'
+    conn.fetchval.return_value = 'one value'
+    conn.execute.return_value = 'SET'
+    conn.transaction = MagicMock(return_value='a transaction')
+    capturing = CapturingBackend(cast(StorageBackend, _AsyncpgReadBackend(conn)))
+
+    async def _read(recording: AsyncpgConnection, label: str, *, flag: bool) -> list[object]:
+        return [
+            await recording.fetch('SELECT $1', 1),
+            await recording.fetchrow('SELECT $1, $2', 2, 'b'),
+            await recording.fetchval('SELECT $1', 3),
+            await recording.execute('SET LOCAL x = $1', 4),
+            recording.transaction(),
+            label,
+            flag,
+        ]
+
+    result = await capturing.execute_read(_read, 'label', access_scope=MAINTENANCE, flag=True)
+
+    assert result == [['row'], 'one row', 'one value', 'SET', 'a transaction', 'label', True]
+    assert capturing.statements == [
+        Captured('SELECT $1', (1,)),
+        Captured('SELECT $1, $2', (2, 'b')),
+        Captured('SELECT $1', (3,)),
+        Captured('SET LOCAL x = $1', (4,)),
+    ]
+    conn.fetch.assert_awaited_once_with('SELECT $1', 1)
+    conn.fetchrow.assert_awaited_once_with('SELECT $1, $2', 2, 'b')
+    conn.fetchval.assert_awaited_once_with('SELECT $1', 3)
+    conn.execute.assert_awaited_once_with('SET LOCAL x = $1', 4)
+
+
+def test_importing_the_helpers_loads_neither_the_application_nor_its_settings() -> None:
+    """A fresh interpreter that imports the helpers holds ``app.access_scope`` and no other application module."""
+    probe = (
+        'import json, sys, tests.helpers; '
+        "print(json.dumps(sorted(name for name in sys.modules if name == 'app' or name.startswith('app.'))))"
+    )
+    repository_root = Path(__file__).resolve().parent.parent
+
+    completed = subprocess.run([sys.executable, '-c', probe], cwd=repository_root, capture_output=True, text=True, check=True)
+
+    assert json.loads(completed.stdout) == ['app', 'app.access_scope']
+
+
+def test_a_recording_sqlite_connection_runs_on_the_connection_it_wraps() -> None:
+    statements: list[Captured] = []
+    with sqlite3.connect(':memory:') as conn:
+        recording = RecordingSqliteConnection(conn, statements)
+
+        assert recording.execute('SELECT 7').fetchall() == [(7,)]
+
+    assert statements == [Captured('SELECT 7', ())]
