@@ -260,16 +260,16 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
             )
             # The metadata expression indexes are deliberately absent from the PostgreSQL
             # base schema (a database this CLI initialized has none until its first server
-            # startup), so a PostgreSQL SOURCE can legitimately hold a value the TARGET's
-            # idx_metadata_<field> cannot index -- an oversized one, or one an integer or
-            # boolean index's cast rejects. Unchecked, that value aborts the INSERT
+            # startup), so a PostgreSQL SOURCE can legitimately hold a value over the budget
+            # of the TARGET's idx_metadata_<field>, or one an integer or boolean index's
+            # cast rejects. Unchecked, a value the cast rejects aborts the INSERT
             # mid-transaction and rolls the whole run back with a raw driver error naming
             # no source row when the target already carries idx_metadata_<field>; on a
             # target without it, the INSERT succeeds and the target's first server start
             # fails to build that index. The same check skips a value that does not parse
             # as a float-typed field's declared type, which the server refuses to store.
-            # thread_id and tags need no equivalent check here: their indexes ARE in the
-            # base schema, so the source could not have stored a value that breaches them.
+            # thread_id and tags get no equivalent check here: their indexes ARE in the
+            # base schema, so the source already holds those values in btree indexes.
             # Checked unconditionally so --dry-run surfaces the row too.
             #
             # Every skip is decided before any row is stored, so a value citing a skipped
