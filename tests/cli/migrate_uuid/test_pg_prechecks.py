@@ -20,6 +20,7 @@ import json
 
 import pytest
 
+from app.cli.migrate_uuid.metadata_ids import MetadataIdRewriter
 from app.cli.migrate_uuid.pg_prechecks import PG_BTREE_MAX_ITEM_BYTES
 from app.cli.migrate_uuid.pg_prechecks import PG_MAX_INDEXED_THREAD_ID_BYTES
 from app.cli.migrate_uuid.pg_prechecks import PG_MAX_INDEXED_VALUE_BYTES
@@ -275,3 +276,45 @@ class TestIndexedMetadataFields:
         assert first_pg_unindexable_metadata_field(None) is None
         assert first_pg_unindexable_metadata_field('{not json') is None
         assert first_pg_unindexable_metadata_field('[1, 2, 3]') is None
+
+
+class TestStampedOldIdUnderTypedField:
+    """A ``--legacy-id-key`` naming a typed indexed field: which stamped old ids the target accepts."""
+
+    @staticmethod
+    def _stamped(key: str, old_id: int) -> str | None:
+        """Return an entry's metadata with its old id stamped under ``key``."""
+        return MetadataIdRewriter([], {old_id: 'a' * 32}, legacy_id_key=key).rewrite('{}', old_id).metadata
+
+    def test_boolean_field_accepts_only_old_ids_zero_and_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """PostgreSQL reads the stamped 0 and 1 as false and true and rejects every other old id.
+
+        Args:
+            monkeypatch: Used to configure a boolean-typed indexed field.
+        """
+        monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'archived:boolean')
+        get_settings.cache_clear()
+
+        assert first_pg_unindexable_metadata_field(self._stamped('archived', 0)) is None
+        assert first_pg_unindexable_metadata_field(self._stamped('archived', 1)) is None
+        found = first_pg_unindexable_metadata_field(self._stamped('archived', 2))
+        assert found is not None
+        column, reason = found
+        assert column == 'metadata.archived'
+        assert 'not a valid boolean' in reason
+
+    def test_integer_field_accepts_old_ids_up_to_the_int32_maximum(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The stamped old id fits an integer-typed field up to 2,147,483,647 and is refused above it.
+
+        Args:
+            monkeypatch: Used to configure an integer-typed indexed field.
+        """
+        monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'legacy:integer')
+        get_settings.cache_clear()
+
+        assert first_pg_unindexable_metadata_field(self._stamped('legacy', 2_147_483_647)) is None
+        found = first_pg_unindexable_metadata_field(self._stamped('legacy', 2_147_483_648))
+        assert found is not None
+        column, reason = found
+        assert column == 'metadata.legacy'
+        assert 'out of range' in reason
