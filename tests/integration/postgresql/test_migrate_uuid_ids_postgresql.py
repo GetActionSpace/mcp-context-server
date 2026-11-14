@@ -249,12 +249,13 @@ def test_reference_to_a_skipped_row_is_not_rewritten(
 def test_a_row_is_skipped_by_the_metadata_it_would_store_once_rewritten(
     direction: Direction, tmp_path: Path, create_database: CreateDatabase, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A row whose rewritten id breaks an integer index stays skipped, and a reference to it stays as written.
+    """A row whose rewritten id fails its field's declared type stays skipped, and a reference to it stays as written.
 
-    Entry 1 is skipped for its wide status. Entry 2's integer-indexed ``parent`` cites
-    entry 1: rewritten to a 32-character id it fails the integer index, so entry 2 is
-    skipped too, although the value it ends up holding, entry 1's old id kept as written,
-    would fit. Entry 3 cites entry 2, which the target never stores.
+    Entry 1 is skipped for its 3000-byte status. Entry 2's ``parent``, which
+    METADATA_INDEXED_FIELDS declares integer, cites entry 1: rewritten to a 32-character
+    id it fails the pre-check's integer check, so entry 2 is skipped too, although the
+    value it would be stored with, entry 1's old id kept as written, would pass. Entry 3
+    cites entry 2, which the target never stores.
     """
     monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'status,parent:integer')
     get_settings.cache_clear()
