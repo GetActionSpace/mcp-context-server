@@ -257,14 +257,21 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``mcp-context-server-migrate`` script.
 
+    An argument error or an option refusal never returns: argparse exits with
+    code 2 (``SystemExit``) for an invalid --rewrite-ids-at path or
+    --legacy-id-key, two mutually exclusive modes, --force without
+    --disable-rls, --rewrite-ids-at or --legacy-id-key with an in-place mode,
+    and a --rewrite-ids-at path given twice.
+
     Args:
         argv: Optional override for ``sys.argv[1:]`` (used by tests).
 
     Returns:
-        Process exit code: 0 on success, 1 on user error, recorded errors,
-        or a connection the command may not run on (row-level security
-        filters its role, or the database refuses a statement with
-        insufficient privilege), 2 on unrecoverable migration failure, 78
+        Process exit code: 0 on success; 1 when the v2->v3 migration has no
+        --target-url, on recorded errors or a refusal the selected mode
+        reports, or on a connection the command may not run on (row-level
+        security filters its role, or the database refuses a statement with
+        insufficient privilege); 2 on unrecoverable migration failure; 78
         (EX_CONFIG) on a settings ValidationError -- the same classification
         the server's guarded import applies.
     """
