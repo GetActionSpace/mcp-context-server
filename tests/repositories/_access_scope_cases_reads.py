@@ -11,7 +11,8 @@ and never matches a prefix.
   ordered first never crowd out a readable match; prefix resolution through
   :func:`app.ids.resolve_or_normalize_id` turns that into a unique match, a no-match or an
   ambiguity computed over readable rows alone. Rows at both edges of a prefix's range and
-  the first id past it match exactly the prefixes they start with, at every prefix length.
+  the first id past it match exactly the prefixes they start with, at the shortest (8), an
+  odd (9) and the longest (31) prefix length.
 - S5: ``check_entry_exists`` reports a readable row with its source, version, owner and
   whether the caller may modify it, and an unreadable row exactly like a missing one.
 - S7: ``probe_ids`` maps every readable requested id to whether the caller may modify and
