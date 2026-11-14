@@ -584,6 +584,62 @@ async def test_pg_pg_migration_aborts_when_target_lacks_fp32_vec_table(
 
 
 @pytest.mark.asyncio
+async def test_pg_pg_dry_run_counts_vectors_for_target_without_fp32_vec_table(
+    isolated_pg_v2_source_db: str,
+    pg_test_url: str,
+) -> None:
+    """A dry run against an initialized target without the fp32 vec table counts the rows and writes nothing.
+
+    The real run stops at the vector backstop, so the dry run warns that it would abort and counts the
+    source's vector rows through the id mapping as for a target that has the vector layout, with no
+    'initialize the target schema first' warning.
+    """
+    await _seed_source_with_embeddings(isolated_pg_v2_source_db, n_docs=3)
+    db_name = 'mcp_pg_pg_dryrun_no_fp32_vec'
+    target_url = await make_isolated_db(pg_test_url, db_name)
+    try:
+        setup = await asyncpg.connect(target_url)
+        try:
+            # The same target shape as the backstop test: context_entries, no embedding tables.
+            await setup.execute(
+                'CREATE TABLE context_entries ('
+                '  id UUID PRIMARY KEY, thread_id TEXT NOT NULL, source TEXT NOT NULL,'
+                '  content_type TEXT NOT NULL, text_content TEXT, metadata JSONB, summary TEXT,'
+                '  content_hash TEXT, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,'
+                '  updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);',
+            )
+        finally:
+            await setup.close()
+
+        options = MigrationOptions(
+            source_url=isolated_pg_v2_source_db,
+            target_url=target_url,
+            dry_run=True,
+            report_path=None,
+        )
+        stats = await run_migration_postgresql(options)
+
+        assert not stats.errors
+        assert stats.rows_migrated == 3
+        assert stats.embedding_metadata_migrated == 3
+        assert stats.vec_rows_migrated == 3
+        assert any(
+            'vec_context_embeddings' in w and w.endswith('(a real run would abort)') for w in stats.warnings
+        )
+        assert not any('initialize the target schema first' in w for w in stats.warnings)
+
+        tgt = await asyncpg.connect(target_url)
+        try:
+            assert await tgt.fetchval('SELECT COUNT(*) FROM context_entries') == 0
+            assert await tgt.fetchval("SELECT to_regclass('embedding_metadata')") is None
+            assert await tgt.fetchval("SELECT to_regclass('vec_context_embeddings')") is None
+        finally:
+            await tgt.close()
+    finally:
+        await drop_isolated_db(pg_test_url, db_name)
+
+
+@pytest.mark.asyncio
 async def test_pg_pg_dry_run_on_empty_target_reports_symmetric_counts(
     isolated_pg_v2_source_db: str,
     pg_test_url: str,

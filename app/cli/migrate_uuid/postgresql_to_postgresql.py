@@ -205,7 +205,9 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
         # discard them. Skipped when the target was just auto-initialized
         # (target_initialized is False): a real run already created the fp32 vec
         # table via initialize_target_postgresql, and a dry run reports the
-        # auto-init plan instead.
+        # auto-init plan instead. A dry run that records the backstop's warning
+        # counts the vector rows against the layout the warning's remedy builds.
+        vec_backstop_warned = False
         if target_initialized and source_has_embeddings:
             target_has_vec = await pg_table_exists(target_conn, 'vec_context_embeddings')
             if not target_has_vec:
@@ -220,6 +222,7 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                 )
                 if options.dry_run:
                     stats.warnings.append(f'{message} (a real run would abort)')
+                    vec_backstop_warned = True
                 else:
                     stats.errors.append(f'{message} Aborting to avoid silently dropping embeddings.')
                     return stats
@@ -418,12 +421,13 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                 # A dry run against a target the real run auto-initializes counts
                 # through the same mapping, so it reports the rows, skips and warnings
                 # of that run; the copies then take the target as the auto-init builds
-                # it instead of probing tables that do not exist yet.
-                target_has_schema = target_initialized or not options.dry_run
+                # it instead of probing tables that do not exist yet. A dry run whose
+                # vector backstop warned takes the vector table the same way.
+                probe_target = target_initialized or not options.dry_run
                 await copy_embedding_metadata_pg(
                     source_conn, target_conn, id_mapping, stats, options.dry_run,
                     skipped_ids=pg_skipped_context_ids,
-                    target_has_schema=target_has_schema,
+                    probe_target=probe_target,
                 )
                 # Gate the vector copy on the SOURCE vec table (copy_vec_embeddings_pg
                 # reads FROM vec_context_embeddings, which would crash if absent).
@@ -431,7 +435,7 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                     await copy_vec_embeddings_pg(
                         source_conn, target_conn, id_mapping, stats, options.dry_run,
                         skipped_ids=pg_skipped_context_ids,
-                        target_has_schema=target_has_schema,
+                        probe_target=probe_target and not vec_backstop_warned,
                     )
 
             if not options.dry_run:

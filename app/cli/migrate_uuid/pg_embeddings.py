@@ -18,7 +18,7 @@ async def copy_embedding_metadata_pg(
     dry_run: bool,
     *,
     skipped_ids: AbstractSet[int],
-    target_has_schema: bool,
+    probe_target: bool,
 ) -> None:
     """Copy ``embedding_metadata`` rows from a PostgreSQL source to a PostgreSQL target.
 
@@ -39,7 +39,7 @@ async def copy_embedding_metadata_pg(
             warnings.
         dry_run: When True, skip INSERTs (counters still increment).
         skipped_ids: Old ids of the source entries the run skips.
-        target_has_schema: False for a dry run whose target has no schema yet. The
+        probe_target: False for a dry run whose target has no schema yet. The
             target is then not probed: the real run builds it with
             :func:`~app.cli.migrate_uuid.pg_target.initialize_target_postgresql`,
             whose ``embedding_metadata`` carries ``chunk_count``.
@@ -59,7 +59,7 @@ async def copy_embedding_metadata_pg(
     select_sql = f'SELECT {", ".join(src_columns)} FROM embedding_metadata ORDER BY context_id ASC'
     rows = await source.fetch(select_sql)
 
-    has_chunk_count_tgt = not target_has_schema or await target.fetchval(
+    has_chunk_count_tgt = not probe_target or await target.fetchval(
         '''
         SELECT EXISTS (
             SELECT 1 FROM information_schema.columns
@@ -115,7 +115,7 @@ async def copy_vec_embeddings_pg(
     dry_run: bool,
     *,
     skipped_ids: AbstractSet[int],
-    target_has_schema: bool,
+    probe_target: bool,
 ) -> None:
     """Copy ``vec_context_embeddings`` rows from a PostgreSQL source to a PostgreSQL target.
 
@@ -137,12 +137,13 @@ async def copy_vec_embeddings_pg(
         stats: Mutated to record ``vec_rows_migrated`` and warnings.
         dry_run: When True, skip INSERTs (counters still increment).
         skipped_ids: Old ids of the source entries the run skips.
-        target_has_schema: False for a dry run whose target has no schema yet. The
-            target is then not probed: the real run builds it with
-            :func:`~app.cli.migrate_uuid.pg_target.initialize_target_postgresql`,
-            whose ``vec_context_embeddings`` carries the chunk boundary columns.
+        probe_target: False for a dry run whose target has no schema yet, or whose
+            target lacks the ``vec_context_embeddings`` table the real run stops on.
+            The target is then not probed and is taken as
+            :func:`~app.cli.migrate_uuid.pg_target.initialize_target_postgresql`
+            builds it, whose ``vec_context_embeddings`` carries the chunk boundary columns.
     """
-    target_table_exists = not target_has_schema or await target.fetchval(
+    target_table_exists = not probe_target or await target.fetchval(
         '''
         SELECT EXISTS (
             SELECT 1 FROM information_schema.tables
@@ -167,7 +168,7 @@ async def copy_vec_embeddings_pg(
         )
         ''',
     )
-    has_boundaries_tgt = not target_has_schema or await target.fetchval(
+    has_boundaries_tgt = not probe_target or await target.fetchval(
         '''
         SELECT EXISTS (
             SELECT 1 FROM information_schema.columns

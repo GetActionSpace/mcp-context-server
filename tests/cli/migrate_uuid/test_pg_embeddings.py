@@ -85,7 +85,7 @@ async def test_skipped_parent_and_missing_parent_rows_are_left_out_with_their_ow
         stats,
         dry_run,
         skipped_ids=frozenset({2}),
-        target_has_schema=True,
+        probe_target=True,
     )
 
     assert stats.warnings == [
