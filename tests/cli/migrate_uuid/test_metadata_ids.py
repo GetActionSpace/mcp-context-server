@@ -375,7 +375,7 @@ class TestReencode:
         assert outcome.errors[0].startswith('row 7: ')
 
     def test_discarded_rewrites_are_not_counted_or_warned(self) -> None:
-        """Counts and warnings describe stored values, so a discarded rewrite carries none."""
+        """A discarded rewrite leaves every path count zero and no warning, and the old id is not stamped."""
         metadata = '{"references": {"context_ids": [1, 2, 404]}, "score": 1e400}'
         outcome = _rewriter(key='legacy_id').rewrite(metadata, 5)
         assert outcome.metadata == metadata
