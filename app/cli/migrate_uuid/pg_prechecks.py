@@ -214,9 +214,11 @@ def first_pg_unindexable_metadata_field(metadata_json: str | None) -> tuple[str,
     ``array``/``object``-typed fields are exempt from both: they build no expression
     index at all, being served by the always-present jsonb_path_ops GIN index, which
     hashes its entries. Only top-level keys are inspected, because
-    ``metadata->>'<field>'`` addresses top-level keys only. Unparseable or non-object
-    metadata returns None: the jsonb bind itself rejects it, which the unstorable
-    pre-check reports with a more specific reason.
+    ``metadata->>'<field>'`` addresses top-level keys only. Unparseable text returns
+    None because :func:`pg_unstorable_column_reason` reports it with its own reason.
+    Non-object metadata, such as a JSON array or scalar, returns None because
+    ``metadata->>'<field>'`` reads NULL from a non-object, so no expression index sees a
+    value; jsonb stores such metadata as it is.
 
     Args:
         metadata_json: The metadata JSON string about to be bound into the target's

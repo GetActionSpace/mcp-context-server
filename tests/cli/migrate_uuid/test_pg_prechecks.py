@@ -275,10 +275,18 @@ class TestIndexedMetadataFields:
         assert first_pg_unindexable_metadata_field(json.dumps({'status': 42})) is None
 
     def test_absent_unparseable_and_non_object_metadata_pass(self) -> None:
-        """Shapes the jsonb bind rejects on its own are left to the unstorable check."""
+        """Absent, unparseable and non-object metadata hold no indexed field value.
+
+        Unparseable text is left to the unstorable check, which refuses it. A JSON array
+        or scalar is storable jsonb, and ``metadata->>'<field>'`` reads NULL from it, so
+        both checks pass it.
+        """
         assert first_pg_unindexable_metadata_field(None) is None
         assert first_pg_unindexable_metadata_field('{not json') is None
-        assert first_pg_unindexable_metadata_field('[1, 2, 3]') is None
+        assert pg_unstorable_column_reason('{not json', is_jsonb=True) is not None
+        for non_object in ('[1, 2, 3]', '7', '"text"'):
+            assert first_pg_unindexable_metadata_field(non_object) is None
+            assert pg_unstorable_column_reason(non_object, is_jsonb=True) is None
 
 
 class TestStampedOldIdUnderTypedField:
