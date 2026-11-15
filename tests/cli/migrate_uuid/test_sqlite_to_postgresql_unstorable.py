@@ -311,6 +311,38 @@ class TestSqliteToPostgresqlNulPrecheck:
         assert 'ROLLBACK' not in conn.statements()
 
     @pytest.mark.asyncio
+    async def test_dry_run_surfaces_malformed_metadata_row(self, tmp_path: Path) -> None:
+        """--dry-run identifies the row whose metadata is not valid JSON without inserting."""
+        source = tmp_path / 'malformed_metadata_source_dry.db'
+        _seed_source(
+            source,
+            entries=[
+                {
+                    'id': 1, 'thread_id': 't1', 'source': 'user', 'content_type': 'text',
+                    'text_content': 'clean entry', 'metadata': {'a': 'b'},
+                    'created_at': '2025-01-01 12:00:00',
+                },
+                {
+                    'id': 2, 'thread_id': 't2', 'source': 'agent', 'content_type': 'text',
+                    'text_content': 'ok text', 'metadata': '{not valid json',
+                    'created_at': '2025-01-02 12:00:00',
+                },
+            ],
+        )
+
+        stats, conn = await _run_with_fake_target(source, dry_run=True)
+
+        errors = '\n'.join(stats.errors)
+        assert 'context_entries row id=2' in errors
+        assert "column 'metadata'" in errors
+
+        # No write of any kind reaches the target under a dry run.
+        assert all(not statement.startswith('INSERT') for statement in conn.statements())
+        assert 'BEGIN' not in conn.statements()
+        assert 'COMMIT' not in conn.statements()
+        assert stats.rows_migrated == 1
+
+    @pytest.mark.asyncio
     async def test_content_hash_nul_skipped_not_aborting(self, tmp_path: Path) -> None:
         """A row whose content_hash carries a NUL is identified and skipped, not aborted.
 
