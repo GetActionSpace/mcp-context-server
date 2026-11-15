@@ -62,10 +62,15 @@ def _pg_skip_reason(row: sqlite3.Row, metadata: str | None) -> tuple[str, str] |
     so it refuses no value; a non-number under it is skipped because the server refuses a
     value of another type than the field declares.
 
+    The reason of a class 5 value of the declared-type kind ends with the remedy for what
+    wrote the value, decided against the row's source metadata: the source database, or
+    the ``--rewrite-ids-at`` or ``--legacy-id-key`` option of this run.
+
     The check runs on a dry run too, so it surfaces every affected row before a real run.
 
     Args:
-        row: The source ``context_entries`` row.
+        row: The source ``context_entries`` row, whose ``metadata`` is the metadata as
+            the source holds it.
         metadata: The metadata text the target would store for it.
 
     Returns:
@@ -82,7 +87,7 @@ def _pg_skip_reason(row: sqlite3.Row, metadata: str | None) -> tuple[str, str] |
         ),
     ) or first_pg_unindexable_column(
         (('thread_id', thread_id, PG_MAX_INDEXED_THREAD_ID_BYTES),),
-    ) or first_pg_unindexable_metadata_field(metadata)
+    ) or first_pg_unindexable_metadata_field(metadata, source_metadata_json=row['metadata'])
 
 
 async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) -> MigrationStats:

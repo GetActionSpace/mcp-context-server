@@ -22,6 +22,7 @@ import json
 
 import pytest
 
+from app.cli.migrate_uuid.id_paths import IdPath
 from app.cli.migrate_uuid.metadata_ids import MetadataIdRewriter
 from app.cli.migrate_uuid.pg_prechecks import PG_BTREE_MAX_ITEM_BYTES
 from app.cli.migrate_uuid.pg_prechecks import PG_MAX_INDEXED_THREAD_ID_BYTES
@@ -146,13 +147,18 @@ class TestBtreeBudgets:
         assert pg_unindexable_column_reason('thread-1', PG_MAX_INDEXED_VALUE_BYTES) is None
 
 
+def _source_held(metadata_json: str | None) -> tuple[str, str] | None:
+    """Check metadata a run stores exactly as the source holds it."""
+    return first_pg_unindexable_metadata_field(metadata_json, source_metadata_json=metadata_json)
+
+
 class TestIndexedMetadataFields:
     """Values under string-typed METADATA_INDEXED_FIELDS keys are checked too."""
 
     def test_oversized_string_under_an_indexed_key_is_flagged(self) -> None:
         """A default indexed field carrying an oversized value names the field."""
         metadata = json.dumps({'task_name': 'a' * 3000})
-        found = first_pg_unindexable_metadata_field(metadata)
+        found = _source_held(metadata)
 
         assert found is not None
         column, reason = found
@@ -162,7 +168,7 @@ class TestIndexedMetadataFields:
     def test_oversized_value_under_a_non_indexed_key_passes(self) -> None:
         """Only indexed keys are capped; jsonb itself imposes no such limit."""
         metadata = json.dumps({'notes': 'a' * 5000})
-        assert first_pg_unindexable_metadata_field(metadata) is None
+        assert _source_held(metadata) is None
 
     def test_array_and_object_fields_are_not_expression_indexed(self) -> None:
         """The default ``references``/``technologies`` fields build no expression index.
@@ -177,12 +183,12 @@ class TestIndexedMetadataFields:
             },
         )
         assert len(metadata) > PG_MAX_INDEXED_VALUE_BYTES
-        assert first_pg_unindexable_metadata_field(metadata) is None
+        assert _source_held(metadata) is None
 
     def test_container_under_a_string_typed_key_is_measured_as_serialized_text(self) -> None:
         """``metadata->>'<field>'`` yields a container's serialized form, which is indexed."""
         metadata = json.dumps({'project': ['a' * 100] * 40})
-        found = first_pg_unindexable_metadata_field(metadata)
+        found = _source_held(metadata)
 
         assert found is not None
         assert found[0] == 'metadata.project'
@@ -207,7 +213,7 @@ class TestIndexedMetadataFields:
         monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'priority:integer')
         get_settings.cache_clear()
 
-        found = first_pg_unindexable_metadata_field(json.dumps({'priority': 'high'}))
+        found = _source_held(json.dumps({'priority': 'high'}))
 
         assert found is not None
         column, reason = found
@@ -232,7 +238,7 @@ class TestIndexedMetadataFields:
         monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'score:float')
         get_settings.cache_clear()
 
-        found = first_pg_unindexable_metadata_field(json.dumps({'score': 'high'}))
+        found = _source_held(json.dumps({'score': 'high'}))
 
         assert found is not None
         column, reason = found
@@ -253,8 +259,8 @@ class TestIndexedMetadataFields:
         monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'score:float')
         get_settings.cache_clear()
 
-        assert first_pg_unindexable_metadata_field(json.dumps({'score': 3.5})) is None
-        assert first_pg_unindexable_metadata_field(json.dumps({'score': '3.5'})) is None
+        assert _source_held(json.dumps({'score': 3.5})) is None
+        assert _source_held(json.dumps({'score': '3.5'})) is None
 
     def test_typed_field_holding_a_castable_value_passes(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -267,14 +273,14 @@ class TestIndexedMetadataFields:
         monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'priority:integer')
         get_settings.cache_clear()
 
-        assert first_pg_unindexable_metadata_field(json.dumps({'priority': 7})) is None
-        assert first_pg_unindexable_metadata_field(json.dumps({'priority': '7'})) is None
+        assert _source_held(json.dumps({'priority': 7})) is None
+        assert _source_held(json.dumps({'priority': '7'})) is None
 
     def test_json_null_and_small_values_pass(self) -> None:
         """A JSON null indexes as SQL NULL (excluded by the index predicate)."""
-        assert first_pg_unindexable_metadata_field(json.dumps({'task_name': None})) is None
-        assert first_pg_unindexable_metadata_field(json.dumps({'task_name': 'audit'})) is None
-        assert first_pg_unindexable_metadata_field(json.dumps({'status': 42})) is None
+        assert _source_held(json.dumps({'task_name': None})) is None
+        assert _source_held(json.dumps({'task_name': 'audit'})) is None
+        assert _source_held(json.dumps({'status': 42})) is None
 
     def test_absent_unparseable_and_non_object_metadata_pass(self) -> None:
         """Absent, unparseable and non-object metadata hold no indexed field value.
@@ -283,11 +289,11 @@ class TestIndexedMetadataFields:
         or scalar is storable jsonb, and ``metadata->>'<field>'`` reads NULL from it, so
         both checks pass it.
         """
-        assert first_pg_unindexable_metadata_field(None) is None
-        assert first_pg_unindexable_metadata_field('{not json') is None
+        assert _source_held(None) is None
+        assert _source_held('{not json') is None
         assert pg_unstorable_column_reason('{not json', is_jsonb=True) is not None
         for non_object in ('[1, 2, 3]', '7', '"text"'):
-            assert first_pg_unindexable_metadata_field(non_object) is None
+            assert _source_held(non_object) is None
             assert pg_unstorable_column_reason(non_object, is_jsonb=True) is None
 
 
@@ -308,9 +314,9 @@ class TestStampedOldIdUnderTypedField:
         monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'archived:boolean')
         get_settings.cache_clear()
 
-        assert first_pg_unindexable_metadata_field(self._stamped('archived', 0)) is None
-        assert first_pg_unindexable_metadata_field(self._stamped('archived', 1)) is None
-        found = first_pg_unindexable_metadata_field(self._stamped('archived', 2))
+        assert first_pg_unindexable_metadata_field(self._stamped('archived', 0), source_metadata_json='{}') is None
+        assert first_pg_unindexable_metadata_field(self._stamped('archived', 1), source_metadata_json='{}') is None
+        found = first_pg_unindexable_metadata_field(self._stamped('archived', 2), source_metadata_json='{}')
         assert found is not None
         column, reason = found
         assert column == 'metadata.archived'
@@ -325,9 +331,97 @@ class TestStampedOldIdUnderTypedField:
         monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'legacy:integer')
         get_settings.cache_clear()
 
-        assert first_pg_unindexable_metadata_field(self._stamped('legacy', 2_147_483_647)) is None
-        found = first_pg_unindexable_metadata_field(self._stamped('legacy', 2_147_483_648))
+        assert first_pg_unindexable_metadata_field(self._stamped('legacy', 2_147_483_647), source_metadata_json='{}') is None
+        found = first_pg_unindexable_metadata_field(self._stamped('legacy', 2_147_483_648), source_metadata_json='{}')
         assert found is not None
         column, reason = found
         assert column == 'metadata.legacy'
         assert 'out of range' in reason
+
+
+# The end every remedy of a skip reason shares: a run commits the rows it stored, and a
+# rerun toward PostgreSQL needs a target without context_entries rows.
+_RERUN = 'rerun into an empty target database to migrate it'
+
+
+class TestSkipRemedyByCause:
+    """A typed field's skip reason ends with the remedy for whatever wrote the failing value.
+
+    The source database holds a value the run stores unchanged; ``--rewrite-ids-at``
+    wrote a value that differs from the source's under the same key; ``--legacy-id-key``
+    wrote a key the source lacks.
+    """
+
+    def test_value_the_source_holds_is_corrected_in_the_source(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A value stored as the source holds it sends the operator to the source database.
+
+        Args:
+            monkeypatch: Used to configure an integer-typed indexed field.
+        """
+        monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'priority:integer')
+        get_settings.cache_clear()
+        metadata = json.dumps({'priority': 'high'})
+
+        found = first_pg_unindexable_metadata_field(metadata, source_metadata_json=metadata)
+
+        assert found is not None
+        assert found[1].endswith(f'so this row is skipped -- correct the value in the source database and {_RERUN}')
+
+    def test_value_the_rewrite_wrote_names_rewrite_ids_at(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A 32-character id written over the source's integer names ``--rewrite-ids-at``, not the source.
+
+        Args:
+            monkeypatch: Used to configure an integer-typed indexed field.
+        """
+        monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'parent:integer')
+        get_settings.cache_clear()
+        source = json.dumps({'parent': 1})
+        written = MetadataIdRewriter([IdPath.parse('parent')], {1: 'a' * 32}, legacy_id_key=None).rewrite(source, 2).metadata
+
+        found = first_pg_unindexable_metadata_field(written, source_metadata_json=source)
+
+        assert found is not None
+        column, reason = found
+        assert column == 'metadata.parent'
+        assert reason.endswith(
+            'so this row is skipped -- the value comes from --rewrite-ids-at: declare parent:string in '
+            'METADATA_INDEXED_FIELDS for this command and for the server that will serve the target, or drop the '
+            f'--rewrite-ids-at path that reaches metadata.parent, and {_RERUN}',
+        )
+        assert 'source database' not in reason
+
+    @pytest.mark.parametrize(
+        'source',
+        [None, '[1, 2]', '{"status": "open"}'],
+        ids=['null-metadata', 'not-an-object', 'object-without-the-key'],
+    )
+    def test_value_the_stamp_wrote_names_legacy_id_key(
+        self, source: str | None, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An old id under a key the source metadata does not hold names ``--legacy-id-key``, not the source.
+
+        Args:
+            source: The source metadata, which holds no ``archived`` key.
+            monkeypatch: Used to configure a boolean-typed indexed field.
+        """
+        monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'archived:boolean')
+        get_settings.cache_clear()
+
+        found = first_pg_unindexable_metadata_field(json.dumps({'archived': 2}), source_metadata_json=source)
+
+        assert found is not None
+        column, reason = found
+        assert column == 'metadata.archived'
+        assert reason.endswith(
+            'so this row is skipped -- the value comes from --legacy-id-key: declare archived:string in '
+            'METADATA_INDEXED_FIELDS for this command and for the server that will serve the target, or pass a '
+            f'--legacy-id-key name METADATA_INDEXED_FIELDS does not list, and {_RERUN}',
+        )
+        assert 'source database' not in reason
+
+    def test_width_reason_keeps_the_source_remedy(self) -> None:
+        """An oversized string-typed value is shortened in the source, whoever lengthened it."""
+        found = _source_held(json.dumps({'task_name': 'a' * 3000}))
+
+        assert found is not None
+        assert found[1].endswith(f'shorten the value in the source database and {_RERUN}')

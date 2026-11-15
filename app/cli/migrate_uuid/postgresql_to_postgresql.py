@@ -278,6 +278,9 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
             # thread_id and tags get no equivalent check here: their indexes ARE in the
             # base schema, so the source already holds those values in btree indexes.
             # Checked unconditionally so --dry-run surfaces the row too.
+            # The check reads the metadata the run would store, ids rewritten and the old id
+            # stamped, and compares a value that fails its declared type with the source's
+            # metadata, so the skip reason names the source database or the option that wrote it.
             #
             # Every context_entries skip is decided before any row is stored, so a stored
             # value citing a skipped entry is kept as written whether the citing entry is
@@ -286,7 +289,9 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
             skip_reasons: dict[int, tuple[str, str]] = {}
             for entry in entry_rows:
                 source_id = int(entry['id'])
-                skip_reason = first_pg_unindexable_metadata_field(rewriter.rewrite(entry['metadata'], source_id).metadata)
+                skip_reason = first_pg_unindexable_metadata_field(
+                    rewriter.rewrite(entry['metadata'], source_id).metadata, source_metadata_json=entry['metadata'],
+                )
                 if skip_reason is not None:
                     skip_reasons[source_id] = skip_reason
             storing_rewriter = rewriter.excluding(skip_reasons.keys())

@@ -44,6 +44,9 @@ type CreateDatabase = Callable[[str], str]
 
 _TO_POSTGRESQL: list[Direction] = ['sqlite_to_postgresql', 'postgresql_to_postgresql']
 
+# The end every remedy of a skip reason shares.
+_RERUN = 'rerun into an empty target database to migrate it'
+
 
 @pytest.fixture(autouse=True)
 def status_is_the_only_indexed_field(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
@@ -286,7 +289,45 @@ def test_a_row_is_skipped_by_the_metadata_it_would_store_once_rewritten(
     errors = [str(error) for error in loaded['errors']] if isinstance(loaded['errors'], list) else []
     assert len(errors) == 2
     assert errors[0].startswith("context_entries row id=1 thread_id='thread-ids' column 'metadata.status' skipped")
+    assert errors[0].endswith(f'shorten the value in the source database and {_RERUN}')
     assert errors[1].startswith("context_entries row id=2 thread_id='thread-ids' column 'metadata.parent' skipped")
+    assert errors[1].endswith(
+        'the value comes from --rewrite-ids-at: declare parent:string in METADATA_INDEXED_FIELDS for this command '
+        'and for the server that will serve the target, or drop the --rewrite-ids-at path that reaches '
+        f'metadata.parent, and {_RERUN}',
+    )
+    assert 'source database' not in errors[1]
+
+
+@pytest.mark.parametrize('direction', _TO_POSTGRESQL)
+def test_a_row_is_skipped_by_the_old_id_its_stamp_would_store(
+    direction: Direction, tmp_path: Path, create_database: CreateDatabase, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An old id a boolean-typed ``--legacy-id-key`` field rejects skips its row, and the reason names that option.
+
+    PostgreSQL reads the stamped old id 1 as true, so entry 1 migrates; it rejects 2, so
+    entry 2 is skipped, and its source metadata, which holds no ``legacy_id``, has nothing to correct.
+    """
+    monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'status,legacy_id:boolean')
+    get_settings.cache_clear()
+    rows = [source_row(1, None, '2024-01-01 10:00:00'), source_row(2, None, '2024-02-01 10:00:00')]
+    endpoints = _Endpoints(direction, rows, tmp_path, create_database)
+    report = tmp_path / 'report.json'
+
+    assert endpoints.migrate(report, '--legacy-id-key', 'legacy_id') == 1
+
+    migrated, loaded = endpoints.read_target(), _report(report)
+    assert sorted(migrated) == ['entry-1']
+    assert migrated['entry-1'].metadata == {'legacy_id': 1}
+    errors = [str(error) for error in loaded['errors']] if isinstance(loaded['errors'], list) else []
+    assert len(errors) == 1
+    assert errors[0].startswith("context_entries row id=2 thread_id='thread-ids' column 'metadata.legacy_id' skipped")
+    assert errors[0].endswith(
+        'the value comes from --legacy-id-key: declare legacy_id:string in METADATA_INDEXED_FIELDS for this command '
+        'and for the server that will serve the target, or pass a --legacy-id-key name METADATA_INDEXED_FIELDS does '
+        f'not list, and {_RERUN}',
+    )
+    assert 'source database' not in errors[0]
 
 
 @pytest.mark.parametrize('direction', ['sqlite_to_postgresql', 'postgresql_to_sqlite', 'postgresql_to_postgresql'])

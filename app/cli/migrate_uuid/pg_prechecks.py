@@ -118,6 +118,11 @@ PG_MAX_INDEXED_VALUE_BYTES = PG_BTREE_MAX_ITEM_BYTES - _PG_INDEX_TUPLE_FIXED_BYT
 PG_MAX_INDEXED_THREAD_ID_BYTES = PG_MAX_INDEXED_VALUE_BYTES - (6 + 65)
 
 
+# The end of every skip remedy: a run commits the rows it stored, and the command refuses
+# a PostgreSQL target that already holds context_entries rows.
+_RERUN_INTO_EMPTY_TARGET = 'rerun into an empty target database to migrate it'
+
+
 def pg_unindexable_column_reason(value: str | None, max_bytes: int) -> str | None:
     """Return why a value exceeds its PostgreSQL btree index budget, else None.
 
@@ -138,8 +143,44 @@ def pg_unindexable_column_reason(value: str | None, max_bytes: int) -> str | Non
     return (
         f"the value is {encoded_bytes} UTF-8 bytes, over the pre-check's budget of {max_bytes} "
         f'bytes for this indexed column, so this row is skipped -- shorten the value in the '
-        f'source database and rerun into an empty target database to migrate it'
+        f'source database and {_RERUN_INTO_EMPTY_TARGET}'
     )
+
+
+def _typed_value_remedy(key: str, value: object, source_metadata_json: str | None) -> str:
+    """Return the remedy for a value under ``key`` that fails its field's declared type.
+
+    The id rewriter adds a top-level key only to stamp the old id under
+    ``--legacy-id-key``, and changes a value only at a ``--rewrite-ids-at`` path, so the
+    source metadata tells which wrote the failing value: a key the source lacks was
+    stamped, a value unequal to the source's was rewritten, and an equal value is the
+    source's own. Values are compared parsed, because the rewriter re-encodes the JSON.
+
+    Args:
+        key: The top-level metadata key.
+        value: The failing value the run would store under it.
+        source_metadata_json: The row's metadata as the source holds it, or None.
+
+    Returns:
+        The remedy that ends the skip reason.
+    """
+    try:
+        source: object = None if source_metadata_json is None else json.loads(source_metadata_json)
+    except (json.JSONDecodeError, ValueError):
+        source = None
+    if not isinstance(source, dict) or key not in source:
+        return (
+            f'the value comes from --legacy-id-key: declare {key}:string in METADATA_INDEXED_FIELDS for this '
+            f'command and for the server that will serve the target, or pass a --legacy-id-key name '
+            f'METADATA_INDEXED_FIELDS does not list, and {_RERUN_INTO_EMPTY_TARGET}'
+        )
+    if cast(dict[str, object], source)[key] != value:
+        return (
+            f'the value comes from --rewrite-ids-at: declare {key}:string in METADATA_INDEXED_FIELDS for this '
+            f'command and for the server that will serve the target, or drop the --rewrite-ids-at path that '
+            f'reaches metadata.{key}, and {_RERUN_INTO_EMPTY_TARGET}'
+        )
+    return f'correct the value in the source database and {_RERUN_INTO_EMPTY_TARGET}'
 
 
 def first_pg_unindexable_column(
@@ -162,7 +203,9 @@ def first_pg_unindexable_column(
     return None
 
 
-def first_pg_unindexable_metadata_field(metadata_json: str | None) -> tuple[str, str] | None:
+def first_pg_unindexable_metadata_field(
+    metadata_json: str | None, *, source_metadata_json: str | None,
+) -> tuple[str, str] | None:
     """Return the first indexed metadata field whose value fails its field's check, else None.
 
     A ``METADATA_INDEXED_FIELDS`` key gets an expression btree index
@@ -188,6 +231,12 @@ def first_pg_unindexable_metadata_field(metadata_json: str | None) -> tuple[str,
       would fail on INSERT, and the skip reason says so; the ``float`` index casts JSON
       numbers only, so its skip reason names the declared type.
 
+    A width reason sends the operator to shorten the value in the source database. A
+    declared-type reason ends with the remedy for what wrote the value, found by
+    comparing it with ``source_metadata_json``: the source database when the source
+    holds an equal value, ``--rewrite-ids-at`` when it holds another, and
+    ``--legacy-id-key`` when it lacks the key.
+
     ``array``/``object``-typed fields are exempt from both: they build no expression
     index of their own. Only top-level keys are inspected, because
     ``metadata->>'<field>'`` addresses top-level keys only. Unparseable text returns
@@ -199,6 +248,8 @@ def first_pg_unindexable_metadata_field(metadata_json: str | None) -> tuple[str,
     Args:
         metadata_json: The metadata JSON string about to be bound into the target's
             ``jsonb`` column, or None when the row has no metadata.
+        source_metadata_json: The row's metadata as the source holds it, before the
+            ``--rewrite-ids-at`` rewrite and the ``--legacy-id-key`` stamp, or None.
 
     Returns:
         The ``('metadata.<field>', reason)`` of the first unindexable value, else None.
@@ -232,13 +283,8 @@ def first_pg_unindexable_metadata_field(metadata_json: str | None) -> tuple[str,
                 else f'METADATA_INDEXED_FIELDS declares the field {type_hint}, and the server '
                 f'refuses such a value on both backends'
             )
-            return (
-                f'metadata.{key}',
-                (
-                    f'{cast_error}; {cause}, so this row is skipped -- correct the value in the '
-                    f'source database and rerun to migrate it'
-                ),
-            )
+            remedy = _typed_value_remedy(key, value, source_metadata_json)
+            return f'metadata.{key}', f'{cast_error}; {cause}, so this row is skipped -- {remedy}'
     return None
 
 
