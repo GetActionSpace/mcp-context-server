@@ -1,10 +1,12 @@
-"""Tests for the SQLite copy helpers: embeddings, chunk internals and vec0 rowids survive the migration."""
+"""Tests for the SQLite copy helpers: free-form text, embeddings, chunk internals and vec0 rowids survive the migration."""
 
+import json
 import sqlite3
 from pathlib import Path
 
 import pytest
 
+from app.cli.migrate_uuid.records import MigrationStats
 from app.cli.migrate_uuid.sqlite_to_sqlite import run_migration_sqlite_to_sqlite
 from tests.cli.migrate_uuid._sources import build_sqlite_options
 from tests.cli.migrate_uuid._sources import seed_source_db
@@ -276,9 +278,8 @@ class TestPreBoundaryColumnSource:
         source_pre_boundary_columns: Path,
         new_target_db_path: Path,
     ) -> None:
-        """The unguarded boundary-column SELECT would raise OperationalError; the guarded
-        copier instead migrates the row and defaults start_index/end_index to 0 on a target
-        that has the columns.
+        """A source chunk table without start_index/end_index migrates its row, and the target's start_index and
+        end_index are 0.
         """
         options = build_sqlite_options(source_pre_boundary_columns, new_target_db_path)
         stats = run_migration_sqlite_to_sqlite(options)
@@ -298,3 +299,79 @@ class TestPreBoundaryColumnSource:
             assert row['end_index'] == 0
         finally:
             tgt.close()
+
+
+# Free-form columns naming the ids of migrated entries, in prose and as JSON at the default
+# id path, beside metadata whose id the same run rewrites.
+FREE_FORM_ROWS: list[dict[str, object]] = [
+    {
+        'id': 1,
+        'thread_id': 'thread-free',
+        'source': 'user',
+        'content_type': 'text',
+        'text_content': 'see entry 1 and entry 3',
+        'metadata': '{"references": {"context_ids": [3]}}',
+        'summary': 'A reply citing entry 1.',
+        'created_at': '2025-06-01 09:00:00',
+    },
+    {
+        'id': 2,
+        'thread_id': 'thread-free',
+        'source': 'agent',
+        'content_type': 'text',
+        'text_content': '{"references": {"context_ids": [1]}}',
+        'metadata': None,
+        'summary': '{"references": {"context_ids": [1]}}',
+        'created_at': '2025-06-01 09:01:00',
+    },
+    {
+        'id': 3,
+        'thread_id': 'thread-free',
+        'source': 'user',
+        'content_type': 'text',
+        'text_content': 'entry 2 replies to entry 1',
+        'metadata': None,
+        'created_at': '2025-06-01 09:02:00',
+    },
+]
+
+
+def _migrate_free_form_source(tmp_path: Path) -> tuple[MigrationStats, Path, Path]:
+    """Migrate a source seeded with :data:`FREE_FORM_ROWS` into a new SQLite target.
+
+    Returns:
+        The run's statistics, the source path and the target path.
+    """
+    source = tmp_path / 'free-form-source.db'
+    target = tmp_path / 'free-form-target.db'
+    seed_source_db(source, FREE_FORM_ROWS)
+    stats = run_migration_sqlite_to_sqlite(build_sqlite_options(source, target))
+    return stats, source, target
+
+
+def _column_in_creation_order(path: Path, column: str) -> list[object]:
+    """Return one ``context_entries`` column of every row, oldest row first."""
+    conn = sqlite3.connect(str(path))
+    try:
+        return [row[0] for row in conn.execute(f'SELECT {column} FROM context_entries ORDER BY created_at ASC')]
+    finally:
+        conn.close()
+
+
+class TestFreeFormColumnsUntouched:
+    """The rewrite reaches metadata only: numbers in free-form text columns are copied as written."""
+
+    @pytest.mark.parametrize('column', ['text_content', 'summary'])
+    def test_column_copied_byte_for_byte(self, tmp_path: Path, column: str) -> None:
+        """Ids of migrated entries named in the column, in prose or as JSON, are copied as written."""
+        stats, source, target = _migrate_free_form_source(tmp_path)
+        assert stats.errors == []
+        assert stats.rows_migrated == 3
+        assert _column_in_creation_order(target, column) == _column_in_creation_order(source, column)
+
+    def test_metadata_of_the_same_run_is_rewritten(self, tmp_path: Path) -> None:
+        """The run that copies the free-form columns as written rewrites the id its metadata names."""
+        _, _, target = _migrate_free_form_source(tmp_path)
+        new_ids = _column_in_creation_order(target, 'id')
+        metadata = _column_in_creation_order(target, 'metadata')
+        assert json.loads(str(metadata[0])) == {'references': {'context_ids': [new_ids[2]]}}

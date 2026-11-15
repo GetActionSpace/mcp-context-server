@@ -1,39 +1,55 @@
-"""Command-line utility for migrating an integer-keyed context database to
-the current UUIDv7-keyed schema.
+"""Command-line utility for migrating an integer-keyed context database to the current UUIDv7-keyed schema.
 
-This tool is opt-in: users invoke it manually on a backup of an existing
-database. It is NOT auto-applied by the server.
+This tool is opt-in: users invoke it manually on a backup of an existing database. It is NOT auto-applied by the server.
 
 Source database
-    Any database that was created with the integer primary-key layout
-    (``BIGSERIAL`` on PostgreSQL, ``INTEGER PRIMARY KEY AUTOINCREMENT`` on
-    SQLite). The CLI reads from this database read-only.
+    Any database that was created with the integer primary-key layout (``BIGSERIAL`` on PostgreSQL,
+    ``INTEGER PRIMARY KEY AUTOINCREMENT`` on SQLite). The CLI reads from this database read-only.
 
 Target database
-    A freshly created database conforming to the current schema (``TEXT``
-    primary key on SQLite, ``UUID`` primary key on PostgreSQL).
+    An empty database whose current schema (``TEXT`` primary key on SQLite, ``UUID`` primary key on PostgreSQL) the
+    command builds: on SQLite a new or empty file; on PostgreSQL an existing empty database the operator creates, whose
+    schema the command initializes when ``context_entries`` is absent. A target that is already initialized must hold
+    no ``context_entries`` rows and, when a same-backend run copies the source's embeddings, must have the fp32 vector
+    layout: no compression provenance on SQLite, and a ``vec_context_embeddings`` table on PostgreSQL.
 
 Migration behavior
-    - Generates a deterministic UUIDv7 for every row from the row's
-      ``created_at`` timestamp using
-      :func:`app.ids.generate_id_with_timestamp`.
-    - Builds an in-memory integer-to-UUIDv7 mapping table.
-    - Rewrites every JSON ``metadata.references.context_ids`` array by
-      mapping each integer entry through the table.
-    - Copies ``text_content`` and ``summary`` verbatim. Substrings that
-      resemble integer ID references inside free-form text are not
-      rewritten; the migration treats free-form text as opaque content.
-    - Copies tags, image attachments, embedding metadata, embedding
-      chunks, and vector embeddings verbatim (only ``context_id`` is
-      remapped). Embeddings are never regenerated.
-    - Rebuilds the SQLite FTS5 index after data copy. On a PostgreSQL
-      target whose source carries full-text search, provisions the
-      generated ``text_search_vector`` column and its GIN index before
-      the copy, so the column populates as rows are inserted.
+    - Builds the complete integer-to-UUIDv7 table of every row before any metadata is rewritten, so an entry that
+      cites a newer entry is rewritten like one that cites an older entry.
+    - Gives each row a UUIDv7 from :func:`app.ids.generate_id_with_timestamp`: its 48-bit millisecond timestamp comes
+      from the row's ``created_at``, and its remaining 74 bits are random, so every run gives a row a different id.
+    - Rewrites the entry ids found at each ``--rewrite-ids-at PATH`` of the metadata. Without the option the one path
+      is ``**.references.context_ids``; the paths given replace it. The value at a path may be one id or a list of
+      ids. An integer, or a string holding an integer in the exact form JSON writes one, that is the id of a migrated
+      entry becomes that entry's new id; every other value is kept as written and counted per path. In metadata
+      holding a number Python cannot write back as JSON (such as ``1e400`` or ``NaN``), no id is rewritten, no
+      path counts a value and the run reports an error. A PostgreSQL target decides which ``context_entries`` rows to
+      skip before it stores any row, checking each row's metadata as rewritten and stamped, so in a stored row an id
+      naming a skipped row stays as written.
+    - With ``--legacy-id-key NAME``, stores each entry's old integer id under the top-level metadata key ``NAME``
+      after its ids are rewritten, unless the metadata already holds that key. Metadata that does not parse, is not
+      a JSON object, or holds a number Python cannot write back as JSON is not stamped, and the run reports an error.
+    - Copies ``text_content`` and ``summary`` verbatim. Substrings that resemble integer ID references inside
+      free-form text are not rewritten; the migration treats free-form text as opaque content.
+    - Copies tags (one row per distinct label of an entry) and image attachments in every direction, with
+      ``context_entry_id`` remapped to the new id; the target assigns their row ids. Copies embedding metadata,
+      embedding chunks (a SQLite table) and vector embeddings, with each ``context_id`` remapped to the new id, only
+      between two databases of the same backend: a SQLite target keeps the chunk ids and vec0 rowids, and a
+      PostgreSQL target assigns new vector row ids. A cross-backend run drops them with a warning and gives the
+      target no embedding tables: a server start with ``ENABLE_EMBEDDING_GENERATION=true`` creates them in the
+      layout its ``ENABLE_EMBEDDING_COMPRESSION`` selects, after which ``--embed-missing``, run with the same
+      ``ENABLE_EMBEDDING_COMPRESSION`` value, re-embeds the target. Embeddings are never regenerated by the
+      migration itself.
+    - Rebuilds the SQLite FTS5 index after data copy. On a PostgreSQL target whose source carries full-text search,
+      provisions the generated ``text_search_vector`` column and its GIN index before the copy, so the column
+      populates as rows are inserted.
 
 Usage
     mcp-context-server-migrate \\
         --source-url sqlite:///path/to/source.db \\
         --target-url sqlite:///path/to/target.db \\
-        [--dry-run] [--report report.json]
+        [--dry-run] [--report report.json] \\
+        [--rewrite-ids-at PATH ...] [--legacy-id-key NAME]
+
+    ``docs/migration-v2-to-v3.md`` describes each option, the path grammar and the report.
 """

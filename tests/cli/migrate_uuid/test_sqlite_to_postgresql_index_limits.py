@@ -1,11 +1,9 @@
 """Regression tests for the SQLite->PostgreSQL btree index-tuple pre-check.
 
-SQLite indexes a value of any size; PostgreSQL refuses an index tuple larger than
-BTMaxItemSize (2704 bytes on btree version 4). A legacy corpus predating the
-write-path length caps can therefore hold a thread_id, a tag, or an indexed metadata
-value the PostgreSQL target cannot index, and binding it aborts the INSERT
-mid-transaction, ROLLBACKs the whole run, and reports a raw driver error naming no
-source row. The pre-check converts that into a per-row skip-and-warn.
+A legacy corpus predating the write-path length caps can hold a thread_id, a tag, or
+an indexed metadata value whose UTF-8 bytes exceed the pre-check's budget for its
+column. The pre-check skips such a row and records an error that names the row and
+the column, so the rest of the run completes and the run exits 1.
 
 The full-run tests drive the real ``run_migration_mixed_sqlite_to_postgresql`` against
 a fake asyncpg target connection (the PostgreSQL probe helpers are patched out), so no
@@ -20,7 +18,9 @@ from unittest import mock
 
 import pytest
 
+from app.cli.migrate_uuid.id_paths import DEFAULT_ID_PATH
 from app.cli.migrate_uuid.pg_prechecks import PG_MAX_INDEXED_THREAD_ID_BYTES
+from app.cli.migrate_uuid.records import IdPathCounts
 from app.cli.migrate_uuid.records import MigrationOptions
 from app.cli.migrate_uuid.records import MigrationStats
 from app.cli.migrate_uuid.sqlite_to_postgresql import run_migration_mixed_sqlite_to_postgresql
@@ -165,11 +165,11 @@ async def _run_with_fake_target(
 
 
 class TestSqliteToPostgresqlIndexPrecheck:
-    """The real cross-backend copy loops skip unindexable rows instead of aborting."""
+    """The real cross-backend copy loops skip a row whose indexed value is over its budget."""
 
     @pytest.mark.asyncio
     async def test_oversized_indexed_metadata_row_is_skipped(self, tmp_path: Path) -> None:
-        """A row whose indexed metadata value cannot be indexed is skipped, not fatal."""
+        """A row whose indexed metadata value is over its budget is skipped; the clean entry and its tag migrate."""
         source = tmp_path / 'source.db'
         _seed_source(
             source,
@@ -195,19 +195,13 @@ class TestSqliteToPostgresqlIndexPrecheck:
         skip_errors = [error for error in stats.errors if 'id=2' in error]
         assert len(skip_errors) == 1
         assert "'metadata.task_name'" in skip_errors[0]
-        # The skipped parent takes its children with it (an FK violation would relocate
-        # the very abort this guard prevents).
+        # The tag of the skipped parent is not copied.
         assert [args[1] for args in fake.inserts('tags')] == ['good-tag']
         assert stats.tags_migrated == 1
 
     @pytest.mark.asyncio
     async def test_oversized_thread_id_row_is_skipped(self, tmp_path: Path) -> None:
-        """A thread_id between the single-column and compound budgets is skipped.
-
-        Such a value fits an index tuple of its own but not the dedup index tuple it
-        actually lands in, so it must be caught by the pre-check rather than by the
-        driver mid-transaction.
-        """
+        """A thread_id one byte over PG_MAX_INDEXED_THREAD_ID_BYTES, within the larger budget of a tag, is skipped."""
         oversized = 'a' * (PG_MAX_INDEXED_THREAD_ID_BYTES + 1)
         source = tmp_path / 'source.db'
         _seed_source(
@@ -234,7 +228,7 @@ class TestSqliteToPostgresqlIndexPrecheck:
 
     @pytest.mark.asyncio
     async def test_skipped_row_does_not_count_its_reference_rewrites(self, tmp_path: Path) -> None:
-        """Remappings inside a skipped row never reach the target, so they are not counted."""
+        """Values inside a skipped row never reach the target, so none of them is counted."""
         source = tmp_path / 'source.db'
         _seed_source(
             source,
@@ -256,11 +250,11 @@ class TestSqliteToPostgresqlIndexPrecheck:
         stats, _ = await _run_with_fake_target(source)
 
         assert stats.rows_migrated == 1
-        assert stats.references_rewritten == 0
+        assert stats.id_paths == {DEFAULT_ID_PATH: IdPathCounts()}
 
     @pytest.mark.asyncio
     async def test_dry_run_surfaces_the_skip_without_inserting(self, tmp_path: Path) -> None:
-        """--dry-run reports the same unindexable rows before a real run touches the target."""
+        """--dry-run reports the over-budget row and inserts nothing."""
         source = tmp_path / 'source.db'
         _seed_source(
             source,

@@ -1,6 +1,7 @@
 """Copy of embedding metadata and fp32 vectors between PostgreSQL databases."""
 
 from collections.abc import Mapping
+from collections.abc import Set as AbstractSet
 from typing import TYPE_CHECKING
 
 from app.cli.migrate_uuid.records import MigrationStats
@@ -15,6 +16,9 @@ async def copy_embedding_metadata_pg(
     id_mapping: Mapping[int, str],
     stats: MigrationStats,
     dry_run: bool,
+    *,
+    skipped_ids: AbstractSet[int],
+    probe_target: bool,
 ) -> None:
     """Copy ``embedding_metadata`` rows from a PostgreSQL source to a PostgreSQL target.
 
@@ -22,7 +26,9 @@ async def copy_embedding_metadata_pg(
     asyncpg placeholders, native UUID binding, and asyncpg's ``fetch``
     cursor. The source ``context_id`` is a BIGINT (integer-keyed v2
     schema); the target ``context_id`` is a UUID (v3 schema). Mapping
-    is applied via ``id_mapping``.
+    is applied via ``id_mapping``. A row whose entry the run skipped, or
+    whose entry is absent from the source, is left out with a warning
+    naming which, since the target holds no entry for it to reference.
 
     Args:
         source: asyncpg connection to the PostgreSQL source database.
@@ -32,6 +38,11 @@ async def copy_embedding_metadata_pg(
         stats: Mutated to record ``embedding_metadata_migrated`` and
             warnings.
         dry_run: When True, skip INSERTs (counters still increment).
+        skipped_ids: Old ids of the source entries the run skips.
+        probe_target: False for a dry run whose target has no schema yet. The
+            target is then not probed: the real run builds it with
+            :func:`~app.cli.migrate_uuid.pg_target.initialize_target_postgresql`,
+            whose ``embedding_metadata`` carries ``chunk_count``.
     """
     has_chunk_count_src = await source.fetchval(
         '''
@@ -48,7 +59,7 @@ async def copy_embedding_metadata_pg(
     select_sql = f'SELECT {", ".join(src_columns)} FROM embedding_metadata ORDER BY context_id ASC'
     rows = await source.fetch(select_sql)
 
-    has_chunk_count_tgt = await target.fetchval(
+    has_chunk_count_tgt = not probe_target or await target.fetchval(
         '''
         SELECT EXISTS (
             SELECT 1 FROM information_schema.columns
@@ -70,6 +81,11 @@ async def copy_embedding_metadata_pg(
     inserted = 0
     for row in rows:
         source_id = int(row['context_id'])
+        if source_id in skipped_ids:
+            stats.warnings.append(
+                f'embedding_metadata row context_id={source_id} skipped: parent context_entries row was skipped',
+            )
+            continue
         mapped = id_mapping.get(source_id)
         if mapped is None:
             stats.warnings.append(
@@ -97,16 +113,21 @@ async def copy_vec_embeddings_pg(
     id_mapping: Mapping[int, str],
     stats: MigrationStats,
     dry_run: bool,
+    *,
+    skipped_ids: AbstractSet[int],
+    probe_target: bool,
 ) -> None:
     """Copy ``vec_context_embeddings`` rows from a PostgreSQL source to a PostgreSQL target.
 
-    Only ``context_id`` is remapped (BIGINT -> UUID). The ``embedding``
-    pgvector column is copied verbatim; the source must have pgvector
-    installed and the target must have ``vec_context_embeddings``
-    initialized. Probes both source and target for the chunking
+    ``context_id`` is remapped (BIGINT -> UUID), and the target assigns each
+    row a new ``id``. The ``embedding`` pgvector column is copied verbatim;
+    the source must have pgvector installed and the target must have
+    ``vec_context_embeddings`` initialized. Probes both source and target for the chunking
     migration's ``start_index``/``end_index`` columns (added by
     ``add_chunking_postgresql.sql``); when present on both sides, the
-    columns are copied through.
+    columns are copied through. A row whose entry the run skipped, or
+    whose entry is absent from the source, is left out with a warning
+    naming which, since the target holds no entry for it to reference.
 
     Args:
         source: asyncpg connection to the PostgreSQL source database.
@@ -115,23 +136,12 @@ async def copy_vec_embeddings_pg(
             ``context_entries.id`` -> ``created_at`` rows.
         stats: Mutated to record ``vec_rows_migrated`` and warnings.
         dry_run: When True, skip INSERTs (counters still increment).
+        skipped_ids: Old ids of the source entries the run skips.
+        probe_target: Gates the probe of the target's chunk boundary columns. When
+            False the probe is skipped and the target is taken as
+            :func:`~app.cli.migrate_uuid.pg_target.initialize_target_postgresql`
+            builds it, whose ``vec_context_embeddings`` carries those columns.
     """
-    target_table_exists = await target.fetchval(
-        '''
-        SELECT EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_schema = current_schema()
-              AND table_name = 'vec_context_embeddings'
-        )
-        ''',
-    )
-    if not target_table_exists:
-        stats.warnings.append(
-            'target PostgreSQL database has no vec_context_embeddings table; '
-            'fp32 vec rows not copied (initialize the target schema first)',
-        )
-        return
-
     has_boundaries_src = await source.fetchval(
         '''
         SELECT EXISTS (
@@ -141,7 +151,7 @@ async def copy_vec_embeddings_pg(
         )
         ''',
     )
-    has_boundaries_tgt = await target.fetchval(
+    has_boundaries_tgt = not probe_target or await target.fetchval(
         '''
         SELECT EXISTS (
             SELECT 1 FROM information_schema.columns
@@ -180,6 +190,11 @@ async def copy_vec_embeddings_pg(
     inserted = 0
     for row in rows:
         source_id = int(row['context_id'])
+        if source_id in skipped_ids:
+            stats.warnings.append(
+                f'vec_context_embeddings row context_id={source_id} skipped: parent context_entries row was skipped',
+            )
+            continue
         mapped = id_mapping.get(source_id)
         if mapped is None:
             stats.warnings.append(

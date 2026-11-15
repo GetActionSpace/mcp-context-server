@@ -1,7 +1,9 @@
-"""Pre-flight checks for values a PostgreSQL target cannot store or index.
+"""Pre-flight checks of the values a migration is about to write to a PostgreSQL target.
 
-A source row whose text or JSON PostgreSQL rejects, or whose indexed column
-exceeds the B-tree item budget, is reported before the INSERT would abort the run.
+A check returns a reason for a value a PostgreSQL target cannot take (a NUL, an unpaired
+surrogate, text the jsonb parser refuses), for a value the server refuses to store (a
+number read as non-finite, a value of another type than its indexed metadata field
+declares) and for a value over an index byte budget set here.
 """
 
 import json
@@ -16,24 +18,26 @@ from app.metadata_types import unstorable_string_error
 
 
 def pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | None:
-    """Return why a SQLite value cannot be stored on the PostgreSQL target, else None.
+    """Return the reason a PostgreSQL target cannot take a SQLite value or the server refuses to store it, else None.
 
     An embedded NUL (U+0000) or unpaired UTF-16 surrogate is legal in a SQLite
-    TEXT value but fatal on PostgreSQL: asyncpg rejects a NUL text bind
-    (``CharacterNotInRepertoireError``, SQLSTATE 22021) and an unpaired surrogate
-    is not UTF-8-encodable at all. A ``jsonb`` column has a second failure mode --
-    the store path serializes a metadata NUL as the JSON escape ``\\u0000`` (six
+    TEXT value but fatal on PostgreSQL: PostgreSQL refuses a NUL in a text value,
+    and an unpaired surrogate is not UTF-8-encodable at all. A
+    ``jsonb`` column has a second failure mode -- the store path serializes a
+    metadata NUL as the JSON escape ``\\u0000`` (six
     ASCII characters, not a literal byte), which passes the raw-string check yet
     is rejected by PostgreSQL's jsonb parser (SQLSTATE 22P05). A ``jsonb`` column
     has a THIRD failure mode: a non-finite JSON number. ``json.loads`` accepts the
     non-standard tokens ``NaN``/``Infinity``/``-Infinity`` AND silently converts a
-    standard-but-overflowing literal such as ``1e400`` into ``inf``, while
-    ``json.dumps`` -- which :func:`rewrite_metadata_references` applies to every
-    parseable ``metadata`` value on the copy path -- re-emits those values as the
-    invalid tokens the jsonb parser rejects. Such a value is also unstorable
-    through the server's own store boundary, which runs the same
-    :func:`app.metadata_types.non_finite_metadata_error` guard, so a v3 target must
-    not receive it either way.
+    standard literal with a fraction or an exponent that is too large for a double,
+    such as ``1e400``, into ``inf``.
+    :meth:`~app.cli.migrate_uuid.metadata_ids.MetadataIdRewriter.rewrite` re-encodes
+    with ``allow_nan=False`` and, when it cannot re-encode, keeps the source text
+    verbatim, so the text bound on the copy path still holds the non-standard token,
+    which the jsonb parser rejects, or the literal read as ``inf``, which the server's own
+    store boundary refuses through the same
+    :func:`app.metadata_types.non_finite_metadata_error` guard. This check catches both
+    before the bind, so a v3 target receives neither.
 
     Accordingly this runs the shared
     :func:`app.metadata_types.unstorable_string_error` walker on the raw
@@ -42,12 +46,12 @@ def pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | N
     ``\\u0000`` escape to a real U+0000 the walker detects) plus the shared
     non-finite-number guard on that same decoded structure. For a ``jsonb`` column
     a value ``json.loads`` cannot parse is itself unstorable: the target binds it
-    through a ``$n::jsonb`` cast
-    that PostgreSQL rejects mid-transaction (SQLSTATE 22P02), aborting the whole
-    migration with no row identification -- the exact failure this pre-check
-    exists to convert into a skip-and-warn -- so malformed JSON returns a reason
-    rather than passing as storable. (A raw TEXT column has no such cast, so
-    unparseable content is not rejected there.)
+    through a ``$n::jsonb`` cast that PostgreSQL rejects mid-transaction
+    (SQLSTATE 22P02), aborting the whole migration with no row identification --
+    the exact failure this pre-check exists to convert into a per-row skip
+    recorded as an error -- so malformed JSON returns a reason rather than passing
+    as storable. (A raw TEXT column has no such cast, so unparseable content is
+    not rejected there.)
 
     Args:
         value: The raw SQLite column value (already serialized to a JSON string
@@ -57,8 +61,8 @@ def pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | N
             to the raw-string check.
 
     Returns:
-        The shared guard's operator-facing message for the first offending
-        sequence or value found, else None.
+        The reason for the first offending value: a shared guard's message, or
+        this function's own for ``jsonb`` text that is not valid JSON; else None.
     """
     if value is None:
         return None
@@ -81,73 +85,55 @@ def pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | N
     return non_finite_metadata_error(decoded)
 
 
-# PostgreSQL refuses to index a btree tuple larger than roughly a third of an 8KB
-# page: BTMaxItemSize is 2704 bytes on btree version 4.
+# The largest btree index tuple, in bytes, the budgets below let a value produce on the
+# PostgreSQL target. Each budget is compared with the value's UTF-8 bytes, uncompressed.
 #
-# For thread_id and tags this matters only for a SQLite SOURCE: SQLite indexes those
-# columns with no size limit, while every PostgreSQL database declares idx_thread_id
-# and idx_tags_tag in its base schema and therefore cannot already hold a value that
-# breaches the ceiling. An INDEXED METADATA value is different, and a PostgreSQL
-# source can hold one: the metadata expression indexes are deliberately NOT in the
-# base schema (see app/schemas/postgresql_schema.sql -- a database initialized only by
-# this CLI has none until its first server startup), so a source whose
-# METADATA_INDEXED_FIELDS never covered a field, or which was never started as a
-# server, can carry a value the target's index rejects.
-#
-# Bound at the source, such a value aborts the INSERT mid-transaction, ROLLBACKs the
-# entire run, and reports a raw driver error naming no source row -- the exact failure
-# the NUL/surrogate pre-check exists to convert into a per-row skip-and-warn.
-#
-# The budget is deliberately measured against the UNCOMPRESSED value. PostgreSQL
-# compresses an index attribute larger than 512 bytes in line, so a highly repetitive
-# oversized value can still fit while an incompressible one of the same length cannot.
-# Modeling that compression is not possible from here, and the two errors are not
-# symmetric: over-accepting costs the WHOLE run, while over-skipping costs one row that
-# is named in the errors and migrates on a rerun once the value is shortened.
+# For thread_id and tags only a SQLite SOURCE is checked: every PostgreSQL database
+# declares idx_thread_id and idx_tags_tag in its base schema, so a PostgreSQL source
+# already holds its thread_id and tag values in btree indexes. An INDEXED METADATA value
+# is checked in both directions that write to PostgreSQL: the metadata expression
+# indexes are deliberately NOT in the base schema (see app/schemas/postgresql_schema.sql
+# -- a database initialized only by this CLI has none until its first server startup),
+# so a PostgreSQL source whose METADATA_INDEXED_FIELDS never covered a field, or which
+# was never started as a server, can carry a value over its budget.
 PG_BTREE_MAX_ITEM_BYTES = 2704
 
 
-# What an index tuple costs BESIDES the payload of the value being checked, for any
-# index shape:
-#   16 bytes  IndexTupleData header (8 bytes), MAXALIGNed to 16 once a nullable
-#             trailing column adds the null bitmap
-#    4 bytes  the long varlena header carried by a text datum past the 126-byte
-#             short-header threshold
-#    8 bytes  one MAXALIGN quantum of slack on the assembled tuple, covering the
-#             inter-attribute padding a fixed-width trailing column can introduce
+# The bytes the budgets reserve in every index tuple beside the checked value: 16 for
+# the tuple header, 4 for the value's length header and 8 of slack.
 _PG_INDEX_TUPLE_FIXED_BYTES = 16 + 4 + 8
 
 
-# Budget for a value that is indexed ON ITS OWN: idx_tags_tag on ``tags(tag)`` and the
-# metadata expression indexes ``idx_metadata_<field>`` on
-# ``context_entries((metadata->>'<field>'))`` that handle_metadata_indexes provisions
-# for every string-typed METADATA_INDEXED_FIELDS entry.
+# Budget for a tag and for the value of a string-typed METADATA_INDEXED_FIELDS entry.
+# The metadata value is indexed on its own, by the expression index idx_metadata_<field>
+# on ``context_entries((metadata->>'<field>'))`` that handle_metadata_indexes provisions.
+# A tag is indexed by idx_tags_tag on ``tags(tag)`` and by the unique idx_tags_entry_tag
+# on ``tags(context_entry_id, tag)``; this budget reserves no room for context_entry_id.
 PG_MAX_INDEXED_VALUE_BYTES = PG_BTREE_MAX_ITEM_BYTES - _PG_INDEX_TUPLE_FIXED_BYTES
 
 
-# thread_id needs a SMALLER budget because it is the leading column of
-# idx_context_entries_dedup_hash (thread_id, source, content_hash), which the base
-# schema declares on every PostgreSQL target: the tuple must also hold 6 bytes of
-# source ('agent' as a short-header varlena) and 65 bytes of content_hash (a 64-character
-# SHA-256 hex string, likewise short-header). The other compound indexes thread_id feeds
-# (idx_thread_source, idx_thread_created) have narrower trailing columns than that, so
-# the dedup index sets the ceiling.
+# thread_id gets a smaller budget because it leads idx_context_entries_dedup_hash
+# (thread_id, source, content_hash), which the base schema declares: the budget also
+# reserves 6 bytes for source and 65 for content_hash.
 PG_MAX_INDEXED_THREAD_ID_BYTES = PG_MAX_INDEXED_VALUE_BYTES - (6 + 65)
 
 
+# The end of every skip remedy: a run commits the rows it stored, and the command refuses
+# a PostgreSQL target that already holds context_entries rows.
+_RERUN_INTO_EMPTY_TARGET = 'rerun into an empty target database to migrate it'
+
+
 def pg_unindexable_column_reason(value: str | None, max_bytes: int) -> str | None:
-    """Return why a value is too large for a PostgreSQL btree index, else None.
+    """Return why a value exceeds its PostgreSQL btree index budget, else None.
 
     Args:
         value: The candidate value for an INDEXED target column.
-        max_bytes: Payload budget for the widest index this value feeds --
-            :data:`PG_MAX_INDEXED_THREAD_ID_BYTES` for thread_id (a compound index
-            whose trailing columns share the tuple), :data:`PG_MAX_INDEXED_VALUE_BYTES`
-            for a value indexed on its own.
+        max_bytes: Payload budget in UTF-8 bytes --
+            :data:`PG_MAX_INDEXED_THREAD_ID_BYTES` for thread_id,
+            :data:`PG_MAX_INDEXED_VALUE_BYTES` for a tag or a string-typed metadata value.
 
     Returns:
-        A reason string when the encoded value exceeds the index-tuple budget,
-        else None.
+        A reason string when the encoded value exceeds ``max_bytes``, else None.
     """
     if value is None:
         return None
@@ -155,22 +141,56 @@ def pg_unindexable_column_reason(value: str | None, max_bytes: int) -> str | Non
     if encoded_bytes <= max_bytes:
         return None
     return (
-        f'the value is {encoded_bytes} UTF-8 bytes, which exceeds the PostgreSQL btree '
-        f'index-tuple budget of {max_bytes} bytes for this indexed '
-        f'column; SQLite indexes it without a size limit, so this row is skipped -- shorten '
-        f'the value in the source database and rerun to migrate it'
+        f"the value is {encoded_bytes} UTF-8 bytes, over the pre-check's budget of {max_bytes} "
+        f'bytes for this indexed column, so this row is skipped -- shorten the value in the '
+        f'source database and {_RERUN_INTO_EMPTY_TARGET}'
     )
+
+
+def _typed_value_remedy(key: str, value: object, source_metadata_json: str | None) -> str:
+    """Return the remedy for a value under ``key`` that fails its field's declared type.
+
+    The id rewriter adds a top-level key only to stamp the old id under
+    ``--legacy-id-key``, and changes a value only at a ``--rewrite-ids-at`` path, so the
+    source metadata tells which wrote the failing value: a key the source lacks was
+    stamped, a value unequal to the source's was rewritten, and an equal value is the
+    source's own. Values are compared parsed, because the rewriter re-encodes the JSON.
+    The source text parses here: the value comes from stored metadata that parsed as an
+    object, and the rewriter stores text it cannot parse as the source holds it.
+
+    Args:
+        key: The top-level metadata key.
+        value: The failing value the run would store under it.
+        source_metadata_json: The row's metadata as the source holds it, or None.
+
+    Returns:
+        The remedy that ends the skip reason.
+    """
+    source: object = None if source_metadata_json is None else json.loads(source_metadata_json)
+    if not isinstance(source, dict) or key not in source:
+        return (
+            f'the value comes from --legacy-id-key: declare {key}:string in METADATA_INDEXED_FIELDS for this '
+            f'command and for the server that will serve the target, or pass a --legacy-id-key name '
+            f'METADATA_INDEXED_FIELDS does not list, and {_RERUN_INTO_EMPTY_TARGET}'
+        )
+    if cast(dict[str, object], source)[key] != value:
+        return (
+            f'the value comes from --rewrite-ids-at: declare {key}:string in METADATA_INDEXED_FIELDS for this '
+            f'command and for the server that will serve the target, or drop the --rewrite-ids-at path that '
+            f'reaches metadata.{key}, and {_RERUN_INTO_EMPTY_TARGET}'
+        )
+    return f'correct the value in the source database and {_RERUN_INTO_EMPTY_TARGET}'
 
 
 def first_pg_unindexable_column(
     columns: Iterable[tuple[str, str | None, int]],
 ) -> tuple[str, str] | None:
-    """Return the first ``(column, reason)`` a PostgreSQL btree index cannot hold, else None.
+    """Return the first ``(column, reason)`` over its PostgreSQL btree index budget, else None.
 
     Args:
         columns: Ordered ``(column_name, value, max_bytes)`` candidates for one row,
             limited to columns the target schema actually indexes. ``max_bytes`` is the
-            payload budget of the widest index that column feeds.
+            column's payload budget in UTF-8 bytes.
 
     Returns:
         The ``(column_name, reason)`` of the first oversized column, else None.
@@ -182,22 +202,24 @@ def first_pg_unindexable_column(
     return None
 
 
-def first_pg_unindexable_metadata_field(metadata_json: str | None) -> tuple[str, str] | None:
-    """Return the first indexed metadata field whose value a PostgreSQL target refuses, else None.
+def first_pg_unindexable_metadata_field(
+    metadata_json: str | None, *, source_metadata_json: str | None,
+) -> tuple[str, str] | None:
+    """Return the first indexed metadata field whose value fails its field's check, else None.
 
     A ``METADATA_INDEXED_FIELDS`` key gets an expression btree index
     ``idx_metadata_<field>`` on ``context_entries`` (app.migrations.metadata),
-    evaluated on every INSERT. SQLite's equivalent ``json_extract`` index has neither
-    a size limit nor a cast, so a source can hold a value the target cannot index at
-    all -- aborting the whole run when the target already carries the index, or
-    breaking the target's first server startup (which creates the index) when the CLI
-    initialized the target itself -- or a value of another type than the field
-    declares, which the running server refuses to store. Each is checked, in the
-    order it would fail:
+    evaluated on every INSERT. SQLite's equivalent ``json_extract`` index applies no
+    cast, so a source can hold a value the target's index cast refuses -- aborting the
+    whole run when the target already carries the index, or breaking the target's
+    first server startup (which creates the index) when the CLI initialized the target
+    itself. A source can also hold a value over the width budget below, or a value of
+    another type than the field declares, which the running server refuses to store.
+    Each is checked by the field's type hint:
 
-    * WIDTH, for a ``string``-typed field, whose TEXT btree entry is bounded by the
-      index-tuple ceiling that also bounds thread_id and tags. The width is measured on
-      the text the expression YIELDS (:func:`~app.metadata_types.pg_indexed_metadata_text`),
+    * WIDTH, for a ``string``-typed field, against :data:`PG_MAX_INDEXED_VALUE_BYTES`,
+      the budget a tag also gets. The width is measured on the text the expression
+      YIELDS (:func:`~app.metadata_types.pg_indexed_metadata_text`),
       so a list or object is measured as the whole serialized JSON ``->>`` renders it as.
     * DECLARED TYPE, for an ``integer``/``boolean``/``float``-typed field, whose value
       must parse as that type. This is the same check the write boundary applies
@@ -208,16 +230,25 @@ def first_pg_unindexable_metadata_field(metadata_json: str | None) -> tuple[str,
       would fail on INSERT, and the skip reason says so; the ``float`` index casts JSON
       numbers only, so its skip reason names the declared type.
 
+    A width reason sends the operator to shorten the value in the source database. A
+    declared-type reason ends with the remedy for what wrote the value, found by
+    comparing it with ``source_metadata_json``: the source database when the source
+    holds an equal value, ``--rewrite-ids-at`` when it holds another, and
+    ``--legacy-id-key`` when it lacks the key.
+
     ``array``/``object``-typed fields are exempt from both: they build no expression
-    index at all, being served by the always-present jsonb_path_ops GIN index, which
-    hashes its entries. Only top-level keys are inspected, because
-    ``metadata->>'<field>'`` addresses top-level keys only. Unparseable or non-object
-    metadata returns None: the jsonb bind itself rejects it, which the unstorable
-    pre-check reports with a more specific reason.
+    index of their own. Only top-level keys are inspected, because
+    ``metadata->>'<field>'`` addresses top-level keys only. Unparseable text returns
+    None because :func:`pg_unstorable_column_reason` reports it with its own reason.
+    Non-object metadata, such as a JSON array or scalar, returns None because
+    ``metadata->>'<field>'`` reads NULL from a non-object, so no expression index sees a
+    value; jsonb stores such metadata as it is.
 
     Args:
         metadata_json: The metadata JSON string about to be bound into the target's
             ``jsonb`` column, or None when the row has no metadata.
+        source_metadata_json: The row's metadata as the source holds it, before the
+            ``--rewrite-ids-at`` rewrite and the ``--legacy-id-key`` stamp, or None.
 
     Returns:
         The ``('metadata.<field>', reason)`` of the first unindexable value, else None.
@@ -251,30 +282,24 @@ def first_pg_unindexable_metadata_field(metadata_json: str | None) -> tuple[str,
                 else f'METADATA_INDEXED_FIELDS declares the field {type_hint}, and the server '
                 f'refuses such a value on both backends'
             )
-            return (
-                f'metadata.{key}',
-                (
-                    f'{cast_error}; {cause}, so this row is skipped -- correct the value in the '
-                    f'source database and rerun to migrate it'
-                ),
-            )
+            remedy = _typed_value_remedy(key, value, source_metadata_json)
+            return f'metadata.{key}', f'{cast_error}; {cause}, so this row is skipped -- {remedy}'
     return None
 
 
 def first_pg_unstorable_column(
     columns: Iterable[tuple[str, str | None, bool]],
 ) -> tuple[str, str] | None:
-    """Return the first ``(column, reason)`` a PostgreSQL target cannot store, else None.
+    """Return the first ``(column, reason)`` that :func:`pg_unstorable_column_reason` reports, else None.
 
     Each candidate is a ``(name, value, is_jsonb)`` triple. Columns are checked in
-    the given order and the first offending one short-circuits, so a caller can
-    identify the exact column that would abort the row's INSERT on PostgreSQL.
+    the given order, and the first one with a reason is returned.
 
     Args:
         columns: Ordered ``(column_name, value, is_jsonb)`` candidates for one row.
 
     Returns:
-        The ``(column_name, reason)`` of the first unstorable column, else None.
+        The ``(column_name, reason)`` of the first column with a reason, else None.
     """
     for name, value, is_jsonb in columns:
         reason = pg_unstorable_column_reason(value, is_jsonb=is_jsonb)

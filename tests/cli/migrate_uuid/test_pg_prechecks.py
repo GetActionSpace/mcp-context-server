@@ -1,33 +1,35 @@
 """Tests for the PostgreSQL storability and index-size pre-check helpers.
 
-A NUL (U+0000), an unpaired UTF-16 surrogate or a non-finite JSON number is legal in
-a SQLite value but fatal in its PostgreSQL column, and SQLite indexes a value of any
-size while PostgreSQL refuses an index tuple larger than BTMaxItemSize (2704 bytes on
-btree version 4). These helpers name such a value per column so the cross-backend
-copy loops skip its row instead of aborting the run. The index-size tests pin two
-properties:
+A NUL (U+0000), an unpaired UTF-16 surrogate or a ``NaN``/``Infinity`` token is legal
+in a SQLite value but fatal in its PostgreSQL column. ``1e400``, a number with an
+exponent too large for a double that ``json.loads`` reads as ``inf``, is stored by
+jsonb, but the server refuses it at its store boundary. These helpers name such a
+value per column so the cross-backend copy loops skip its row. The tests of the index pre-checks pin two properties:
 
-* the payload budget is derived from the widest index each value feeds, so a value
-  that passes really is indexable (thread_id shares its tuple with the ``source`` and
+* each budget fits ``PG_BTREE_MAX_ITEM_BYTES`` under the byte model of
+  ``pg_prechecks``: thread_id shares its tuple with the ``source`` and
   ``content_hash`` columns of idx_context_entries_dedup_hash, while a tag and a
-  string-typed metadata field are indexed on their own);
-* every column the target schema indexes is covered, including the values stored
-  under string-typed ``METADATA_INDEXED_FIELDS`` keys, whose expression index
-  ``idx_metadata_<field>`` carries the same ceiling.
+  string-typed metadata value get the larger budget. No test here checks against
+  PostgreSQL that a value at a budget is indexable;
+* a value under a ``METADATA_INDEXED_FIELDS`` key is checked against its field: a
+  string-typed value against that larger budget, and an integer-, float- or
+  boolean-typed value against the declared type, which an integer or boolean index
+  also applies as a cast, an old id stamped by ``--legacy-id-key`` included; array-
+  and object-typed fields build no expression index and are exempt.
 """
 
 import json
 
 import pytest
 
+from app.cli.migrate_uuid.id_paths import IdPath
+from app.cli.migrate_uuid.metadata_ids import MetadataIdRewriter
 from app.cli.migrate_uuid.pg_prechecks import PG_BTREE_MAX_ITEM_BYTES
 from app.cli.migrate_uuid.pg_prechecks import PG_MAX_INDEXED_THREAD_ID_BYTES
 from app.cli.migrate_uuid.pg_prechecks import PG_MAX_INDEXED_VALUE_BYTES
 from app.cli.migrate_uuid.pg_prechecks import first_pg_unindexable_metadata_field
 from app.cli.migrate_uuid.pg_prechecks import pg_unindexable_column_reason
 from app.cli.migrate_uuid.pg_prechecks import pg_unstorable_column_reason
-from app.cli.migrate_uuid.records import MigrationStats
-from app.cli.migrate_uuid.references import rewrite_metadata_references
 from app.settings import get_settings
 
 
@@ -67,6 +69,7 @@ class TestNonFiniteJsonNumbers:
         'metadata_json',
         [
             '{"score": 1e400}',        # standard JSON that json.loads turns into inf
+            '{"score": 1' + '0' * 400 + '.0}',  # a fraction too large for a double, also inf
             '{"score": Infinity}',     # non-standard token json.loads accepts
             '{"score": -Infinity}',
             '{"a": NaN}',
@@ -78,122 +81,37 @@ class TestNonFiniteJsonNumbers:
         assert pg_unstorable_column_reason(metadata_json, is_jsonb=True) is not None
 
     def test_finite_numbers_and_clean_json_pass(self) -> None:
-        """Ordinary finite numbers stay storable."""
+        """Finite numbers stay storable, a 401-digit integer included, which ``json.loads`` reads as an exact int."""
         assert pg_unstorable_column_reason('{"score": 1.5}', is_jsonb=True) is None
         assert pg_unstorable_column_reason('{"score": 1e300}', is_jsonb=True) is None
+        assert pg_unstorable_column_reason('{"score": 1' + '0' * 400 + '}', is_jsonb=True) is None
         assert pg_unstorable_column_reason('{"a": [1, 2, 3]}', is_jsonb=True) is None
 
     def test_message_names_the_offending_value(self) -> None:
         """The recorded reason identifies the non-finite float so the row can be repaired."""
         reason = pg_unstorable_column_reason('{"score": 1e400}', is_jsonb=True)
         assert reason is not None
-        assert 'Non-finite float' in reason
-
-    def test_rewrite_never_manufactures_an_invalid_token(self) -> None:
-        """Re-serialization preserves the source literal instead of emitting Infinity.
-
-        Re-encoding is where the invalid token would be created, on ALL FOUR migration
-        directions: json.loads turns 1e400 into inf and a default json.dumps writes it
-        back as the token ``Infinity``, which no RFC 8259 parser accepts. That would
-        convert valid source metadata into invalid target metadata on every SQLite
-        target (json_valid flips to 0) and abort the transaction on every PostgreSQL
-        target.
-        """
-        stats = MigrationStats()
-        rewritten = rewrite_metadata_references('{"score": 1e400}', {}, stats, 1)
-
-        assert rewritten == '{"score": 1e400}'
-        assert json.loads(rewritten)  # still parseable JSON
-        assert 'Infinity' not in rewritten
-        # The skipped rewrite is reported, and a non-empty error list exits non-zero.
-        assert len(stats.errors) == 1
-        assert 'row 1' in stats.errors[0]
-
-    def test_discarded_rewrites_are_not_reported_as_rewritten(self) -> None:
-        """Remappings the encoder rejects are not counted as remappings that landed.
-
-        The walker counts each remapping as it mutates the parsed structure, but the
-        re-encode then fails and the ORIGINAL metadata -- still carrying the integer ids
-        -- is what reaches the target. Counting those remappings makes the run summary and
-        the --report JSON claim rewrites the target does not have, contradicting the error
-        the same branch records.
-        """
-        stats = MigrationStats()
-        metadata_json = '{"references": {"context_ids": [1, 2, 3]}, "score": 1e400}'
-        mapping = {1: 'a' * 32, 2: 'b' * 32, 3: 'c' * 32}
-
-        rewritten = rewrite_metadata_references(metadata_json, mapping, stats, 5)
-
-        assert rewritten == metadata_json
-        assert json.loads(rewritten)['references']['context_ids'] == [1, 2, 3]
-        assert stats.references_rewritten == 0
-        assert len(stats.errors) == 1
-        assert 'row 5' in stats.errors[0]
-
-    def test_successful_rewrites_are_still_counted(self) -> None:
-        """The rollback is confined to the discard branch."""
-        stats = MigrationStats()
-        rewritten = rewrite_metadata_references(
-            '{"references": {"context_ids": [1, 2]}, "score": 1e300}',
-            {1: 'a' * 32, 2: 'b' * 32},
-            stats,
-            6,
-        )
-
-        assert rewritten is not None
-        assert json.loads(rewritten)['references']['context_ids'] == ['a' * 32, 'b' * 32]
-        assert stats.references_rewritten == 2
-        assert stats.errors == []
-
-    @pytest.mark.parametrize(
-        'metadata_json',
-        ['{"score": Infinity}', '{"a": NaN}', '{"score": -Infinity}'],
-    )
-    def test_non_standard_source_tokens_are_preserved_not_re_emitted(self, metadata_json: str) -> None:
-        """A source already carrying a non-standard token is preserved and reported.
-
-        Rewriting it would re-emit the same invalid token; preserving it verbatim keeps
-        the target byte-identical to the source, and the recorded error tells the
-        operator to repair the value.
-        """
-        stats = MigrationStats()
-        rewritten = rewrite_metadata_references(metadata_json, {}, stats, 7)
-
-        assert rewritten == metadata_json
-        assert len(stats.errors) == 1
-        assert 'row 7' in stats.errors[0]
-
-    def test_finite_metadata_still_round_trips(self) -> None:
-        """The guard does not disturb ordinary metadata."""
-        stats = MigrationStats()
-        rewritten = rewrite_metadata_references('{"score": 1e300, "a": [1, 2]}', {}, stats, 3)
-
-        assert rewritten is not None
-        assert json.loads(rewritten) == {'score': 1e300, 'a': [1, 2]}
-        assert stats.errors == []
+        assert 'Non-finite float inf ' in reason
 
 
-# Bytes an index tuple spends on things other than the checked payload, used by the
-# arithmetic assertions below: the MAXALIGNed IndexTupleData header with a null bitmap
-# (16) plus the long varlena header a text datum past 126 bytes carries (4).
+# The header bytes of the per-tuple reserve in pg_prechecks (16 + 4 of its 16 + 4 + 8,
+# without the 8 of slack), used by the arithmetic assertions below.
 _INDEX_TUPLE_HEADER_BYTES = 16 + 4
 
 
-# The trailing columns of idx_context_entries_dedup_hash(thread_id, source, content_hash):
-# 'agent' as a short-header varlena (6) and a 64-character SHA-256 hex string (65).
+# The bytes PG_MAX_INDEXED_THREAD_ID_BYTES reserves for the source and content_hash
+# columns of idx_context_entries_dedup_hash(thread_id, source, content_hash).
 _DEDUP_TRAILING_COLUMN_BYTES = 6 + 65
 
 
 class TestBtreeBudgets:
-    """The accepted payload sizes really fit the index tuples they land in."""
+    """The budgets fit PG_BTREE_MAX_ITEM_BYTES under the byte model of pg_prechecks."""
 
     def test_thread_id_budget_fits_the_dedup_index_tuple(self) -> None:
-        """A thread_id at the budget still fits idx_context_entries_dedup_hash.
+        """A thread_id at its budget, with the header and trailing-column bytes, fits PG_BTREE_MAX_ITEM_BYTES.
 
-        The base schema declares that index on (thread_id, source, content_hash), so the
-        thread_id payload shares its tuple with two more datums. A budget that accounts
-        only for the tuple header lets a value pass the guard and then abort the whole
-        run with ``index row size ... exceeds btree version 4 maximum 2704``.
+        The base schema declares idx_context_entries_dedup_hash on (thread_id, source,
+        content_hash), so the thread_id payload shares its tuple with two more datums.
         """
         widest_tuple = (
             _INDEX_TUPLE_HEADER_BYTES + PG_MAX_INDEXED_THREAD_ID_BYTES + _DEDUP_TRAILING_COLUMN_BYTES
@@ -201,11 +119,11 @@ class TestBtreeBudgets:
         assert widest_tuple <= PG_BTREE_MAX_ITEM_BYTES
 
     def test_single_column_budget_fits_its_index_tuple(self) -> None:
-        """A tag or string-typed metadata value at the budget fits its own index tuple."""
+        """A value at PG_MAX_INDEXED_VALUE_BYTES, with the header bytes, fits PG_BTREE_MAX_ITEM_BYTES."""
         assert _INDEX_TUPLE_HEADER_BYTES + PG_MAX_INDEXED_VALUE_BYTES <= PG_BTREE_MAX_ITEM_BYTES
 
     def test_thread_id_budget_is_the_narrower_one(self) -> None:
-        """thread_id gets less room than a value indexed on its own."""
+        """thread_id gets less room than a tag or a string-typed metadata value."""
         assert PG_MAX_INDEXED_THREAD_ID_BYTES < PG_MAX_INDEXED_VALUE_BYTES
 
     def test_boundary_values_are_accepted_and_rejected(self) -> None:
@@ -217,9 +135,9 @@ class TestBtreeBudgets:
             assert str(budget) in reason
 
     def test_multibyte_values_are_measured_in_utf8_bytes(self) -> None:
-        """A short string of wide code points can still exceed the byte budget."""
-        # Each code point encodes to 3 UTF-8 bytes, so half the budget in characters
-        # is one and a half budgets in bytes.
+        """A string within the budget in characters but over it in UTF-8 bytes is flagged."""
+        # Each code point encodes to 3 UTF-8 bytes, so a string of budget characters is
+        # three budgets in bytes.
         value = '中' * PG_MAX_INDEXED_THREAD_ID_BYTES
         assert pg_unindexable_column_reason(value, PG_MAX_INDEXED_THREAD_ID_BYTES) is not None
 
@@ -229,13 +147,18 @@ class TestBtreeBudgets:
         assert pg_unindexable_column_reason('thread-1', PG_MAX_INDEXED_VALUE_BYTES) is None
 
 
+def _source_held(metadata_json: str | None) -> tuple[str, str] | None:
+    """Check metadata a run stores exactly as the source holds it."""
+    return first_pg_unindexable_metadata_field(metadata_json, source_metadata_json=metadata_json)
+
+
 class TestIndexedMetadataFields:
     """Values under string-typed METADATA_INDEXED_FIELDS keys are checked too."""
 
     def test_oversized_string_under_an_indexed_key_is_flagged(self) -> None:
         """A default indexed field carrying an oversized value names the field."""
         metadata = json.dumps({'task_name': 'a' * 3000})
-        found = first_pg_unindexable_metadata_field(metadata)
+        found = _source_held(metadata)
 
         assert found is not None
         column, reason = found
@@ -245,13 +168,13 @@ class TestIndexedMetadataFields:
     def test_oversized_value_under_a_non_indexed_key_passes(self) -> None:
         """Only indexed keys are capped; jsonb itself imposes no such limit."""
         metadata = json.dumps({'notes': 'a' * 5000})
-        assert first_pg_unindexable_metadata_field(metadata) is None
+        assert _source_held(metadata) is None
 
     def test_array_and_object_fields_are_not_expression_indexed(self) -> None:
-        """The default ``references``/``technologies`` fields are served by the GIN index.
+        """The default ``references``/``technologies`` fields build no expression index.
 
         They are excluded from expression indexing on both backends, so a large value
-        under them is perfectly storable and must not cost the row its migration.
+        under them is not checked for width and does not cost the row its migration.
         """
         metadata = json.dumps(
             {
@@ -260,12 +183,12 @@ class TestIndexedMetadataFields:
             },
         )
         assert len(metadata) > PG_MAX_INDEXED_VALUE_BYTES
-        assert first_pg_unindexable_metadata_field(metadata) is None
+        assert _source_held(metadata) is None
 
     def test_container_under_a_string_typed_key_is_measured_as_serialized_text(self) -> None:
         """``metadata->>'<field>'`` yields a container's serialized form, which is indexed."""
         metadata = json.dumps({'project': ['a' * 100] * 40})
-        found = first_pg_unindexable_metadata_field(metadata)
+        found = _source_held(metadata)
 
         assert found is not None
         assert found[0] == 'metadata.project'
@@ -276,9 +199,13 @@ class TestIndexedMetadataFields:
         """A value the target's index cast rejects loses its row, not the whole run.
 
         SQLite indexes ``{"priority": "high"}`` under an integer-typed field without a
-        cast and stores it happily; the PostgreSQL expression index evaluates
-        ``(metadata->>'priority')::INTEGER`` on every INSERT and refuses it, aborting
-        the transaction with a raw driver error that names no source row.
+        cast and stores it happily. On a target that already carries
+        idx_metadata_priority, the expression index evaluates
+        ``(metadata->>'priority')::INTEGER`` on every INSERT and refuses it, so the whole
+        run rolls back with a raw driver error that names no source row. On a target this
+        command initialized, the index does not exist yet, so the INSERT succeeds and the
+        target's first server start fails to build the index (exit 78). Either way the
+        pre-check skips the row.
 
         Args:
             monkeypatch: Used to configure a typed indexed field.
@@ -286,7 +213,7 @@ class TestIndexedMetadataFields:
         monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'priority:integer')
         get_settings.cache_clear()
 
-        found = first_pg_unindexable_metadata_field(json.dumps({'priority': 'high'}))
+        found = _source_held(json.dumps({'priority': 'high'}))
 
         assert found is not None
         column, reason = found
@@ -311,7 +238,7 @@ class TestIndexedMetadataFields:
         monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'score:float')
         get_settings.cache_clear()
 
-        found = first_pg_unindexable_metadata_field(json.dumps({'score': 'high'}))
+        found = _source_held(json.dumps({'score': 'high'}))
 
         assert found is not None
         column, reason = found
@@ -332,8 +259,8 @@ class TestIndexedMetadataFields:
         monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'score:float')
         get_settings.cache_clear()
 
-        assert first_pg_unindexable_metadata_field(json.dumps({'score': 3.5})) is None
-        assert first_pg_unindexable_metadata_field(json.dumps({'score': '3.5'})) is None
+        assert _source_held(json.dumps({'score': 3.5})) is None
+        assert _source_held(json.dumps({'score': '3.5'})) is None
 
     def test_typed_field_holding_a_castable_value_passes(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -346,17 +273,155 @@ class TestIndexedMetadataFields:
         monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'priority:integer')
         get_settings.cache_clear()
 
-        assert first_pg_unindexable_metadata_field(json.dumps({'priority': 7})) is None
-        assert first_pg_unindexable_metadata_field(json.dumps({'priority': '7'})) is None
+        assert _source_held(json.dumps({'priority': 7})) is None
+        assert _source_held(json.dumps({'priority': '7'})) is None
 
     def test_json_null_and_small_values_pass(self) -> None:
         """A JSON null indexes as SQL NULL (excluded by the index predicate)."""
-        assert first_pg_unindexable_metadata_field(json.dumps({'task_name': None})) is None
-        assert first_pg_unindexable_metadata_field(json.dumps({'task_name': 'audit'})) is None
-        assert first_pg_unindexable_metadata_field(json.dumps({'status': 42})) is None
+        assert _source_held(json.dumps({'task_name': None})) is None
+        assert _source_held(json.dumps({'task_name': 'audit'})) is None
+        assert _source_held(json.dumps({'status': 42})) is None
 
     def test_absent_unparseable_and_non_object_metadata_pass(self) -> None:
-        """Shapes the jsonb bind rejects on its own are left to the unstorable check."""
-        assert first_pg_unindexable_metadata_field(None) is None
-        assert first_pg_unindexable_metadata_field('{not json') is None
-        assert first_pg_unindexable_metadata_field('[1, 2, 3]') is None
+        """Absent, unparseable and non-object metadata hold no indexed field value.
+
+        Unparseable text is left to the unstorable check, which refuses it. A JSON array
+        or scalar is storable jsonb, and ``metadata->>'<field>'`` reads NULL from it, so
+        both checks pass it.
+        """
+        assert _source_held(None) is None
+        assert _source_held('{not json') is None
+        assert pg_unstorable_column_reason('{not json', is_jsonb=True) is not None
+        for non_object in ('[1, 2, 3]', '7', '"text"'):
+            assert _source_held(non_object) is None
+            assert pg_unstorable_column_reason(non_object, is_jsonb=True) is None
+
+
+class TestStampedOldIdUnderTypedField:
+    """A ``--legacy-id-key`` naming a typed indexed field: which stamped old ids the target accepts."""
+
+    @staticmethod
+    def _stamped(key: str, old_id: int) -> str | None:
+        """Return an entry's metadata with its old id stamped under ``key``."""
+        return MetadataIdRewriter([], {old_id: 'a' * 32}, legacy_id_key=key).rewrite('{}', old_id).metadata
+
+    def test_boolean_field_accepts_only_old_ids_zero_and_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """PostgreSQL reads the stamped 0 and 1 as false and true and rejects every other old id.
+
+        Args:
+            monkeypatch: Used to configure a boolean-typed indexed field.
+        """
+        monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'archived:boolean')
+        get_settings.cache_clear()
+
+        assert first_pg_unindexable_metadata_field(self._stamped('archived', 0), source_metadata_json='{}') is None
+        assert first_pg_unindexable_metadata_field(self._stamped('archived', 1), source_metadata_json='{}') is None
+        found = first_pg_unindexable_metadata_field(self._stamped('archived', 2), source_metadata_json='{}')
+        assert found is not None
+        column, reason = found
+        assert column == 'metadata.archived'
+        assert 'not a valid boolean' in reason
+
+    def test_integer_field_accepts_old_ids_up_to_the_int32_maximum(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The stamped old id fits an integer-typed field up to 2,147,483,647 and is refused above it.
+
+        Args:
+            monkeypatch: Used to configure an integer-typed indexed field.
+        """
+        monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'legacy:integer')
+        get_settings.cache_clear()
+
+        assert first_pg_unindexable_metadata_field(self._stamped('legacy', 2_147_483_647), source_metadata_json='{}') is None
+        found = first_pg_unindexable_metadata_field(self._stamped('legacy', 2_147_483_648), source_metadata_json='{}')
+        assert found is not None
+        column, reason = found
+        assert column == 'metadata.legacy'
+        assert 'out of range' in reason
+
+
+# The end every remedy of a skip reason shares: a run commits the rows it stored, and a
+# rerun toward PostgreSQL needs a target without context_entries rows.
+_RERUN = 'rerun into an empty target database to migrate it'
+
+
+class TestSkipRemedyByCause:
+    """A typed field's skip reason ends with the remedy for whatever wrote the failing value.
+
+    The source database holds a value the run stores unchanged; ``--rewrite-ids-at``
+    wrote a value that differs from the source's under the same key; ``--legacy-id-key``
+    wrote a key the source lacks.
+    """
+
+    def test_value_the_source_holds_is_corrected_in_the_source(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A value stored as the source holds it sends the operator to the source database.
+
+        Args:
+            monkeypatch: Used to configure an integer-typed indexed field.
+        """
+        monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'priority:integer')
+        get_settings.cache_clear()
+        metadata = json.dumps({'priority': 'high'})
+
+        found = first_pg_unindexable_metadata_field(metadata, source_metadata_json=metadata)
+
+        assert found is not None
+        assert found[1].endswith(f'so this row is skipped -- correct the value in the source database and {_RERUN}')
+
+    def test_value_the_rewrite_wrote_names_rewrite_ids_at(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A 32-character id written over the source's integer names ``--rewrite-ids-at``, not the source.
+
+        Args:
+            monkeypatch: Used to configure an integer-typed indexed field.
+        """
+        monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'parent:integer')
+        get_settings.cache_clear()
+        source = json.dumps({'parent': 1})
+        written = MetadataIdRewriter([IdPath.parse('parent')], {1: 'a' * 32}, legacy_id_key=None).rewrite(source, 2).metadata
+
+        found = first_pg_unindexable_metadata_field(written, source_metadata_json=source)
+
+        assert found is not None
+        column, reason = found
+        assert column == 'metadata.parent'
+        assert reason.endswith(
+            'so this row is skipped -- the value comes from --rewrite-ids-at: declare parent:string in '
+            'METADATA_INDEXED_FIELDS for this command and for the server that will serve the target, or drop the '
+            f'--rewrite-ids-at path that reaches metadata.parent, and {_RERUN}',
+        )
+        assert 'source database' not in reason
+
+    @pytest.mark.parametrize(
+        'source',
+        [None, '{"status": "open"}'],
+        ids=['null-metadata', 'object-without-the-key'],
+    )
+    def test_value_the_stamp_wrote_names_legacy_id_key(
+        self, source: str | None, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An old id under a key the source metadata does not hold names ``--legacy-id-key``, not the source.
+
+        Args:
+            source: The source metadata, which holds no ``archived`` key.
+            monkeypatch: Used to configure a boolean-typed indexed field.
+        """
+        monkeypatch.setenv('METADATA_INDEXED_FIELDS', 'archived:boolean')
+        get_settings.cache_clear()
+
+        found = first_pg_unindexable_metadata_field(json.dumps({'archived': 2}), source_metadata_json=source)
+
+        assert found is not None
+        column, reason = found
+        assert column == 'metadata.archived'
+        assert reason.endswith(
+            'so this row is skipped -- the value comes from --legacy-id-key: declare archived:string in '
+            'METADATA_INDEXED_FIELDS for this command and for the server that will serve the target, or pass a '
+            f'--legacy-id-key name METADATA_INDEXED_FIELDS does not list, and {_RERUN}',
+        )
+        assert 'source database' not in reason
+
+    def test_width_reason_keeps_the_source_remedy(self) -> None:
+        """An oversized string-typed value is shortened in the source, whoever lengthened it."""
+        found = _source_held(json.dumps({'task_name': 'a' * 3000}))
+
+        assert found is not None
+        assert found[1].endswith(f'shorten the value in the source database and {_RERUN}')

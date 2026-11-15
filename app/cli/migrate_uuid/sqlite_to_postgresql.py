@@ -1,8 +1,11 @@
 """SQLite-to-PostgreSQL migration runner."""
 
+import sqlite3
+
 from app.cli._database_url import parse_backend_url
 from app.cli.migrate_uuid.id_mapping import build_id_mapping
 from app.cli.migrate_uuid.id_mapping import stored_datetime_or_none
+from app.cli.migrate_uuid.metadata_ids import MetadataIdRewriter
 from app.cli.migrate_uuid.pg_connection import pg_connect
 from app.cli.migrate_uuid.pg_connection import pg_table_exists
 from app.cli.migrate_uuid.pg_connection import target_pg_has_data
@@ -15,13 +18,76 @@ from app.cli.migrate_uuid.pg_target import ensure_target_pg_fts
 from app.cli.migrate_uuid.pg_target import initialize_target_postgresql
 from app.cli.migrate_uuid.records import MigrationOptions
 from app.cli.migrate_uuid.records import MigrationStats
-from app.cli.migrate_uuid.references import rewrite_metadata_references
 from app.cli.migrate_uuid.sqlite_source import detect_optional_tables
 from app.cli.migrate_uuid.sqlite_source import detect_source_id_kind
 from app.cli.migrate_uuid.sqlite_source import open_source_sqlite
 from app.cli.migrate_uuid.sqlite_source import table_has_column
 from app.cli.migrate_uuid.target_rows import SELECT_DISTINCT_TAGS_SQL
 from app.cli.migrate_uuid.target_rows import access_backfill_values
+
+
+def _pg_skip_reason(row: sqlite3.Row, metadata: str | None) -> tuple[str, str] | None:
+    """Return why a source entry row is skipped on its way to the PostgreSQL target, or None.
+
+    SQLite accepts five classes of value that this check keeps from the PostgreSQL target,
+    and the row is skipped on the first one found:
+
+    1. A NUL (U+0000) or unpaired UTF-16 surrogate in any column.
+    2. jsonb metadata that is not valid JSON, that decodes to a NUL or an unpaired
+       surrogate through an escape such as ``\\u0000``, or that holds a ``NaN``,
+       ``Infinity`` or ``-Infinity`` token.
+    3. jsonb metadata holding a number written with a fraction or an exponent that is
+       too large for a double, such as ``1e400``, which ``json.loads`` reads as ``inf``.
+       The rewriter cannot re-encode it and so keeps the text verbatim.
+    4. A thread_id wider than :data:`PG_MAX_INDEXED_THREAD_ID_BYTES`, the budget for
+       idx_context_entries_dedup_hash, the btree it leads. text_content and summary feed
+       no btree index, so this check sets no width for them.
+    5. A value under a METADATA_INDEXED_FIELDS key that fails its field's check: a
+       string-typed value wider than :data:`PG_MAX_INDEXED_VALUE_BYTES`, the budget for
+       the field's expression index idx_metadata_<field>, or an integer-, boolean- or
+       float-typed value that does not parse as the declared type. Array- and
+       object-typed fields build no expression index and are exempt.
+
+    Unchecked, a value of class 1 or 2 makes the INSERT raise mid-transaction on every
+    target, because the column types and the jsonb cast come with the base schema: the
+    whole run rolls back and reports only the raw driver error, naming no row. A class 3
+    value passes the jsonb cast, which stores it as a JSON number, so the INSERT succeeds;
+    the row is skipped because the server refuses a non-finite number at its store
+    boundary (:func:`app.metadata_types.non_finite_metadata_error`). A class 5 value the
+    hard SQL cast of an integer or boolean index rejects makes the INSERT raise in the
+    same way only on a target that already carries idx_metadata_<field>, which the server
+    creates when it starts. On a target this command initialized, the INSERT succeeds and
+    the target's first server start fails to build that index with exit 78.
+    A float-typed field's index reads JSON numbers only, through a cast that never fails,
+    so it refuses no value; a non-number under it is skipped because the server refuses a
+    value of another type than the field declares.
+
+    The reason of a class 5 value of the declared-type kind ends with the remedy for what
+    wrote the value, decided against the row's source metadata: the source database, or
+    the ``--rewrite-ids-at`` or ``--legacy-id-key`` option of this run.
+
+    The check runs on a dry run too, so it surfaces every affected row before a real run.
+
+    Args:
+        row: The source ``context_entries`` row, whose ``metadata`` is the metadata as
+            the source holds it.
+        metadata: The metadata text the target would store for it.
+
+    Returns:
+        The column and the reason of the first value that skips the row, or None.
+    """
+    thread_id = row['thread_id']
+    return first_pg_unstorable_column(
+        (
+            ('thread_id', thread_id, False),
+            ('text_content', row['text_content'], False),
+            ('summary', row['summary'], False),
+            ('content_hash', row['content_hash'], False),
+            ('metadata', metadata, True),
+        ),
+    ) or first_pg_unindexable_column(
+        (('thread_id', thread_id, PG_MAX_INDEXED_THREAD_ID_BYTES),),
+    ) or first_pg_unindexable_metadata_field(metadata, source_metadata_json=row['metadata'])
 
 
 async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) -> MigrationStats:
@@ -43,6 +109,7 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
     import asyncpg
 
     stats = MigrationStats()
+    stats.start_metadata_counts(options)
     stats.warnings.append(
         'cross-backend migration drops vector embeddings; re-embed the target after migration',
     )
@@ -83,6 +150,7 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
         )
         source_rows = cursor.fetchall()
         id_mapping = build_id_mapping(source_rows)
+        rewriter = MetadataIdRewriter(options.id_paths, id_mapping, legacy_id_key=options.legacy_id_key)
 
         # Auto-initialize the target schema when absent (mirrors the SQLite
         # path and the PG->PG path). Cross-backend migration drops vector
@@ -131,69 +199,52 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                 'content_hash' if table_has_column(source, 'context_entries', 'content_hash')
                 else 'NULL AS content_hash'
             )
-            entry_cursor = source.execute(
+            entry_sql = (
                 f'SELECT id, thread_id, source, content_type, text_content, metadata, '
                 f'{summary_col_src}, {content_hash_col_src}, created_at, updated_at FROM context_entries '
-                f'ORDER BY created_at ASC, id ASC',
+                f'ORDER BY created_at ASC, id ASC'
             )
-            # Source ids of context_entries rows skipped for a PostgreSQL-unstorable
-            # value. Their tags/image_attachments children must be skipped too: the
-            # parent id stays in id_mapping (so the orphan-FK check would not catch
-            # them), and inserting a child that references a never-inserted parent
-            # would raise an FK violation on PostgreSQL -- relocating the very abort
-            # this guard prevents.
-            skipped_context_ids: set[int] = set()
-            for row in entry_cursor:
+            # Every context_entries skip is decided before any row is stored, so a stored
+            # value citing a skipped entry is kept as written whether the citing entry is
+            # older or newer than it: the rewriter of the storing pass treats every skipped
+            # id as not migrated.
+            # The source is read twice, one row at a time.
+            skip_reasons: dict[int, tuple[str, str]] = {}
+            for row in source.execute(entry_sql):
+                source_id = int(row['id'])
+                skip_reason = _pg_skip_reason(row, rewriter.rewrite(row['metadata'], source_id).metadata)
+                if skip_reason is not None:
+                    skip_reasons[source_id] = skip_reason
+            storing_rewriter = rewriter.excluding(skip_reasons.keys())
+            # Source ids of the skipped context_entries rows. Their tags/image_attachments
+            # children must be skipped too: the parent id stays in id_mapping (so the
+            # orphan-FK check would not catch them), and inserting a child that references
+            # a never-inserted parent would raise an FK violation on PostgreSQL.
+            skipped_context_ids = set(skip_reasons)
+            # The metadata stored below differs from the metadata checked above only where
+            # a value cites a skipped entry and stays as written instead of becoming a
+            # 32-character id. Such a value passes every check the id passed: an id fails
+            # the integer and boolean checks, and fails the float check unless it reads as a
+            # decimal number (digits only, or digits around one 'e'), so a passing one sits
+            # under an untyped top-level key, under an array- or object-typed one, which is
+            # exempt and has no check, under a string-typed one, where the shorter original
+            # fits too, or under a float-typed one, where the original passes too. So each
+            # row is stored as checked, and its skip is taken from the first pass, never
+            # decided again.
+            for row in source.execute(entry_sql):
                 source_id = int(row['id'])
                 new_id = id_mapping[source_id]
-                # Snapshot the rewrite counter so a row this loop ends up SKIPPING does
-                # not leave its remappings counted: none of them reach the target.
-                references_rewritten_before = stats.references_rewritten
-                rewritten_metadata = rewrite_metadata_references(
-                    row['metadata'],
-                    id_mapping,
-                    stats,
-                    source_id,
-                )
-                # A NUL (U+0000) or unpaired UTF-16 surrogate is legal in a SQLite
-                # TEXT value but fatal on the PostgreSQL target: without this check
-                # the asyncpg bind raises mid-transaction, ROLLBACKs the whole run,
-                # and reports only the raw driver error with no row identification.
-                # Checked UNCONDITIONALLY (not behind dry_run) so --dry-run surfaces
-                # every affected row before a real run; the offending row is
-                # identified and skipped, mirroring the orphan-FK skip-and-warn.
-                row_thread_id = row['thread_id']
-                unstorable = first_pg_unstorable_column(
-                    (
-                        ('thread_id', row_thread_id, False),
-                        ('text_content', row['text_content'], False),
-                        ('summary', row['summary'], False),
-                        ('content_hash', row['content_hash'], False),
-                        ('metadata', rewritten_metadata, True),
-                    ),
-                )
-                if unstorable is None:
-                    # Same skip-and-warn shape for the OTHER SQLite-accepts /
-                    # PostgreSQL-rejects class on this path: a value SQLite indexed
-                    # happily but the target's btree cannot hold. Only the columns the
-                    # target schema itself indexes are checked; text_content and
-                    # summary are unindexed and may be arbitrarily large. The metadata
-                    # bound into the target is inspected too: every
-                    # METADATA_INDEXED_FIELDS key is indexed by the expression index
-                    # idx_metadata_<field>, under the same btree ceiling for a
-                    # string-typed field, and a typed one holds only values of its
-                    # declared type (a hard SQL cast for integer and boolean).
-                    unstorable = first_pg_unindexable_column(
-                        (('thread_id', row_thread_id, PG_MAX_INDEXED_THREAD_ID_BYTES),),
-                    ) or first_pg_unindexable_metadata_field(rewritten_metadata)
+                outcome = storing_rewriter.rewrite(row['metadata'], source_id)
+                rewritten_metadata = outcome.metadata
+                unstorable = skip_reasons.get(source_id)
+                # The counts of a skipped row are not added: none of its values reach the target.
+                stats.record_metadata(outcome, migrated=unstorable is None)
                 if unstorable is not None:
                     column, reason = unstorable
                     stats.errors.append(
-                        f'context_entries row id={source_id} thread_id={row_thread_id!r} '
+                        f'context_entries row id={source_id} thread_id={row["thread_id"]!r} '
                         f'column {column!r} skipped: {reason}',
                     )
-                    stats.references_rewritten = references_rewritten_before
-                    skipped_context_ids.add(source_id)
                     continue
                 if not options.dry_run:
                     owner_id_backfill, visibility_backfill = access_backfill_values()
@@ -242,9 +293,10 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                     tag_unstorable = first_pg_unstorable_column(
                         (('tag', tag_row['tag'], False),),
                     ) or first_pg_unindexable_column(
-                        # idx_tags_tag is a btree: a legacy tag longer than its
-                        # index-tuple budget aborts the INSERT mid-transaction. The tag
-                        # is indexed on its own, so it gets the full single-column budget.
+                        # idx_tags_tag and the unique idx_tags_entry_tag
+                        # (context_entry_id, tag) index the tag. It gets the budget of a
+                        # string-typed metadata value, which reserves no room for
+                        # context_entry_id.
                         (('tag', tag_row['tag'], PG_MAX_INDEXED_VALUE_BYTES),),
                     )
                     if tag_unstorable is not None:

@@ -10,8 +10,10 @@ from pydantic import ValidationError
 
 from app.cli._database_url import mask_credentials
 from app.cli._database_url import parse_backend_url
+from app.cli.migrate_uuid.id_paths import IdPath
 from app.cli.migrate_uuid.postgresql_to_postgresql import run_migration_postgresql
 from app.cli.migrate_uuid.postgresql_to_sqlite import run_migration_mixed_postgresql_to_sqlite
+from app.cli.migrate_uuid.records import IdPathCounts
 from app.cli.migrate_uuid.records import MigrationOptions
 from app.cli.migrate_uuid.records import MigrationStats
 from app.cli.migrate_uuid.sqlite_to_postgresql import run_migration_mixed_sqlite_to_postgresql
@@ -19,6 +21,16 @@ from app.cli.migrate_uuid.sqlite_to_sqlite import run_migration_sqlite_to_sqlite
 from app.errors import ConfigurationError
 
 logger = logging.getLogger(__name__)
+
+
+def _id_path_line(text: str, counts: IdPathCounts) -> str:
+    """Render the summary line of one ``--rewrite-ids-at`` path."""
+    not_migrated = 'not the id of a migrated entry' if counts.not_migrated == 1 else 'not ids of migrated entries'
+    kept = 'other value kept' if counts.kept == 1 else 'other values kept'
+    return (
+        f'  ids at {text}: {counts.rewritten} rewritten, {counts.not_migrated} {not_migrated}, '
+        f'{counts.kept} {kept}'
+    )
 
 
 def print_summary(stats: MigrationStats, source_url: str, target_url: str, dry_run: bool = False) -> None:
@@ -29,9 +41,14 @@ def print_summary(stats: MigrationStats, source_url: str, target_url: str, dry_r
     print(f'  source: {source_display}')
     print(f'  target: {target_display}')
     print(f'  rows migrated: {stats.rows_migrated}')
-    print(f'  references rewritten: {stats.references_rewritten}')
-    print(f'  orphan references: {stats.orphan_references}')
-    print(f'  malformed references: {stats.malformed_references}')
+    for text, counts in stats.id_paths.items():
+        print(_id_path_line(text, counts))
+    if stats.legacy_id is not None:
+        legacy = stats.legacy_id
+        print(
+            f'  legacy id key {legacy.key!r}: {legacy.stamped} stamped, '
+            f'{legacy.already_present} already present, {legacy.not_stamped} not stamped',
+        )
     print(f'  tags migrated: {stats.tags_migrated}')
     print(f'  images migrated: {stats.images_migrated}')
     print(f'  embedding_metadata migrated: {stats.embedding_metadata_migrated}')
@@ -55,7 +72,15 @@ def print_summary(stats: MigrationStats, source_url: str, target_url: str, dry_r
         )
 
 
-def run_uuid_migration(source_url: str, target_url: str, *, dry_run: bool, report_path: Path | None) -> int:
+def run_uuid_migration(
+    source_url: str,
+    target_url: str,
+    *,
+    dry_run: bool,
+    report_path: Path | None,
+    id_paths: tuple[IdPath, ...],
+    legacy_id_key: str | None,
+) -> int:
     """Run the integer-to-UUIDv7 migration and report its outcome.
 
     Dispatches on the backend pair of ``source_url`` and ``target_url``, prints
@@ -68,6 +93,10 @@ def run_uuid_migration(source_url: str, target_url: str, *, dry_run: bool, repor
             against the target.
         report_path: Optional path. When set, write the migration statistics
             as JSON to this file.
+        id_paths: The metadata paths whose entry ids are rewritten, in
+            command-line order.
+        legacy_id_key: The top-level metadata key each migrated entry's old id
+            is stamped under, or None to stamp nothing.
 
     Returns:
         Process exit code: 0 on success, 1 on an invalid URL, an unsupported
@@ -82,6 +111,8 @@ def run_uuid_migration(source_url: str, target_url: str, *, dry_run: bool, repor
         target_url=target_url,
         dry_run=dry_run,
         report_path=report_path,
+        id_paths=id_paths,
+        legacy_id_key=legacy_id_key,
     )
 
     try:

@@ -107,9 +107,6 @@ async def test_search_compressed_recall_postgresql(
     monkeypatch.setenv('STORAGE_BACKEND', 'postgresql')
     monkeypatch.setenv('POSTGRESQL_CONNECTION_STRING', isolated_pg_db_search)
     monkeypatch.setenv('EMBEDDING_DIM', str(DIM))
-    # ENABLE_SEMANTIC_SEARCH gates apply_semantic_search_migration and
-    # apply_chunking_migration; the embedding_metadata table queried by
-    # _store_compressed_pg is created by the semantic-search migration.
     monkeypatch.setenv('ENABLE_SEMANTIC_SEARCH', 'true')
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
     monkeypatch.setenv('COMPRESSION_SEED', str(SEED))
@@ -130,10 +127,12 @@ async def test_search_compressed_recall_postgresql(
     await backend.initialize()
     try:
         await init_database(backend=backend)
-        # Semantic-search migration creates vec_context_embeddings AND
-        # embedding_metadata; chunking migration converts the 1:1 schema
-        # to 1:N; compression migration replaces the fp32 table with
-        # vec_context_embeddings_compressed + compression_metadata.
+        # Semantic-search migration creates the embedding_metadata table
+        # _store_compressed_pg writes and, with compression on, leaves out the fp32
+        # vec_context_embeddings table. With compression on, the chunking migration
+        # only adds embedding_metadata.chunk_count, because its vec_context_embeddings
+        # statements are skipped. The compression migration creates
+        # vec_context_embeddings_compressed and compression_metadata.
         await apply_semantic_search_migration(backend=backend)
         await apply_chunking_migration(backend=backend)
         await apply_compression_migration(backend=backend)

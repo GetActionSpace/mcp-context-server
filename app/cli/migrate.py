@@ -23,10 +23,53 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from app.cli.migrate_uuid.id_paths import DEFAULT_ID_PATH
+from app.cli.migrate_uuid.id_paths import IdPath
+from app.cli.migrate_uuid.id_paths import check_legacy_id_key
 from app.cli.migrate_uuid.run import run_uuid_migration
 from app.errors import ConfigurationError
 
 logger = logging.getLogger(__name__)
+
+IN_PLACE_REFUSAL = (
+    '--rewrite-ids-at and --legacy-id-key are valid only with the v2->v3 migration, not with an in-place mode'
+)
+
+
+def _id_path_argument(text: str) -> IdPath:
+    """Parse one ``--rewrite-ids-at`` value.
+
+    Args:
+        text: The path as given on the command line.
+
+    Returns:
+        The parsed path.
+
+    Raises:
+        argparse.ArgumentTypeError: The text is not a valid path.
+    """
+    try:
+        return IdPath.parse(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _legacy_id_key_argument(name: str) -> str:
+    """Check the ``--legacy-id-key`` value.
+
+    Args:
+        name: The key as given on the command line.
+
+    Returns:
+        The key, unchanged.
+
+    Raises:
+        argparse.ArgumentTypeError: The key cannot be stamped.
+    """
+    try:
+        return check_legacy_id_key(name)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -44,7 +87,8 @@ def build_parser() -> argparse.ArgumentParser:
             'database under a new model, reassign the owner of existing '
             'context entries, or remove the PostgreSQL row-level security '
             "the server installed. PostgreSQL modes need the table owner's "
-            'credentials in --source-url.'
+            'credentials in every PostgreSQL URL they are given, --target-url '
+            'included.'
         ),
     )
     parser.add_argument(
@@ -74,6 +118,40 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar='PATH',
         help='Write a JSON migration report to PATH.',
+    )
+    parser.add_argument(
+        '--rewrite-ids-at',
+        action='append',
+        type=_id_path_argument,
+        # None rather than the default path: argparse appends to a non-empty default.
+        default=None,
+        metavar='PATH',
+        dest='rewrite_ids_at',
+        help=(
+            'Metadata path holding entry ids to rewrite; repeatable. Keys are separated by '
+            'dots and read from the top of the metadata; "*" stands for any one key and a '
+            'leading "**." matches at any depth. The value found may be one id or a list of '
+            'ids: an integer, or a string holding an integer in the form JSON writes one ("7", '
+            'not "007" or "+7"), that is the id of a migrated entry becomes its new id, and any '
+            'other value is kept and counted per path in the summary. In metadata holding a number '
+            'Python cannot write back as JSON, no id is rewritten, no value is counted per path and '
+            'the run reports an error. '
+            f'Default: {DEFAULT_ID_PATH}; paths you give replace it. Only for the v2->v3 migration.'
+        ),
+    )
+    parser.add_argument(
+        '--legacy-id-key',
+        type=_legacy_id_key_argument,
+        default=None,
+        metavar='NAME',
+        help=(
+            "Store each migrated entry's old integer id in its metadata under the top-level "
+            'key NAME (ASCII letters and digits, "_" and "-"; "ingest" is reserved), so '
+            'search_context(metadata={NAME: <old id>}) finds it. An entry that already holds '
+            'NAME is not stamped. Metadata that does not parse, is not a JSON object, or holds a '
+            'number Python cannot write back as JSON is not stamped, and the run reports an error. '
+            'Only for the v2->v3 migration.'
+        ),
     )
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument(
@@ -185,14 +263,21 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``mcp-context-server-migrate`` script.
 
+    An argument error or an option refusal never returns: argparse exits with
+    code 2 (``SystemExit``) for an invalid --rewrite-ids-at path or
+    --legacy-id-key, two mutually exclusive modes, --force without
+    --disable-rls, --rewrite-ids-at or --legacy-id-key with an in-place mode,
+    and a --rewrite-ids-at path given twice.
+
     Args:
         argv: Optional override for ``sys.argv[1:]`` (used by tests).
 
     Returns:
-        Process exit code: 0 on success, 1 on user error, recorded errors,
-        or a connection the command may not run on (row-level security
-        filters its role, or the database refuses a statement with
-        insufficient privilege), 2 on unrecoverable migration failure, 78
+        Process exit code: 0 on success; 1 when the v2->v3 migration has no
+        --target-url, on recorded errors or a refusal the selected mode
+        reports, or on a connection the command may not run on (row-level
+        security filters its role, or the database refuses a statement with
+        insufficient privilege); 2 on unrecoverable migration failure; 78
         (EX_CONFIG) on a settings ValidationError -- the same classification
         the server's guarded import applies.
     """
@@ -200,6 +285,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.force and not args.disable_rls:
         parser.error('--force is valid only with --disable-rls')
+    in_place_mode = any(
+        (args.compress, args.decompress, args.re_embed, args.embed_missing, args.reassign_owner, args.disable_rls),
+    )
+    if in_place_mode and (args.rewrite_ids_at is not None or args.legacy_id_key is not None):
+        parser.error(IN_PLACE_REFUSAL)
+    id_path_texts = [path.text for path in args.rewrite_ids_at or ()]
+    for text in id_path_texts:
+        if id_path_texts.count(text) > 1:
+            parser.error(f'--rewrite-ids-at {text!r} is given twice')
 
     if not logging.getLogger().handlers:
         logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -297,6 +391,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         args.target_url,
         dry_run=args.dry_run,
         report_path=args.report,
+        id_paths=tuple(args.rewrite_ids_at or (IdPath.parse(DEFAULT_ID_PATH),)),
+        legacy_id_key=args.legacy_id_key,
     )
 
 

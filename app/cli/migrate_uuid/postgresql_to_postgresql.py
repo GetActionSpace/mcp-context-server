@@ -4,6 +4,7 @@ import logging
 
 from app.cli.migrate_uuid.id_mapping import NULL_CREATED_AT_ANCHOR
 from app.cli.migrate_uuid.id_mapping import created_at_for_id
+from app.cli.migrate_uuid.metadata_ids import MetadataIdRewriter
 from app.cli.migrate_uuid.pg_connection import detect_source_embedding_dim_pg
 from app.cli.migrate_uuid.pg_connection import pg_column_exists
 from app.cli.migrate_uuid.pg_connection import pg_connect
@@ -16,7 +17,6 @@ from app.cli.migrate_uuid.pg_target import ensure_target_pg_fts
 from app.cli.migrate_uuid.pg_target import initialize_target_postgresql
 from app.cli.migrate_uuid.records import MigrationOptions
 from app.cli.migrate_uuid.records import MigrationStats
-from app.cli.migrate_uuid.references import rewrite_metadata_references
 from app.cli.migrate_uuid.target_rows import SELECT_DISTINCT_TAGS_SQL
 from app.cli.migrate_uuid.target_rows import access_backfill_values
 from app.ids import generate_id_with_timestamp
@@ -49,6 +49,7 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
     import asyncpg
 
     stats = MigrationStats()
+    stats.start_metadata_counts(options)
     source_conn = await pg_connect(options.source_url)
     # Open the target connection INSIDE the try so a failed target connect
     # (unreachable host, bad credentials, role/connection limit, SSL) closes the
@@ -58,10 +59,13 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
         target_conn = await pg_connect(options.target_url)
         await source_conn.execute('BEGIN TRANSACTION READ ONLY')
 
-        # Bind the configured POSTGRESQL_SCHEMA EXPLICITLY for every TARGET probe so they
-        # inspect the schema the migration will WRITE to even before it is created --
-        # current_schema() would fall back to public and mis-resolve a non-default schema
-        # (false abort, or silent wrong-schema copy). See target_pg_has_data.
+        # Bind the configured POSTGRESQL_SCHEMA EXPLICITLY for the two TARGET probes that can
+        # run before that schema exists, the data check and the context_entries probe, so
+        # they inspect the schema the migration will WRITE to -- current_schema() would fall
+        # back to public and mis-resolve a non-default schema (false abort, or silent
+        # wrong-schema copy). See target_pg_has_data. The FTS probe binds it too. The vec
+        # table backstop and the embedding copies probe through current_schema(), and only
+        # after context_entries was found in, or created in, the configured schema.
         from app.settings import get_settings
         target_schema = get_settings().storage.postgresql_schema
 
@@ -103,13 +107,14 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                 null_created_at,
                 NULL_CREATED_AT_ANCHOR.isoformat(),
             )
+        rewriter = MetadataIdRewriter(options.id_paths, id_mapping, legacy_id_key=options.legacy_id_key)
 
         # Detect what the SOURCE carries so the target can be shaped to match.
         source_has_embeddings = await pg_table_exists(source_conn, 'embedding_metadata')
         # The vector table is detected INDEPENDENTLY of embedding_metadata: a source can
         # carry the metadata table without a vec_context_embeddings table (e.g. semantic
         # search was provisioned but never populated, or the vec table was dropped). The
-        # vector copy and its dry-run COUNT must gate on THIS, not on embedding_metadata,
+        # vector copy must gate on THIS, not on embedding_metadata,
         # or `SELECT ... FROM vec_context_embeddings` crashes the whole migration -- the
         # SQLite path already detects the vec table separately.
         source_has_vec = await pg_table_exists(source_conn, 'vec_context_embeddings')
@@ -120,12 +125,10 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
         source_has_fts = await pg_column_exists(source_conn, 'context_entries', 'text_search_vector')
 
         # Auto-initialize the target schema when it has no context_entries table,
-        # mirroring the SQLite path (initialize_target_sqlite). This removes the
-        # trap where the user had to manually pre-create the fp32 layout: the
-        # target is built with ENABLE_EMBEDDING_COMPRESSION effectively off (the
-        # compression migration is never run here), so copy_vec_embeddings_pg has
-        # an fp32 vec_context_embeddings table to write into. Compression is a
-        # separate, explicit --compress step afterward.
+        # mirroring the SQLite path (initialize_target_sqlite). The target is built
+        # with the fp32 layout (the compression migration is never run here), so
+        # copy_vec_embeddings_pg has a vec_context_embeddings table to write into.
+        # Compression is a separate --compress step afterward.
         target_initialized = await pg_table_exists(target_conn, 'context_entries', schema=target_schema)
         if not target_initialized:
             # fp32 capability pre-flight for the auto-init: an embedding-carrying
@@ -197,12 +200,14 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
 
         # Defensive backstop (never silently drop embeddings): a PRE-EXISTING
         # target that has context_entries but lacks the fp32 vec_context_embeddings
-        # table (e.g. initialized with compression enabled or semantic search
-        # disabled) cannot receive the source's embeddings -- refuse rather than
+        # table (e.g. initialized with compression enabled or embedding
+        # generation disabled) cannot receive the source's embeddings -- refuse rather than
         # discard them. Skipped when the target was just auto-initialized
         # (target_initialized is False): a real run already created the fp32 vec
         # table via initialize_target_postgresql, and a dry run reports the
-        # auto-init plan instead.
+        # auto-init plan instead. A dry run that records the backstop's warning
+        # counts the vector rows against the layout the warning's remedy builds.
+        vec_backstop_warned = False
         if target_initialized and source_has_embeddings:
             target_has_vec = await pg_table_exists(target_conn, 'vec_context_embeddings')
             if not target_has_vec:
@@ -210,13 +215,14 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                     'source has embeddings but the target lacks the fp32 '
                     'vec_context_embeddings table (the target was likely '
                     'initialized with ENABLE_EMBEDDING_COMPRESSION=true or '
-                    'ENABLE_SEMANTIC_SEARCH=false). Re-create the target with '
-                    'ENABLE_SEMANTIC_SEARCH=true and ENABLE_EMBEDDING_COMPRESSION=false '
+                    'ENABLE_EMBEDDING_GENERATION=false). Re-create the target with '
+                    'ENABLE_EMBEDDING_GENERATION=true and ENABLE_EMBEDDING_COMPRESSION=false '
                     '(or let this CLI auto-initialize an empty target), run the '
                     'migration, then run --compress to enable compression.'
                 )
                 if options.dry_run:
                     stats.warnings.append(f'{message} (a real run would abort)')
+                    vec_backstop_warned = True
                 else:
                     stats.errors.append(f'{message} Aborting to avoid silently dropping embeddings.')
                     return stats
@@ -258,42 +264,66 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                 f'metadata::text AS metadata, {summary_col_src}, {content_hash_col_src}, created_at, updated_at '
                 f'FROM context_entries ORDER BY created_at ASC, id ASC',
             )
+            # The metadata expression indexes are deliberately absent from the PostgreSQL
+            # base schema (a database this CLI initialized has none until its first server
+            # startup), so a PostgreSQL SOURCE can hold an indexed metadata value the cast of
+            # an integer or boolean idx_metadata_<field> rejects. Unchecked, such a value
+            # aborts the INSERT mid-transaction and rolls the whole run back with a raw
+            # driver error naming no source row when the target already carries
+            # idx_metadata_<field>; on a target without it, the INSERT succeeds and the
+            # target's first server start fails to build that index. The same check skips a
+            # string-typed value over the pre-check's budget, PG_MAX_INDEXED_VALUE_BYTES, and
+            # a value that does not parse as a float-typed field's declared type, which the
+            # server refuses to store.
+            # thread_id and tags get no equivalent check here: their indexes ARE in the
+            # base schema, so the source already holds those values in btree indexes.
+            # Checked unconditionally so --dry-run surfaces the row too.
+            # The check reads the metadata the run would store, ids rewritten and the old id
+            # stamped, and compares a value that fails its declared type with the source's
+            # metadata, so the skip reason names the source database or the option that wrote it.
+            #
+            # Every context_entries skip is decided before any row is stored, so a stored
+            # value citing a skipped entry is kept as written whether the citing entry is
+            # older or newer than it: the rewriter of the storing pass treats every skipped
+            # id as not migrated.
+            skip_reasons: dict[int, tuple[str, str]] = {}
+            for entry in entry_rows:
+                source_id = int(entry['id'])
+                skip_reason = first_pg_unindexable_metadata_field(
+                    rewriter.rewrite(entry['metadata'], source_id).metadata, source_metadata_json=entry['metadata'],
+                )
+                if skip_reason is not None:
+                    skip_reasons[source_id] = skip_reason
+            storing_rewriter = rewriter.excluding(skip_reasons.keys())
             # Source ids whose context_entries row was skipped. Their children must be
             # skipped too: a tag, attachment or embedding row pointing at an id the
             # target never received would violate the foreign key and abort the run --
             # replacing one skipped row with a total failure.
-            pg_skipped_context_ids: set[int] = set()
+            pg_skipped_context_ids = set(skip_reasons)
+            # The metadata stored below differs from the metadata checked above only where
+            # a value cites a skipped entry and stays as written instead of becoming a
+            # 32-character id. Such a value passes every check the id passed: an id fails
+            # the integer and boolean checks, and fails the float check unless it reads as a
+            # decimal number (digits only, or digits around one 'e'), so a passing one sits
+            # under an untyped top-level key, under an array- or object-typed one, which is
+            # exempt and has no check, under a string-typed one, where the shorter original
+            # fits too, or under a float-typed one, where the original passes too. So each
+            # row is stored as checked, and its skip is taken from the first pass, never
+            # decided again.
             for entry in entry_rows:
                 source_id = int(entry['id'])
                 new_id = id_mapping[source_id]
-                references_rewritten_before = stats.references_rewritten
-                rewritten_metadata = rewrite_metadata_references(
-                    entry['metadata'],
-                    id_mapping,
-                    stats,
-                    source_id,
-                )
-                # The metadata expression indexes are deliberately absent from the
-                # PostgreSQL base schema (a database this CLI initialized has none until
-                # its first server startup), so a PostgreSQL SOURCE can legitimately hold
-                # a value the TARGET's idx_metadata_<field> cannot index -- an oversized
-                # one, or one an integer or boolean index's cast rejects. Unchecked, that
-                # value aborts the INSERT mid-transaction and rolls the whole run back
-                # with a raw driver error naming no source row. The same check skips a
-                # value that does not parse as a float-typed field's declared type, which
-                # the server refuses to store. thread_id and tags need no equivalent check
-                # here: their indexes ARE in the base schema, so the source could not have
-                # stored a value that breaches them. Checked unconditionally so --dry-run
-                # surfaces the row too.
-                unindexable = first_pg_unindexable_metadata_field(rewritten_metadata)
+                outcome = storing_rewriter.rewrite(entry['metadata'], source_id)
+                rewritten_metadata = outcome.metadata
+                unindexable = skip_reasons.get(source_id)
+                # The counts of a skipped row are not added: none of its values reach the target.
+                stats.record_metadata(outcome, migrated=unindexable is None)
                 if unindexable is not None:
                     column, reason = unindexable
                     stats.errors.append(
                         f'context_entries row id={source_id} thread_id={entry["thread_id"]!r} '
                         f'column {column!r} skipped: {reason}',
                     )
-                    stats.references_rewritten = references_rewritten_before
-                    pg_skipped_context_ids.add(source_id)
                     continue
                 if not options.dry_run:
                     owner_id_backfill, visibility_backfill = access_backfill_values()
@@ -379,9 +409,8 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                     )
                 stats.images_migrated += 1
 
-            # ----- FIX: embeddings copy (was silently dropped before v3) -----
-            # Copy embedding_metadata + vec_context_embeddings to restore
-            # the embedding state in the target database. PostgreSQL has
+            # Copy embedding_metadata and vec_context_embeddings, remapping context_id,
+            # so the target keeps the source embeddings. PostgreSQL has
             # no embedding_chunks table; the 1:N relationship lives in
             # vec_context_embeddings.id (BIGSERIAL PK) plus context_id
             # (UUID FK). Guarded by source table existence so a v2 source
@@ -394,41 +423,25 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                     'target afterward). Metadata rows are still migrated.',
                 )
             if source_has_embeddings:
-                if options.dry_run and not target_initialized:
-                    # The target would be auto-initialized on a real run, so its
-                    # vec_context_embeddings table does not exist yet. Report
-                    # symmetric would-migrate counts straight from the source
-                    # instead of letting copy_vec_embeddings_pg emit a
-                    # contradictory "initialize the target schema first" warning
-                    # with vec_rows_migrated=0 (which would falsely imply the
-                    # embeddings are lost). Mirrors the SQLite dry-run, which
-                    # previews against an initialized target.
-                    stats.embedding_metadata_migrated = int(
-                        await source_conn.fetchval('SELECT COUNT(*) FROM embedding_metadata') or 0,
+                # A dry run against a target the real run auto-initializes counts
+                # through the same mapping, so it reports the rows, skips and warnings
+                # of that run; the copies then take the target as the auto-init builds
+                # it instead of probing tables that do not exist yet. A dry run whose
+                # vector backstop warned takes the vector table the same way.
+                probe_target = target_initialized or not options.dry_run
+                await copy_embedding_metadata_pg(
+                    source_conn, target_conn, id_mapping, stats, options.dry_run,
+                    skipped_ids=pg_skipped_context_ids,
+                    probe_target=probe_target,
+                )
+                # Gate the vector copy on the SOURCE vec table (copy_vec_embeddings_pg
+                # reads FROM vec_context_embeddings, which would crash if absent).
+                if source_has_vec:
+                    await copy_vec_embeddings_pg(
+                        source_conn, target_conn, id_mapping, stats, options.dry_run,
+                        skipped_ids=pg_skipped_context_ids,
+                        probe_target=probe_target and not vec_backstop_warned,
                     )
-                    if source_has_vec:
-                        stats.vec_rows_migrated = int(
-                            await source_conn.fetchval('SELECT COUNT(*) FROM vec_context_embeddings') or 0,
-                        )
-                else:
-                    # A skipped parent's embedding rows are excluded the same way its
-                    # tags and attachments are: the copies resolve their parent through
-                    # this mapping, so dropping the skipped ids from it turns an FK
-                    # violation that would abort the run into their own skip-and-warn.
-                    embedding_id_mapping = {
-                        source_key: target_key
-                        for source_key, target_key in id_mapping.items()
-                        if source_key not in pg_skipped_context_ids
-                    }
-                    await copy_embedding_metadata_pg(
-                        source_conn, target_conn, embedding_id_mapping, stats, options.dry_run,
-                    )
-                    # Gate the vector copy on the SOURCE vec table (copy_vec_embeddings_pg
-                    # reads FROM vec_context_embeddings, which would crash if absent).
-                    if source_has_vec:
-                        await copy_vec_embeddings_pg(
-                            source_conn, target_conn, embedding_id_mapping, stats, options.dry_run,
-                        )
 
             if not options.dry_run:
                 await target_conn.execute('COMMIT')
