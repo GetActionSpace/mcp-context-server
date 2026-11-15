@@ -402,7 +402,7 @@ class TestReencode:
         assert outcome.errors == []
 
     def test_finite_metadata_still_round_trips(self) -> None:
-        """Large but finite numbers and non-ASCII text are written back unchanged."""
+        """A large finite number keeps its value and non-ASCII text is written as it is, with no error."""
         outcome = _rewriter().rewrite('{"score": 1e300, "name": "café", "a": [1, 2]}', 3)
         assert outcome.metadata is not None
         assert json.loads(outcome.metadata) == {'score': 1e300, 'name': 'café', 'a': [1, 2]}

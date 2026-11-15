@@ -36,7 +36,7 @@ class TestDryRun:
         legacy_source_db: Path,
         new_target_db_path: Path,
     ) -> None:
-        """A dry run counts the rows it would migrate and leaves no target file."""
+        """A dry run counts at least one row as migrated and creates no target file."""
         options = build_sqlite_options(legacy_source_db, new_target_db_path, dry_run=True)
         stats = run_migration_sqlite_to_sqlite(options)
         assert stats.rows_migrated > 0
