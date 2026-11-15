@@ -138,7 +138,7 @@ def pg_unindexable_column_reason(value: str | None, max_bytes: int) -> str | Non
     return (
         f"the value is {encoded_bytes} UTF-8 bytes, over the pre-check's budget of {max_bytes} "
         f'bytes for this indexed column, so this row is skipped -- shorten the value in the '
-        f'source database and rerun to migrate it'
+        f'source database and rerun into an empty target database to migrate it'
     )
 
 

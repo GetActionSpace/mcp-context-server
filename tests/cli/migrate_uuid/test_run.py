@@ -1,16 +1,20 @@
-"""Tests for the migration report file and the stdout summary."""
+"""Tests for the migration entry point: its exit status, the report file and the stdout summary."""
 
 import json
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 from app.cli.migrate import main as cli_main
 from app.cli.migrate_uuid.id_paths import DEFAULT_ID_PATH
+from app.cli.migrate_uuid.id_paths import IdPath
 from app.cli.migrate_uuid.records import IdPathCounts
 from app.cli.migrate_uuid.records import LegacyIdCounts
 from app.cli.migrate_uuid.records import MigrationStats
 from app.cli.migrate_uuid.run import print_summary
+from app.cli.migrate_uuid.run import run_uuid_migration
+from tests.cli._owner_connection import AnswersAsOwner
 
 
 class TestReportOutput:
@@ -94,3 +98,69 @@ class TestReportOutput:
         output = capsys.readouterr().out
         assert f'  ids at {DEFAULT_ID_PATH}: 0 rewritten, 0 not ids of migrated entries, 0 other values kept' in output
         assert 'legacy id key' not in output
+
+
+class _FakePostgreSQLConnection(AnswersAsOwner):
+    """A PostgreSQL connection that accepts the session statements applied right after the dial."""
+
+    async def execute(self, _sql: str, *_args: object) -> str:
+        """Accept a session statement.
+
+        Returns:
+            The command tag.
+        """
+        return 'SET'
+
+    async def close(self) -> None:
+        """Close nothing."""
+
+
+class TestPostgreSQLTargetHoldingRows:
+    """A PostgreSQL target that already holds ``context_entries`` rows is refused, so a rerun needs an empty one."""
+
+    @pytest.mark.parametrize('source_backend', ['sqlite', 'postgresql'])
+    def test_refused_with_exit_status_1(
+        self,
+        source_backend: str,
+        legacy_source_db: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Both runners that write to PostgreSQL record the refusal, store nothing and exit 1."""
+        import asyncpg
+
+        import app.cli.migrate_uuid.postgresql_to_postgresql as postgresql_runner
+        import app.cli.migrate_uuid.sqlite_to_postgresql as sqlite_runner
+
+        async def _connect(_dsn: str, **_kwargs: object) -> _FakePostgreSQLConnection:
+            return _FakePostgreSQLConnection()
+
+        async def _holds_rows(_conn: object, *, schema: str | None = None) -> bool:
+            del schema
+            return True
+
+        initialize = mock.AsyncMock()
+        monkeypatch.setattr(asyncpg, 'connect', _connect)
+        for runner in (postgresql_runner, sqlite_runner):
+            monkeypatch.setattr(runner, 'target_pg_has_data', _holds_rows)
+            monkeypatch.setattr(runner, 'initialize_target_postgresql', initialize)
+        source_url = (
+            f'sqlite:///{legacy_source_db.as_posix()}' if source_backend == 'sqlite' else 'postgresql://u:p@localhost/src'
+        )
+
+        exit_code = run_uuid_migration(
+            source_url,
+            'postgresql://u:p@localhost/tgt',
+            dry_run=False,
+            report_path=None,
+            id_paths=(IdPath.parse(DEFAULT_ID_PATH),),
+            legacy_id_key=None,
+        )
+
+        assert exit_code == 1
+        lines = capsys.readouterr().out.splitlines()
+        assert '  rows migrated: 0' in lines
+        assert any(
+            line.startswith('    - target PostgreSQL database already contains context_entries rows. ') for line in lines
+        )
+        initialize.assert_not_awaited()
