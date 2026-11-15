@@ -175,7 +175,7 @@ def check_legacy_id_key(name: str) -> str:
     if not is_safe_key(name) or '.' in name:
         raise ValueError(
             f'{name!r} cannot be stamped: the metadata filters address a top-level key '
-            'made of letters, digits, "_" and "-" only',
+            'made of ASCII letters and digits, "_" and "-" only',
         )
     if name == INGEST_KEY:
         raise ValueError(f'{name!r} is reserved for the corpus-sync block')

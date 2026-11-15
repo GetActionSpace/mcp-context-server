@@ -258,7 +258,7 @@ class TestOptionValidation:
                     ['--legacy-id-key', name],
                     (
                         f"argument --legacy-id-key: '{name}' cannot be stamped: the metadata filters address "
-                        'a top-level key made of letters, digits, "_" and "-" only'
+                        'a top-level key made of ASCII letters and digits, "_" and "-" only'
                     ),
                 )
                 for name in ('a.b', '', 'with space')

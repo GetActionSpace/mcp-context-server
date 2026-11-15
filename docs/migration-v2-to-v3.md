@@ -161,10 +161,10 @@ Put each path in single quotes, as above, so the shell passes it to the CLI unch
 
 Each error names the row and the key and makes the run exit with status 1, for example `row 12: metadata is a JSON array, not an object, so the old id was not stamped under 'legacy_id'`. The summary prints a line such as `legacy id key 'legacy_id': 4 stamped, 1 already present, 0 not stamped`, and the report holds the same counts under `legacy_id`; the three counts add up to `rows_migrated`.
 
-`NAME` may contain only letters, digits, `_` and `-`, because the metadata filters address a top-level key made of those characters only and read a dot as nesting. `ingest` is refused because it is reserved for the corpus-sync block of the [knowledge base](knowledge-base.md). A name a rewrite path reaches, such as `references` under the default path, is accepted: the stamp is written after the rewrite, and an entry that already holds the key gets no stamp, so the key keeps the value the rewrite left there. The refusals read:
+`NAME` may contain only ASCII letters and digits, `_` and `-`, because the metadata filters address a top-level key made of those characters only and read a dot as nesting. `ingest` is refused because it is reserved for the corpus-sync block of the [knowledge base](knowledge-base.md). A name a rewrite path reaches, such as `references` under the default path, is accepted: the stamp is written after the rewrite, and an entry that already holds the key gets no stamp, so the key keeps the value the rewrite left there. The refusals read:
 
 ```text
-argument --legacy-id-key: 'a.b' cannot be stamped: the metadata filters address a top-level key made of letters, digits, "_" and "-" only
+argument --legacy-id-key: 'a.b' cannot be stamped: the metadata filters address a top-level key made of ASCII letters and digits, "_" and "-" only
 argument --legacy-id-key: 'ingest' is reserved for the corpus-sync block
 ```
 

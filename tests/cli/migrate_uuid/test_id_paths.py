@@ -14,7 +14,8 @@ EMPTY_KEY = 'has an empty key: keys are separated by single dots, with none at e
 ANY_DEPTH_PLACEMENT = '"**" may appear only as the first key, followed by at least one key'
 PARTIAL_WILDCARD = '"*" stands for a whole key and cannot be part of one'
 STAMP_CHARACTERS = (
-    'cannot be stamped: the metadata filters address a top-level key made of letters, digits, "_" and "-" only'
+    'cannot be stamped: the metadata filters address a top-level key made of ASCII letters and digits, '
+    '"_" and "-" only'
 )
 
 
