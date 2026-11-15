@@ -155,6 +155,8 @@ def _typed_value_remedy(key: str, value: object, source_metadata_json: str | Non
     source metadata tells which wrote the failing value: a key the source lacks was
     stamped, a value unequal to the source's was rewritten, and an equal value is the
     source's own. Values are compared parsed, because the rewriter re-encodes the JSON.
+    The source text parses here: the value comes from stored metadata that parsed as an
+    object, and the rewriter stores text it cannot parse as the source holds it.
 
     Args:
         key: The top-level metadata key.
@@ -164,10 +166,7 @@ def _typed_value_remedy(key: str, value: object, source_metadata_json: str | Non
     Returns:
         The remedy that ends the skip reason.
     """
-    try:
-        source: object = None if source_metadata_json is None else json.loads(source_metadata_json)
-    except (json.JSONDecodeError, ValueError):
-        source = None
+    source: object = None if source_metadata_json is None else json.loads(source_metadata_json)
     if not isinstance(source, dict) or key not in source:
         return (
             f'the value comes from --legacy-id-key: declare {key}:string in METADATA_INDEXED_FIELDS for this '

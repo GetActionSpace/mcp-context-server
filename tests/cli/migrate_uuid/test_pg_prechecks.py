@@ -392,8 +392,8 @@ class TestSkipRemedyByCause:
 
     @pytest.mark.parametrize(
         'source',
-        [None, '[1, 2]', '{"status": "open"}'],
-        ids=['null-metadata', 'not-an-object', 'object-without-the-key'],
+        [None, '{"status": "open"}'],
+        ids=['null-metadata', 'object-without-the-key'],
     )
     def test_value_the_stamp_wrote_names_legacy_id_key(
         self, source: str | None, monkeypatch: pytest.MonkeyPatch,
