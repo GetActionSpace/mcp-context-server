@@ -8,6 +8,7 @@ call.
 """
 
 import asyncio
+from itertools import pairwise
 from typing import Any
 
 from fastmcp import Client
@@ -285,11 +286,15 @@ class BackendRuntimeMixin(HarnessCore):
         every transactional write would be missing from the denominator; the commit
         therefore counts one completed operation on both backends.
 
-        The probe is a delete by ids, which performs exactly ONE counted operation (its
-        transaction) and no other counted read, so the delta isolates the commit.
-        ``get_statistics`` itself issues a fixed number of counted reads per call, and
-        the back-to-back baseline measures exactly that, so the assertion is
-        "a write costs strictly more than an idle interval".
+        The probe is three deletes by ids between two statistics reads. A delete by ids
+        performs exactly ONE counted operation (its transaction) and no other counted
+        read, so three of them move the counter by three more than an idle interval does.
+        ``get_statistics`` itself issues a fixed number of counted reads per call, which
+        back-to-back calls measure. The generation worker's poll is a counted operation
+        too wherever the worker shares the request backend (SQLite, and PostgreSQL
+        without row-level security), and it lands in whichever interval is open when it
+        fires. The idle cost is therefore the smallest of three idle intervals, and the
+        assertion asks for all three deletes, which one poll cannot supply.
 
         Returns:
             bool: True if test passed.
@@ -297,6 +302,7 @@ class BackendRuntimeMixin(HarnessCore):
         test_name = 'transactional_write_moves_total_queries'
         assert self.client is not None
         thread = f'{self.test_thread_id}_query_counter'
+        deletes = 3
 
         async def _total_queries() -> int | None:
             """Read connection_metrics.total_queries, or None when it is unreadable."""
@@ -311,43 +317,45 @@ class BackendRuntimeMixin(HarnessCore):
             return value
 
         try:
-            stored = self._extract_content(await self.client.call_tool('store_context', {
-                'thread_id': thread, 'source': 'agent',
-                'text': 'Entry deleted while measuring the completed-operation counter',
-            }))
-            if not stored.get('success'):
-                self.test_results.append((test_name, False, f'Store failed: {stored}'))
-                return False
-            entry_id = str(stored['context_id'])
+            entry_ids: list[str] = []
+            for number in range(1, deletes + 1):
+                stored = self._extract_content(await self.client.call_tool('store_context', {
+                    'thread_id': thread, 'source': 'agent',
+                    'text': f'Entry {number} deleted while measuring the completed-operation counter',
+                }))
+                if not stored.get('success'):
+                    self.test_results.append((test_name, False, f'Store failed: {stored}'))
+                    return False
+                entry_ids.append(str(stored['context_id']))
 
-            # Warm whatever a first statistics call initializes, so the baseline below
-            # measures a steady-state call rather than a one-off.
+            # Warm whatever a first statistics call initializes, so the idle intervals
+            # below measure a steady-state call rather than a one-off.
             await self.client.call_tool('get_statistics', {})
-            first = await _total_queries()
-            second = await _total_queries()
-            third = await _total_queries()
-            if first is None or second is None or third is None:
+            reads = [await _total_queries() for _ in range(4)]
+            idle_reads = [value for value in reads if value is not None]
+            if len(idle_reads) != len(reads):
                 self.test_results.append((test_name, False, 'connection_metrics.total_queries is not an integer'))
                 return False
-            baseline = max(second - first, third - second)
+            idle = min(later - earlier for earlier, later in pairwise(idle_reads))
 
-            deleted = self._extract_content(await self.client.call_tool('delete_context', {
-                'context_ids': [entry_id],
-            }))
-            if not deleted.get('success') or deleted.get('deleted_count') != 1:
-                self.test_results.append((test_name, False, f'Delete failed: {deleted}'))
-                return False
+            for entry_id in entry_ids:
+                deleted = self._extract_content(await self.client.call_tool('delete_context', {
+                    'context_ids': [entry_id],
+                }))
+                if not deleted.get('success') or deleted.get('deleted_count') != 1:
+                    self.test_results.append((test_name, False, f'Delete failed: {deleted}'))
+                    return False
             after_delete = await _total_queries()
             if after_delete is None:
                 self.test_results.append((test_name, False, 'connection_metrics.total_queries is not an integer'))
                 return False
-            delete_delta = after_delete - third
-            if delete_delta <= baseline:
+            delete_delta = after_delete - idle_reads[-1]
+            if delete_delta - idle < deletes:
                 self.test_results.append((
                     test_name, False,
                     (
-                        f'A committed delete transaction moved total_queries by '
-                        f'{delete_delta - baseline} beyond the {baseline}-query idle baseline'
+                        f'{deletes} committed delete transactions moved total_queries by '
+                        f'{delete_delta - idle} beyond the {idle}-query idle interval'
                     ),
                 ))
                 return False
@@ -364,12 +372,12 @@ class BackendRuntimeMixin(HarnessCore):
                 self.test_results.append((test_name, False, 'connection_metrics.total_queries is not an integer'))
                 return False
             store_delta = after_store - after_delete
-            if store_delta <= baseline:
+            if store_delta <= idle:
                 self.test_results.append((
                     test_name, False,
                     (
-                        f'A committed store moved total_queries by {store_delta - baseline} '
-                        f'beyond the {baseline}-query idle baseline'
+                        f'A committed store moved total_queries by {store_delta - idle} '
+                        f'beyond the {idle}-query idle interval'
                     ),
                 ))
                 return False
@@ -377,8 +385,8 @@ class BackendRuntimeMixin(HarnessCore):
             self.test_results.append((
                 test_name, True,
                 (
-                    f'Delete and store moved total_queries by {delete_delta} and {store_delta} '
-                    f'against a {baseline}-query idle baseline'
+                    f'{deletes} deletes and a store moved total_queries by {delete_delta} and {store_delta} '
+                    f'against a {idle}-query idle interval'
                 ),
             ))
             return True

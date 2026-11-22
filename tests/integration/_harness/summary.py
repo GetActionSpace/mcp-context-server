@@ -1,8 +1,9 @@
-"""Real-server checks for summary handling without a summary provider.
+"""Real-server checks for summary display and configuration.
 
-Search results fall back to truncated text, batch-stored entries carry no
-generated summary, and the provider-specific summary environment variables
-load without error.
+A search returns a long text truncated and marked so, get_context_by_ids omits
+the summary key by default after a batch store and a batch update, and the
+provider-specific summary environment variables load without error. The checks
+hold with a summary provider configured and without one.
 """
 
 from tests.integration._harness.core import HarnessCore
@@ -12,10 +13,11 @@ class SummaryMixin(HarnessCore):
     """Checks for summary display and configuration."""
 
     async def test_search_context_summary_display(self) -> bool:
-        """Test that search_context handles search display formatting correctly.
+        """Test that search_context returns a long text truncated and a short text whole.
 
-        Without a summary provider, long text should be truncated normally.
-        Short text should not be truncated.
+        A text longer than the search preview comes back shortened and marked
+        is_text_content_truncated, whether or not a summary provider wrote a
+        summary for it; a short text comes back whole and unmarked.
 
         Returns:
             bool: True if test passed.
@@ -25,8 +27,19 @@ class SummaryMixin(HarnessCore):
         try:
             summary_display_thread = f'{self.test_thread_id}_summary_display'
 
-            # Store a long text entry (will be truncated without summary)
-            long_text = 'Summary display integration test. ' * 20  # ~680 chars
+            # Store a text longer than the preview a search returns. It is prose without
+            # a repeated sentence: a summary model handed one sentence many times over
+            # repeats it until its token limit.
+            long_text = (
+                'A small support team starts its day with the tickets that arrived overnight. '
+                'The urgent ones are answered first, and each answer names the person who owns the next step. '
+                'Before noon the team reads the open questions of the week and decides which of them '
+                'need a fix in the product and which need a clearer page in the guide. '
+                'The afternoon belongs to the fixes that take more than one person: two engineers pair on the change, '
+                'a third reads it, and the ticket is closed only after the customer confirms the result. '
+                'On Friday a short report lists what was closed, what is still open and what the team learned, '
+                'so that the next week starts from a written state and not from memory.'
+            )
             store_long = await self.client.call_tool(
                 'store_context',
                 {
@@ -96,11 +109,11 @@ class SummaryMixin(HarnessCore):
                 )
                 return False
 
-            # Without summary, long text should be truncated in search results
+            # Long text is truncated in search results
             if not long_entry.get('is_text_content_truncated', False):
                 self.test_results.append(
                     (test_name, False,
-                     'Long text should be truncated in search results without summary'),
+                     'Long text should be truncated in search results'),
                 )
                 return False
 
@@ -132,9 +145,10 @@ class SummaryMixin(HarnessCore):
             return False
 
     async def test_batch_store_summary_field(self) -> bool:
-        """Test that batch-stored entries include the summary field.
+        """Test that get_context_by_ids omits the summary key of batch-written entries by default.
 
-        Without a summary provider, summary should be None for all batch entries.
+        The key is absent after store_context_batch and still absent after
+        update_context_batch.
 
         Returns:
             bool: True if test passed.
