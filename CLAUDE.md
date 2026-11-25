@@ -276,7 +276,7 @@ Configuration via `.env` file or environment. **Canonical source**: the `app/set
 
 **Core**: `STORAGE_BACKEND` (sqlite*/postgresql), `LOG_LEVEL` (ERROR*), `DB_PATH`, `MAX_IMAGE_SIZE_MB` (10*), `MAX_TOTAL_SIZE_MB` (100*), `DISABLED_TOOLS`
 
-**Transport**: `MCP_TRANSPORT` (stdio*/http/streamable-http/sse), `FASTMCP_HOST` (0.0.0.0*), `FASTMCP_PORT` (8000*), `FASTMCP_STATELESS_HTTP` (true*)
+**Transport**: `MCP_TRANSPORT` (stdio*/http/streamable-http/sse), `FASTMCP_HOST` (0.0.0.0*), `FASTMCP_PORT` (8000*), `FASTMCP_STATELESS_HTTP` (true*), `HTTP_KEEP_ALIVE_TIMEOUT_S` (75*; seconds uvicorn keeps an idle connection open on the HTTP-family transports, passed as `uvicorn_config={'timeout_keep_alive': ...}`; keep it above the idle timeout of a proxy or load balancer in front and above the clients' idle expiry, because uvicorn's own 5 seconds equals the default idle expiry of httpx and httpx2 (the MCP Python SDK's and FastMCP's clients use httpx2) and a request sent at that moment fails without a response)
 
 **Auth**: `MCP_AUTH_PROVIDER` (none*/simple_token/jwt), `MCP_AUTH_TOKEN`, `MCP_AUTH_CLIENT_ID` (mcp-client*); jwt provider: `MCP_AUTH_JWT_PUBLIC_KEY` XOR `MCP_AUTH_JWT_JWKS_URI` (exactly one), `MCP_AUTH_JWT_ISSUER`, `MCP_AUTH_JWT_AUDIENCE`, `MCP_AUTH_JWT_ALGORITHM` (RS256*), `MCP_AUTH_GROUPS_CLAIM` (groups*), `MCP_AUTH_ROLES_CLAIM` (roles*), `MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY` (unset*; secret; the operator-held key of the anonymous static-key verifier, JWKS deployments only and requiring `ACCESS_CONTROL_ANONYMOUS_PRINCIPAL`, else exit 78), `MCP_AUTH_ANONYMOUS_JWT_ALGORITHM` (RS256*)
 
@@ -459,7 +459,7 @@ Settings classes live in the `app/settings/` package, one domain group per modul
 
 `FASTMCP_*` env vars belong in `app/settings/` (and `server.json`) ONLY when the project takes **programmatic action** with them (passed to `mcp.run()`, used in logic). Import-time-only vars should NOT be in `app/settings/`.
 
-- **In `app/settings/server.py`** (`TransportSettings`, passed to `mcp.run()`): `FASTMCP_HOST` (`host=`), `FASTMCP_PORT` (`port=`), `FASTMCP_STATELESS_HTTP` (`stateless_http=`).
+- **In `app/settings/server.py`** (`TransportSettings`, passed to `mcp.run()`): `FASTMCP_HOST` (`host=`), `FASTMCP_PORT` (`port=`), `FASTMCP_STATELESS_HTTP` (`stateless_http=`). The same class also carries `HTTP_KEEP_ALIVE_TIMEOUT_S`, passed through `uvicorn_config=` on the HTTP-family transports; it is not a `FASTMCP_*` variable, because FastMCP reads no such variable and that prefix stays reserved for variables FastMCP itself reads.
 - **NOT in `app/settings/`, operative** (consumed by FastMCP with no overriding explicit argument; documented in `docs/environment-variables.md`): `FASTMCP_ENABLE_RICH_LOGGING`, `FASTMCP_JSON_RESPONSE`, `FASTMCP_LOG_LEVEL`, `FASTMCP_LOG_ENABLED` (the log pair is import-time only — `config_logger` re-aligns the `fastmcp` logger tree with `LOG_LEVEL` at startup).
 - **NOT in `app/settings/`, inert** (an explicit argument supersedes the env fallback): `FASTMCP_TRANSPORT` (project uses `MCP_TRANSPORT` + explicit `transport=` arg), `FASTMCP_STRICT_INPUT_VALIDATION` (pinned `strict_input_validation=False` at the `FastMCP()` call — lax scalar coercion is load-bearing because the JSON-string middleware repairs only array/object params).
 

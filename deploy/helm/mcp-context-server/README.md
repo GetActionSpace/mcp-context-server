@@ -58,6 +58,7 @@ helm install mcp ./deploy/helm/mcp-context-server \
 | `image.tag`                         | Image tag                                                        | `Chart.appVersion`                          |
 | `replicaCount`                      | Number of replicas                                               | `1`                                         |
 | `env.FASTMCP_STATELESS_HTTP`        | Stateless HTTP mode (enabled by default)                         | `"true"`                                    |
+| `env.HTTP_KEEP_ALIVE_TIMEOUT_S`     | Seconds an idle kept-alive connection stays open                 | `"75"`                                      |
 | `env.FASTMCP_ENABLE_RICH_LOGGING`   | Rich log formatting (disable for containers)                     | `"false"`                                   |
 | `service.type`                      | Kubernetes service type                                          | `ClusterIP`                                 |
 | `service.port`                      | Service port                                                     | `8000`                                      |

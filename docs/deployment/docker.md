@@ -393,12 +393,13 @@ All Docker Compose files use environment variables for configuration. Key settin
 
 **Transport Settings:**
 
-| Variable                  | Default   | Description                                              |
-|---------------------------|-----------|----------------------------------------------------------|
-| `MCP_TRANSPORT`           | `http`    | Transport mode (set to `http` for Docker)                |
-| `FASTMCP_HOST`            | `0.0.0.0` | HTTP bind address                                        |
-| `FASTMCP_PORT`            | `8000`    | HTTP port                                                |
-| `FASTMCP_STATELESS_HTTP`  | `true`    | Stateless HTTP mode (enabled by default)                 |
+| Variable                    | Default   | Description                                      |
+|-----------------------------|-----------|--------------------------------------------------|
+| `MCP_TRANSPORT`             | `http`    | Transport mode (set to `http` for Docker)        |
+| `FASTMCP_HOST`              | `0.0.0.0` | HTTP bind address                                |
+| `FASTMCP_PORT`              | `8000`    | HTTP port                                        |
+| `FASTMCP_STATELESS_HTTP`    | `true`    | Stateless HTTP mode (enabled by default)         |
+| `HTTP_KEEP_ALIVE_TIMEOUT_S` | `75`      | Seconds an idle kept-alive connection stays open |
 
 **Summary Generation Settings:**
 

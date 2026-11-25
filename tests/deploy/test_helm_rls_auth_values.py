@@ -14,21 +14,22 @@ require the ``helm`` binary and are skipped where it is unavailable.
 
 import base64
 import json
-import shutil
-import subprocess
-from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 
-_HELM = shutil.which('helm')
-pytestmark = pytest.mark.skipif(_HELM is None, reason='helm binary not available')
+from tests.deploy._helm import HELM
+from tests.deploy._helm import POSTGRESQL_VALUES
+from tests.deploy._helm import ROOT
+from tests.deploy._helm import SQLITE_VALUES
+from tests.deploy._helm import configmap_data
+from tests.deploy._helm import helm_template
+from tests.deploy._helm import manifest
+from tests.deploy._helm import render
 
-_ROOT = Path(__file__).resolve().parents[2]
-_CHART = _ROOT / 'deploy' / 'helm' / 'mcp-context-server'
+pytestmark = pytest.mark.skipif(HELM is None, reason='helm binary not available')
+
 _FULLNAME = 't-mcp-context-server'
-_POSTGRESQL = ('-f', str(_CHART / 'values-postgresql.yaml'), '--set', 'storage.postgresql.password=p')
 
 _CONFIG_KEYS = (
     'ENABLE_POSTGRESQL_RLS',
@@ -64,70 +65,6 @@ _SECRET_KEYS = (
 _JWKS = ('--set', 'auth.provider=jwt', '--set', 'auth.jwt.jwksUri=https://idp.example/jwks.json')
 
 
-def _helm(*args: str) -> subprocess.CompletedProcess[str]:
-    """Run ``helm template`` on the chart.
-
-    Args:
-        *args: Extra ``helm template`` arguments.
-
-    Returns:
-        The completed process.
-    """
-    assert _HELM is not None
-    return subprocess.run(
-        [_HELM, 'template', 't', str(_CHART), *args],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-
-
-def _render(*args: str) -> list[dict[str, Any]]:
-    """Render the chart and parse every manifest.
-
-    Args:
-        *args: Extra ``helm template`` arguments.
-
-    Returns:
-        The rendered manifests.
-    """
-    result = _helm(*args)
-    assert result.returncode == 0, f'helm template failed: {result.stderr}'
-    return [doc for doc in yaml.safe_load_all(result.stdout) if isinstance(doc, dict)]
-
-
-def _manifest(docs: list[dict[str, Any]], kind: str) -> dict[str, Any] | None:
-    """Return the single manifest of one kind, if rendered.
-
-    Args:
-        docs: The rendered manifests.
-        kind: The Kubernetes kind.
-
-    Returns:
-        The manifest, or None when the chart renders none of that kind.
-    """
-    found = [doc for doc in docs if doc.get('kind') == kind]
-    assert len(found) <= 1, f'more than one {kind}'
-    return found[0] if found else None
-
-
-def _config(docs: list[dict[str, Any]]) -> dict[str, str]:
-    """Return the ConfigMap data.
-
-    Args:
-        docs: The rendered manifests.
-
-    Returns:
-        The ConfigMap data mapping.
-    """
-    configmap = _manifest(docs, 'ConfigMap')
-    assert configmap is not None
-    data = configmap['data']
-    assert isinstance(data, dict)
-    return data
-
-
 def _secret_data(docs: list[dict[str, Any]]) -> dict[str, str]:
     """Return the decoded chart Secret data, empty when the chart renders no Secret.
 
@@ -137,7 +74,7 @@ def _secret_data(docs: list[dict[str, Any]]) -> dict[str, str]:
     Returns:
         The Secret data with each value base64-decoded.
     """
-    secret = _manifest(docs, 'Secret')
+    secret = manifest(docs, 'Secret')
     if secret is None:
         return {}
     return {key: base64.b64decode(value).decode() for key, value in secret['data'].items()}
@@ -152,7 +89,7 @@ def _env(docs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     Returns:
         Each env entry keyed by its name.
     """
-    deployment = _manifest(docs, 'Deployment')
+    deployment = manifest(docs, 'Deployment')
     assert deployment is not None
     containers = deployment['spec']['template']['spec']['containers']
     server = next(container for container in containers if container['name'] == 'mcp-context-server')
@@ -177,13 +114,13 @@ def _secret_ref(entry: dict[str, Any]) -> tuple[str, str]:
 
 @pytest.mark.parametrize(
     'profile',
-    [(), ('-f', str(_CHART / 'values-sqlite.yaml')), _POSTGRESQL],
+    [(), SQLITE_VALUES, POSTGRESQL_VALUES],
     ids=['default', 'sqlite', 'postgresql'],
 )
 def test_untouched_values_render_none_of_the_variables(profile: tuple[str, ...]) -> None:
     """With every new value left empty the server defaults apply: nothing is rendered."""
-    docs = _render(*profile)
-    config = _config(docs)
+    docs = render(*profile)
+    config = configmap_data(docs)
     env = _env(docs)
     secret = _secret_data(docs)
     for key in _CONFIG_KEYS:
@@ -196,15 +133,15 @@ def test_untouched_values_render_none_of_the_variables(profile: tuple[str, ...])
 
 def test_rls_values_render_the_toggle_policy_role_and_migration_credentials() -> None:
     """Row-level security renders its toggle, the policy role and the migration user and password."""
-    docs = _render(
-        *_POSTGRESQL,
+    docs = render(
+        *POSTGRESQL_VALUES,
         '--set', 'storage.postgresql.user=mcp_app',
         '--set', 'storage.postgresql.migration.user=owner',
         '--set', 'storage.postgresql.migration.password=owner-secret',
         '--set', 'storage.postgresql.rls.enabled=true',
         '--set', 'storage.postgresql.rls.policyRole=mcp_ctx',
     )
-    config = _config(docs)
+    config = configmap_data(docs)
     assert config['ENABLE_POSTGRESQL_RLS'] == 'true'
     assert config['POSTGRESQL_RLS_POLICY_ROLE'] == 'mcp_ctx'
     assert config['POSTGRESQL_MIGRATION_USER'] == 'owner'
@@ -215,8 +152,8 @@ def test_rls_values_render_the_toggle_policy_role_and_migration_credentials() ->
 
 def test_rls_without_a_policy_role_keeps_the_server_default() -> None:
     """An empty policy role renders no variable, so the server default role applies."""
-    config = _config(_render(
-        *_POSTGRESQL,
+    config = configmap_data(render(
+        *POSTGRESQL_VALUES,
         '--set', 'storage.postgresql.migration.user=owner',
         '--set', 'storage.postgresql.rls.enabled=true',
     ))
@@ -226,12 +163,12 @@ def test_rls_without_a_policy_role_keeps_the_server_default() -> None:
 
 def test_migration_user_alone_renders_without_rls() -> None:
     """The migration credentials render on their own, with row-level security left off."""
-    docs = _render(
-        *_POSTGRESQL,
+    docs = render(
+        *POSTGRESQL_VALUES,
         '--set', 'storage.postgresql.migration.user=owner',
         '--set', 'storage.postgresql.migration.password=owner-secret',
     )
-    config = _config(docs)
+    config = configmap_data(docs)
     assert config['POSTGRESQL_MIGRATION_USER'] == 'owner'
     assert 'ENABLE_POSTGRESQL_RLS' not in config
     assert 'POSTGRESQL_MIGRATION_PASSWORD' in _env(docs)
@@ -239,11 +176,11 @@ def test_migration_user_alone_renders_without_rls() -> None:
 
 def test_migration_values_are_ignored_without_postgresql() -> None:
     """With the SQLite backend the migration credentials render nothing."""
-    docs = _render(
+    docs = render(
         '--set', 'storage.postgresql.migration.user=owner',
         '--set', 'storage.postgresql.migration.password=owner-secret',
     )
-    assert 'POSTGRESQL_MIGRATION_USER' not in _config(docs)
+    assert 'POSTGRESQL_MIGRATION_USER' not in configmap_data(docs)
     assert 'POSTGRESQL_MIGRATION_PASSWORD' not in _env(docs)
     assert 'postgresql-migration-password' not in _secret_data(docs)
 
@@ -258,8 +195,8 @@ def test_migration_values_are_ignored_without_postgresql() -> None:
 )
 def test_migration_password_from_an_existing_secret(key_override: tuple[str, ...], expected_key: str) -> None:
     """An existing secret supplies the migration password and the chart Secret carries none."""
-    docs = _render(
-        *_POSTGRESQL,
+    docs = render(
+        *POSTGRESQL_VALUES,
         '--set', 'storage.postgresql.migration.user=owner',
         '--set', 'storage.postgresql.migration.password=ignored',
         '--set', 'storage.postgresql.migration.existingSecret=migsec',
@@ -271,7 +208,7 @@ def test_migration_password_from_an_existing_secret(key_override: tuple[str, ...
 
 def test_rls_without_a_migration_user_fails() -> None:
     """Row-level security needs the migration role that owns the tables."""
-    result = _helm(*_POSTGRESQL, '--set', 'storage.postgresql.rls.enabled=true')
+    result = helm_template(*POSTGRESQL_VALUES, '--set', 'storage.postgresql.rls.enabled=true')
     assert result.returncode != 0
     assert 'storage.postgresql.migration.user' in result.stderr
     assert 'POSTGRESQL_MIGRATION_USER' in result.stderr
@@ -279,7 +216,7 @@ def test_rls_without_a_migration_user_fails() -> None:
 
 def test_rls_with_the_sqlite_backend_fails() -> None:
     """Row-level security is a PostgreSQL feature."""
-    result = _helm(
+    result = helm_template(
         '--set', 'storage.postgresql.migration.user=owner',
         '--set', 'storage.postgresql.rls.enabled=true',
     )
@@ -289,7 +226,7 @@ def test_rls_with_the_sqlite_backend_fails() -> None:
 
 def test_auth_and_access_control_values_render_in_the_configmap() -> None:
     """Every plain authentication and access-control value renders under its server variable."""
-    config = _config(_render(
+    config = configmap_data(render(
         '--set', 'auth.provider=jwt',
         '--set', 'auth.clientId=chart-client',
         '--set', 'auth.jwt.jwksUri=https://idp.example/jwks.json',
@@ -325,7 +262,7 @@ def test_auth_and_access_control_values_render_in_the_configmap() -> None:
 
 def test_inline_token_and_public_key_go_to_the_chart_secret() -> None:
     """Inline secrets land in the chart Secret and the container reads them from it."""
-    docs = _render(
+    docs = render(
         '--set', 'auth.provider=simple_token',
         '--set', 'auth.token=bearer-value',
         '--set', 'auth.jwt.publicKey=hs-shared-secret',
@@ -345,7 +282,7 @@ def test_inline_token_and_public_key_go_to_the_chart_secret() -> None:
 )
 def test_token_from_an_existing_secret_with_simple_token(key_override: tuple[str, ...], expected_key: str) -> None:
     """simple_token reads its token from the existing secret and references no public key."""
-    docs = _render(
+    docs = render(
         '--set', 'auth.provider=simple_token',
         '--set', 'auth.token=ignored',
         '--set', 'auth.existingSecret=authsec',
@@ -364,7 +301,7 @@ def test_token_from_an_existing_secret_with_simple_token(key_override: tuple[str
 )
 def test_public_key_from_an_existing_secret_with_jwt(key_override: tuple[str, ...], expected_key: str) -> None:
     """jwt without a JWKS URI reads its public key from the existing secret and references no token."""
-    docs = _render(
+    docs = render(
         '--set', 'auth.provider=jwt',
         '--set', 'auth.existingSecret=authsec',
         *key_override,
@@ -377,7 +314,7 @@ def test_public_key_from_an_existing_secret_with_jwt(key_override: tuple[str, ..
 
 def test_jwks_uri_with_an_existing_secret_references_no_public_key() -> None:
     """jwt with a JWKS URI needs no public key, so the existing secret is not referenced for one."""
-    env = _env(_render(
+    env = _env(render(
         '--set', 'auth.provider=jwt',
         '--set', 'auth.existingSecret=authsec',
         '--set', 'auth.jwt.jwksUri=https://idp.example/jwks.json',
@@ -388,7 +325,7 @@ def test_jwks_uri_with_an_existing_secret_references_no_public_key() -> None:
 
 def test_inline_anonymous_key_goes_to_the_chart_secret_on_a_jwks_deployment() -> None:
     """With jwt and a JWKS URI, the inline anonymous key lands in the chart Secret and the container reads it."""
-    docs = _render(*_JWKS, '--set', 'auth.jwt.anonymousPublicKey=anonymous-pem')
+    docs = render(*_JWKS, '--set', 'auth.jwt.anonymousPublicKey=anonymous-pem')
     assert _secret_data(docs)['mcp-auth-anonymous-jwt-public-key'] == 'anonymous-pem'
     env = _env(docs)
     assert _secret_ref(env['MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY']) == (_FULLNAME, 'mcp-auth-anonymous-jwt-public-key')
@@ -406,7 +343,7 @@ def test_inline_anonymous_key_goes_to_the_chart_secret_on_a_jwks_deployment() ->
 )
 def test_inline_anonymous_key_renders_only_for_jwt_with_a_jwks_uri(deployment: tuple[str, ...]) -> None:
     """The anonymous verifier exists only beside a JWKS verifier, so no other deployment renders its key."""
-    docs = _render(*deployment, '--set', 'auth.jwt.anonymousPublicKey=anonymous-pem')
+    docs = render(*deployment, '--set', 'auth.jwt.anonymousPublicKey=anonymous-pem')
     assert 'MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY' not in _env(docs)
     assert 'mcp-auth-anonymous-jwt-public-key' not in _secret_data(docs)
 
@@ -428,7 +365,7 @@ def test_anonymous_key_from_an_existing_secret_on_a_jwks_deployment(
     reference is optional, and without the variable the server composes no
     anonymous verifier.
     """
-    docs = _render(
+    docs = render(
         *_JWKS,
         '--set', 'auth.existingSecret=authsec',
         '--set', 'auth.jwt.anonymousPublicKey=ignored',
@@ -442,14 +379,14 @@ def test_anonymous_key_from_an_existing_secret_on_a_jwks_deployment(
 
 def test_existing_secret_without_a_jwks_uri_references_no_anonymous_key() -> None:
     """A static-key jwt deployment reads only its public key from the existing secret."""
-    env = _env(_render('--set', 'auth.provider=jwt', '--set', 'auth.existingSecret=authsec'))
+    env = _env(render('--set', 'auth.provider=jwt', '--set', 'auth.existingSecret=authsec'))
     assert 'MCP_AUTH_ANONYMOUS_JWT_PUBLIC_KEY' not in env
     assert 'MCP_AUTH_JWT_PUBLIC_KEY' in env
 
 
 def test_every_rendered_variable_is_a_server_setting() -> None:
     """Each variable the chart renders for these values is an environment variable the server reads."""
-    server_json = json.loads((_ROOT / 'server.json').read_text(encoding='utf-8'))
+    server_json = json.loads((ROOT / 'server.json').read_text(encoding='utf-8'))
     known = {
         variable['name']
         for package in server_json['packages']

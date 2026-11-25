@@ -61,6 +61,14 @@ class TransportSettings(CommonSettings):
                     'Enabled by default as the server has no stateful MCP features. '
                     'Set to false only if you need server-side MCP session tracking.',
     )
+    keep_alive_timeout_s: int = Field(
+        default=75,
+        alias='HTTP_KEEP_ALIVE_TIMEOUT_S',
+        ge=1,
+        description='Seconds the HTTP server keeps an idle kept-alive connection open. '
+                    'Keep it above the idle timeout of any proxy or load balancer in front of the server '
+                    'and above the idle expiry of the HTTP clients that call it.',
+    )
 
 
 class InstructionsSettings(CommonSettings):

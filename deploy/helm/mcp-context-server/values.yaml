@@ -78,6 +78,9 @@ env:
   FASTMCP_HOST: "0.0.0.0"
   FASTMCP_PORT: "8000"
   FASTMCP_STATELESS_HTTP: "true"
+  # Seconds the server keeps an idle connection open; keep it above the idle timeout
+  # of the ingress or load balancer in front of the pods.
+  HTTP_KEEP_ALIVE_TIMEOUT_S: "75"
   FASTMCP_ENABLE_RICH_LOGGING: "false"
   LOG_LEVEL: "INFO"
 

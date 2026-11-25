@@ -166,6 +166,7 @@ The deployment uses a ConfigMap for non-sensitive configuration:
 | `FASTMCP_HOST`              | HTTP bind address                                            |
 | `FASTMCP_PORT`              | HTTP port                                                    |
 | `FASTMCP_STATELESS_HTTP`    | Stateless HTTP mode (enabled by default)                     |
+| `HTTP_KEEP_ALIVE_TIMEOUT_S` | Seconds an idle kept-alive connection stays open             |
 | `LOG_LEVEL`                 | Logging level                                                |
 | `STORAGE_BACKEND`           | sqlite or postgresql                                         |
 | `ENABLE_SUMMARY_GENERATION` | Enable automatic LLM-based summary generation                |
