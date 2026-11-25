@@ -33,6 +33,14 @@ class TestTransportKeepAliveTimeout:
             settings = TransportSettings()
             assert settings.keep_alive_timeout_s == 1
 
+    def test_keep_alive_timeout_has_no_upper_bound(self) -> None:
+        """The setting has no upper bound: a timeout of a whole day is accepted."""
+        from app.settings.server import TransportSettings
+
+        with env_var('HTTP_KEEP_ALIVE_TIMEOUT_S', '86400'):
+            settings = TransportSettings()
+            assert settings.keep_alive_timeout_s == 86400
+
     @pytest.mark.parametrize('value', ['0', '-5', '7.5', 'seventy'])
     def test_keep_alive_timeout_refuses_non_positive_and_non_integer(self, value: str) -> None:
         """Zero, a negative number and a value that is not a whole number are refused."""
