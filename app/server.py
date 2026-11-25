@@ -351,11 +351,12 @@ def main() -> None:
                     # LOG_LEVEL govern the uvicorn tree too (uvicorn wants a lowercase name).
                     log_level=settings.logging.level.lower(),
                     # FastMCP merges uvicorn_config into the uvicorn.Config it builds. uvicorn's
-                    # own keep-alive timeout of 5 seconds equals the idle expiry of common HTTP
-                    # clients (httpx included), so a request written to a pooled connection at
-                    # that moment meets a connection the server is closing and fails without a
-                    # response; a proxy that keeps idle upstream connections longer meets the
-                    # same race. HTTP_KEEP_ALIVE_TIMEOUT_S keeps idle connections open longer.
+                    # own keep-alive timeout of 5 seconds equals the default idle expiry of the
+                    # httpx and httpx2 client libraries (the MCP Python SDK's client uses httpx2),
+                    # so a request written to a pooled connection at that moment meets a
+                    # connection the server is closing and fails without a response; a proxy that
+                    # keeps idle upstream connections longer meets the same race.
+                    # HTTP_KEEP_ALIVE_TIMEOUT_S keeps idle connections open longer.
                     uvicorn_config={'timeout_keep_alive': settings.transport.keep_alive_timeout_s},
                     show_banner=False,
                 )
