@@ -1,6 +1,6 @@
 [project]
 name = "mcp-context-server"
-version = "2.2.2"
+version = "3.0.0"
 description = "MCP Context Server — a FastMCP-based server providing persistent multimodal context storage for LLM agents."
 readme = "README.md"
 license = "Elastic-2.0"
