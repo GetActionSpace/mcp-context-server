@@ -11,6 +11,7 @@ data:
   FASTMCP_HOST: {{ .Values.env.FASTMCP_HOST | quote }}
   FASTMCP_PORT: {{ .Values.env.FASTMCP_PORT | quote }}
   FASTMCP_STATELESS_HTTP: {{ .Values.env.FASTMCP_STATELESS_HTTP | quote }}
+  HTTP_KEEP_ALIVE_TIMEOUT_S: {{ .Values.env.HTTP_KEEP_ALIVE_TIMEOUT_S | quote }}
   FASTMCP_ENABLE_RICH_LOGGING: {{ .Values.env.FASTMCP_ENABLE_RICH_LOGGING | quote }}
   LOG_LEVEL: {{ .Values.env.LOG_LEVEL | quote }}
   # Storage backend

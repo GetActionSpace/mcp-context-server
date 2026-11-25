@@ -1097,6 +1097,13 @@
           "name": "FASTMCP_STATELESS_HTTP"
         },
         {
+          "description": "Seconds the HTTP server keeps an idle kept-alive connection open. Keep it above the idle timeout of any proxy or load balancer in front of the server and above the idle expiry of the HTTP clients that call it.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "HTTP_KEEP_ALIVE_TIMEOUT_S"
+        },
+        {
           "description": "Comma-separated list of tools to disable (e.g., delete_context,update_context)",
           "isRequired": false,
           "format": "string",
@@ -2381,6 +2388,13 @@
           "format": "boolean",
           "isSecret": false,
           "name": "FASTMCP_STATELESS_HTTP"
+        },
+        {
+          "description": "Seconds the HTTP server keeps an idle kept-alive connection open. Keep it above the idle timeout of any proxy or load balancer in front of the server and above the idle expiry of the HTTP clients that call it.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "HTTP_KEEP_ALIVE_TIMEOUT_S"
         },
         {
           "description": "Comma-separated list of tools to disable (e.g., delete_context,update_context)",

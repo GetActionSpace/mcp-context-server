@@ -1,6 +1,45 @@
 """Tests for app/settings/server.py: the transport and server-instructions settings."""
 
+import pytest
+from pydantic import ValidationError
+
 from tests.helpers import env_var
+
+
+class TestTransportKeepAliveTimeout:
+    """Tests for the HTTP_KEEP_ALIVE_TIMEOUT_S setting in TransportSettings."""
+
+    def test_keep_alive_timeout_default_is_75(self) -> None:
+        """An unset HTTP_KEEP_ALIVE_TIMEOUT_S keeps idle connections open for 75 seconds."""
+        from app.settings.server import TransportSettings
+
+        with env_var('HTTP_KEEP_ALIVE_TIMEOUT_S', None):
+            settings = TransportSettings()
+            assert settings.keep_alive_timeout_s == 75
+
+    def test_keep_alive_timeout_read_from_env(self) -> None:
+        """HTTP_KEEP_ALIVE_TIMEOUT_S sets the idle timeout in whole seconds."""
+        from app.settings.server import TransportSettings
+
+        with env_var('HTTP_KEEP_ALIVE_TIMEOUT_S', '120'):
+            settings = TransportSettings()
+            assert settings.keep_alive_timeout_s == 120
+
+    def test_keep_alive_timeout_minimum_is_one_second(self) -> None:
+        """One second is the smallest timeout accepted."""
+        from app.settings.server import TransportSettings
+
+        with env_var('HTTP_KEEP_ALIVE_TIMEOUT_S', '1'):
+            settings = TransportSettings()
+            assert settings.keep_alive_timeout_s == 1
+
+    @pytest.mark.parametrize('value', ['0', '-5', '7.5', 'seventy'])
+    def test_keep_alive_timeout_refuses_non_positive_and_non_integer(self, value: str) -> None:
+        """Zero, a negative number and a value that is not a whole number are refused."""
+        from app.settings.server import TransportSettings
+
+        with env_var('HTTP_KEEP_ALIVE_TIMEOUT_S', value), pytest.raises(ValidationError, match='HTTP_KEEP_ALIVE_TIMEOUT_S'):
+            TransportSettings()
 
 
 class TestTransportStatelessHttp:
